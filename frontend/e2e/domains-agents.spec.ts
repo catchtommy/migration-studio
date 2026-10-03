@@ -1,0 +1,58 @@
+import { expect, test } from "@playwright/test";
+
+test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this mode");
+
+test("domain inputs and operation entry points reach the agents and show up in the domain's documentation", async ({ page }) => {
+  const suffix = Date.now().toString(36);
+  const name = `Collateral ${suffix}`;
+
+  await page.goto("/domains");
+  await page.getByRole("button", { name: "New domain" }).click();
+  await page.getByLabel("Name", { exact: true }).fill(name);
+  await page.getByLabel("Description").fill("Collateral valuation and pledges");
+  await page.getByRole("button", { name: "Add domain" }).click();
+
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  await page.getByLabel("Shared context (all agents)").fill("Tables live in the COLL schema");
+  const asIs = page.locator("section", { has: page.getByRole("heading", { name: "AS-IS documentation" }) });
+  await asIs.getByLabel("Where to look").fill("src/main/java/com/acme/collateral/**\nsqlmap/Collateral.xml");
+  await asIs.getByLabel("Notes").fill("Start at CollateralController");
+  await page.getByRole("button", { name: "Save inputs" }).click();
+  await expect(page.getByText("Saved")).toBeVisible();
+
+  await page.goto("/");
+  await page.getByLabel("Domain").selectOption({ label: name });
+  await page.getByLabel("Operation").fill("valuePledge");
+  await page.getByRole("button", { name: "Add entry points & notes" }).click();
+  await page.getByLabel("Entry points and files for this operation").fill("CollateralController.value");
+  await page.getByRole("button", { name: "Start migration" }).click();
+  await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible({ timeout: 30_000 });
+
+  await page.getByRole("link", { name: "Domains", exact: true }).click();
+  await page.getByRole("link", { name: new RegExp(name) }).click();
+  await page.getByRole("button", { name: "Documentation", exact: true }).click();
+  const doc = page.locator("article");
+  await expect(doc.getByText("Tables live in the COLL schema")).toBeVisible();
+  await expect(doc.getByText("sqlmap/Collateral.xml")).toBeVisible();
+  await expect(doc.getByText("CollateralController.value")).toBeVisible();
+});
+
+test("an agent's configuration can be edited and reset", async ({ page }) => {
+  await page.goto("/agents/deep_dive");
+  const instructions = page.getByLabel("Instructions");
+  await expect(instructions).toHaveValue(/test scenario catalogue/);
+
+  await instructions.fill("Focus on the nightly batch jobs.");
+  await page.getByRole("radio", { name: "Claude" }).click();
+  await page.getByRole("button", { name: "Save agent" }).click();
+  await expect(page.getByText("Saved. Applies from the next stage run.")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByLabel("Instructions")).toHaveValue("Focus on the nightly batch jobs.");
+  await expect(page.getByRole("link", { name: /Deep dive/ })).toContainText("Claude");
+
+  page.once("dialog", (d) => d.accept());
+  await page.getByRole("button", { name: "Reset to default" }).click();
+  await expect(page.getByLabel("Instructions")).toHaveValue(/test scenario catalogue/);
+  await expect(page.getByRole("link", { name: /Deep dive/ })).toContainText("Stub");
+});

@@ -1,0 +1,119 @@
+import { useEffect, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import { useRunEvents, useWorkflows } from "../lib/hooks";
+import { ActivityLog } from "../components/ActivityLog";
+import { ApprovalPanel } from "../components/ApprovalPanel";
+import { QuestionPanel } from "../components/QuestionPanel";
+import { StageDetail } from "../components/StageDetail";
+import { StageTimeline } from "../components/StageTimeline";
+import { StatusBadge } from "../components/StatusBadge";
+
+export function RunPage() {
+  const { runId = "" } = useParams();
+  const queryClient = useQueryClient();
+  const { data: workflows = [] } = useWorkflows();
+  const { data: run, error } = useQuery({ queryKey: ["run", runId], queryFn: () => api.run(runId) });
+  const events = useRunEvents(runId);
+  const { data: questions = [] } = useQuery({ queryKey: ["questions", runId], queryFn: () => api.questions(runId) });
+  const openQuestion = questions.find((q) => q.status === "open");
+  const [selected, setSelected] = useState<string | null>(null);
+
+  // Follow the run's current stage until the user picks one themselves.
+  const [pinned, setPinned] = useState(false);
+  useEffect(() => {
+    if (!pinned && run?.current_stage) setSelected(run.current_stage);
+  }, [run?.current_stage, pinned]);
+
+  const retry = useMutation({
+    mutationFn: () => api.retry(runId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["run", runId] }),
+  });
+
+  if (error) return <p className="text-bad">{(error as Error).message}</p>;
+  if (!run) return <p className="text-subtle">Loading…</p>;
+
+  const stages = run.workflow_stages;
+  const workflowName = workflows.find((w) => w.key === run.workflow)?.name ?? run.workflow;
+
+  const stage = stages.find((s) => s.key === selected);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <Link to="/" className="text-sm text-subtle hover:text-fg">
+          ← All migrations
+        </Link>
+        <div className="mt-2 flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold">
+            <span className="text-subtle">{run.domain} /</span> {run.operation}
+          </h1>
+          <StatusBadge status={run.status} />
+        </div>
+        <p className="mt-1 text-xs text-subtle">
+          <span className="font-mono">{run.branch}</span>
+          {workflowName && <> · {workflowName} workflow</>}
+        </p>
+        {run.inputs && (run.inputs.paths.length > 0 || run.inputs.notes) && (
+          <details className="mt-2 text-sm">
+            <summary className="cursor-pointer text-subtle hover:text-fg">Operation inputs given to the agents</summary>
+            <div className="mt-2 space-y-2 rounded-md border border-border bg-surface p-3">
+              {run.inputs.paths.length > 0 && (
+                <ul className="font-mono text-xs">
+                  {run.inputs.paths.map((p) => (
+                    <li key={p}>{p}</li>
+                  ))}
+                </ul>
+              )}
+              {run.inputs.notes && <p className="whitespace-pre-wrap">{run.inputs.notes}</p>}
+            </div>
+          </details>
+        )}
+      </div>
+
+      {run.status === "awaiting_input" && openQuestion && <QuestionPanel key={openQuestion.id} runId={run.id} question={openQuestion} stages={stages} />}
+
+      {run.status === "awaiting_approval" && run.pending_gate && (
+        <ApprovalPanel key={run.pending_gate.gate + run.stages.length} runId={run.id} gate={run.pending_gate} stages={stages} />
+      )}
+
+      {run.status === "failed" && (
+        <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-bad/40 bg-bad/5 p-4">
+          <p className="text-sm text-bad">{run.error}</p>
+          <button
+            className="rounded-md bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
+            disabled={retry.isPending}
+            onClick={() => retry.mutate()}
+          >
+            Retry from failed stage
+          </button>
+        </section>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-[18rem_1fr]">
+        <aside className="lg:sticky lg:top-4 lg:self-start">
+          <StageTimeline
+            stages={stages}
+            run={run}
+            selected={selected}
+            onSelect={(s) => {
+              setSelected(s);
+              setPinned(true);
+            }}
+          />
+        </aside>
+        <main className="min-w-0">
+          {stage ? (
+            <StageDetail stage={stage} stages={stages} run={run} events={events} questions={questions} />
+          ) : (
+            <div className="space-y-3">
+              <h2 className="text-lg font-semibold">Activity</h2>
+              <ActivityLog events={events} />
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}

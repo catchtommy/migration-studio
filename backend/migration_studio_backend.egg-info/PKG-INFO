@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: migration-studio-backend
+Version: 0.1.0
+Requires-Python: >=3.12
+Requires-Dist: fastapi>=0.142
+Requires-Dist: uvicorn[standard]>=0.30
+Requires-Dist: sqlalchemy>=2.1
+Requires-Dist: pydantic-settings>=2.5
+Requires-Dist: langgraph>=1.2
+Requires-Dist: langgraph-checkpoint-sqlite>=3.1
+Requires-Dist: langchain-anthropic>=1.7
+Requires-Dist: sse-starlette>=3.5
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: httpx>=0.27; extra == "dev"
