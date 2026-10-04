@@ -4,7 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.agents.defaults import EFFORTS, TOOLS
+from app.agents.defaults import CHECKS, EFFORTS, TOOLS
+from app.contracts_store import CONTRACT_STATUSES
 
 
 class ORM(BaseModel):
@@ -146,6 +147,7 @@ class AgentIn(BaseModel):
     tools: list[Literal[tuple(TOOLS)]]
     outputs: list[str]
     max_turns: int = Field(ge=1, le=500)
+    checks: list[Literal[CHECKS]] = []  # verifications the agent must pass before finishing
 
     @field_validator("outputs")
     @classmethod
@@ -187,6 +189,8 @@ class DomainCreate(BaseModel):
 class DomainUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = None
+    owned_tables: list[str] | None = None
+    owned_packages: list[str] | None = None
     context: str | None = None
     agent_inputs: dict[str, AgentInputsIn] | None = None  # keyed by agent
     default_workflow: str | None = None  # "" clears it
@@ -199,6 +203,8 @@ class DomainOut(ORM):
     context: str
     agent_inputs: dict[str, AgentInputsIn]
     default_workflow: str | None
+    owned_tables: list[str] | None
+    owned_packages: list[str] | None
     created_at: datetime
     updated_at: datetime
 
@@ -246,3 +252,57 @@ class WorkflowOut(BaseModel):
     runs: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class ContractOut(BaseModel):
+    key: str
+    provider: str
+    kind: str
+    name: str
+    version: str
+    description: str
+    spec: str | None
+    spec_path: str | None
+    consumers: list[str]
+    status: str
+    run_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContractUpdate(BaseModel):
+    status: Literal[CONTRACT_STATUSES]
+
+
+class DependencyOut(ORM):
+    id: int
+    run_id: str
+    interaction: str
+    source: str
+    target: str
+    kind: str
+    pattern: str
+    contract: str | None
+    status: str
+    summary: str
+    code_refs: list[str]
+    created_at: datetime
+    operation: str | None = None  # the run's operation
+
+
+class DependencyEdge(BaseModel):
+    source: str  # calls / consumes
+    target: str  # provides
+    count: int
+    patterns: dict[str, int]
+
+
+class MigrationStep(BaseModel):
+    domain: str
+    reason: str
+
+
+class DependencyMap(BaseModel):
+    domains: list[str]
+    edges: list[DependencyEdge]
+    order: list[MigrationStep]

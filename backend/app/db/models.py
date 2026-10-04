@@ -129,6 +129,10 @@ class Domain(Base):
     # agent key -> {"paths": [...], "notes": "..."}: where that agent should look and what to know
     agent_inputs: Mapped[dict] = mapped_column(JSON, default=dict)
     default_workflow: Mapped[str | None] = mapped_column(String(64))
+    # Ownership, for the boundary check and the agents: tables (in the monolith schema) and Java package prefixes
+    # that belong to this domain. No other domain's service may use them directly.
+    owned_tables: Mapped[list | None] = mapped_column(JSON)
+    owned_packages: Mapped[list | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -149,6 +153,7 @@ class Agent(Base):
     tools: Mapped[list] = mapped_column(JSON)
     outputs: Mapped[list] = mapped_column(JSON)  # documents the agent must write, relative to the operation folder
     max_turns: Mapped[int] = mapped_column(Integer)
+    checks: Mapped[list | None] = mapped_column(JSON)  # extra verifications after the agent finishes: ["boundary"]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -183,3 +188,44 @@ class Question(Base):
     answered_by: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Contract(Base):
+    """A cross-domain contract shared by all domain migrations: an API, event or command one domain provides.
+    Proposed by integration design; recorded when the design gate is approved."""
+
+    __tablename__ = "contracts"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)  # e.g. customer.get-customer, loan.loan-approved
+    provider: Mapped[str] = mapped_column(String(64), index=True)  # domain that owns it
+    kind: Mapped[str] = mapped_column(String(16))  # api | event | command
+    name: Mapped[str] = mapped_column(String(255))
+    version: Mapped[str] = mapped_column(String(32), default="1")
+    description: Mapped[str] = mapped_column(Text, default="")
+    spec: Mapped[str | None] = mapped_column(Text)  # OpenAPI / AsyncAPI document (YAML)
+    spec_path: Mapped[str | None] = mapped_column(Text)
+    consumers: Mapped[list] = mapped_column(JSON, default=list)
+    # proposed | approved | provided-by-monolith | provided-by-service | deprecated
+    status: Mapped[str] = mapped_column(String(32), default="approved")
+    run_id: Mapped[str | None] = mapped_column(String(36))  # run whose design last recorded it
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Dependency(Base):
+    """One cross-domain interaction found in an operation, with the integration pattern chosen for it."""
+
+    __tablename__ = "dependencies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
+    interaction: Mapped[str] = mapped_column(String(128))  # id within the run's cross-domain catalogue
+    source: Mapped[str] = mapped_column(String(64), index=True)  # domain that calls / depends
+    target: Mapped[str] = mapped_column(String(64), index=True)  # domain it depends on
+    kind: Mapped[str] = mapped_column(String(32))  # query | bulk-query | side-effect | command | shared-write | reference-data
+    pattern: Mapped[str] = mapped_column(String(32))  # sync-api | read-model | event | saga | deferred | reference-copy
+    contract: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32), default="planned")  # planned | deferred | done
+    summary: Mapped[str] = mapped_column(Text, default="")
+    code_refs: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

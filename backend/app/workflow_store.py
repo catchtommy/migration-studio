@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app import agent_store
-from app.db.models import Domain, WorkflowDef
+from app.db.models import Domain, Setting, WorkflowDef
 from app.db.session import session_scope
 from app.orchestrator.stages import STANDARD, StageDef, Workflow
 
@@ -25,12 +25,32 @@ def steps_of(workflow: Workflow) -> list[dict]:
              "reviews": list(s.reviews)} for s in workflow.stages]
 
 
+STANDARD_DESCRIPTION = ("AS-IS → deep dive → design → cross-domain integration → module → microservice → "
+                        "tests → modernisation → integration, with four approval gates.")
+
+
+def _shape(steps: list[dict]) -> list[tuple]:
+    return [(st["kind"], st["key"], tuple(st.get("reviews") or ())) for st in steps]
+
+
+# The standard workflow as first released, before the cross-domain integration design step.
+_STANDARD_V1 = [(k, key, ("boundary_design",) if key == "gate_design" else r)
+                for k, key, r in _shape(steps_of(STANDARD)) if key != "integration_design"]
+
+
 def seed() -> None:
     with session_scope() as s:
         if s.scalar(select(WorkflowDef).limit(1)) is None:
             s.add(WorkflowDef(key=STANDARD_KEY, name="Standard migration", steps=steps_of(STANDARD),
-                              description="AS-IS → deep dive → design → module → microservice → tests → "
-                                          "modernisation → integration, with four approval gates."))
+                              description=STANDARD_DESCRIPTION))
+            s.add(Setting(key="_standard_workflow_v2", value=True))
+            return
+        if s.get(Setting, "_standard_workflow_v2") is None:
+            # Upgrade the standard workflow only if nobody has changed it; customised ones are left alone.
+            standard = s.get(WorkflowDef, STANDARD_KEY)
+            if standard is not None and _shape(standard.steps) == _STANDARD_V1:
+                standard.steps, standard.description = steps_of(STANDARD), STANDARD_DESCRIPTION
+            s.add(Setting(key="_standard_workflow_v2", value=True))
 
 
 def _slug(text: str) -> str:
@@ -60,7 +80,8 @@ def validate(steps: list[dict]) -> list[dict]:
                                           f"before it (not {', '.join(late)})")
             agents_so_far.append(key)
             keys.add(key)
-            out.append({"kind": "agent", "key": key, "uses": uses, "include_content": bool(step.get("include_content"))})
+            out.append({"kind": "agent", "key": key, "uses": uses,
+                        "include_content": bool(step.get("include_content"))})
         elif kind == "gate":
             title = (step.get("title") or "").strip()
             if not title:

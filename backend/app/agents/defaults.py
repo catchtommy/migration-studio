@@ -14,10 +14,66 @@ TOOLS = {
     "edit_file": "Replace an exact snippet in an existing file",
     "run_command": "Run a shell command in the workspace (builds, tests)",
     "ask_user": "Ask a person a question and wait for the answer",
+    "check_boundaries": "Check the service only uses its own domain's tables and packages",
 }
 READ_ONLY = ["list_files", "read_file", "search_code", "ask_user"]
 DOCS = [*READ_ONLY, "write_file"]
-CODE = [*READ_ONLY, "write_file", "edit_file", "run_command"]
+CODE = [*READ_ONLY, "write_file", "edit_file", "run_command", "check_boundaries"]
+CHECKS = ("boundary",)  # verifications an agent can be configured to pass before it may finish
+
+# Machine-readable files the cross-domain stages produce. Migration Studio validates them before the agent finishes
+# and records the decisions and contracts in its catalogue when the design is approved.
+CROSS_DOMAIN_SCHEMA = """```yaml
+# cross-domain.yaml: every interaction between this operation and another domain
+interactions:
+  - id: X1                          # unique within this file
+    direction: outbound             # outbound: this domain needs the other; inbound: the other needs this one
+    target: customer                # key of the other domain
+    kind: query                     # query | bulk-query | side-effect | command | shared-write | reference-data
+    summary: Reads the customer's KYC status before approving
+    code_refs: ["src/main/java/com/acme/loan/LoanService.java:120"]
+    tables: [CUST_KYC]              # other-domain tables touched, if any
+    consistency: immediate          # immediate | eventual
+    frequency: every approval
+```"""
+
+DECISIONS_SCHEMA = """```yaml
+# integration-decisions.yaml: one decision per interaction in cross-domain.yaml, plus the contracts they use
+decisions:
+  - interaction: X1
+    direction: outbound
+    target: customer
+    kind: query
+    pattern: sync-api               # sync-api | read-model | event | saga | deferred | reference-copy
+    contract: customer.get-kyc-status   # key of a contract below or already in the catalogue
+    port: CustomerDirectory         # interface in the service (outbound only)
+    adapter: MonolithCustomerDirectoryAdapter
+    status: planned                 # planned | deferred
+    summary: Synchronous call through the monolith facade until customer is migrated
+contracts:                          # new contracts, or changes to existing ones (same key)
+  - key: customer.get-kyc-status    # <provider>.<name>
+    provider: customer              # domain that owns it
+    kind: api                       # api | event | command
+    name: Get KYC status
+    version: "1"
+    consumers: [loan]
+    description: Current KYC status of a customer
+    spec: contracts/customer.get-kyc-status.yaml   # OpenAPI (api) or AsyncAPI (event/command), relative to this file
+```"""
+
+_INTEGRATION_RULES = """Decision rules, in order:
+- side-effect (no answer needed) → event: publish a domain event through a transactional outbox to the provider's \
+Service Bus topic; consumers subscribe.
+- query that needs current data → sync-api: REST call through a port + adapter (timeouts, circuit breaker, \
+short cache).
+- bulk-query / joins / reporting → read-model: a local projection fed by the owner's events.
+- command where several domains must change together → saga: orchestrated by the initiating service, commands on \
+Service Bus queues, each step with a compensating action.
+- shared-write or shared table → split ownership (one owner per table) and use a saga; if that is not feasible yet, \
+deferred: it stays in the monolith, with an explicit follow-up.
+- reference-data → reference-copy: owner publishes changes; consumers keep a cached read-only copy.
+Never a direct query or join on another domain's schema. Prefer choreography (events) for one or two hops, \
+orchestration beyond that. Reuse contracts already in the catalogue instead of inventing new ones."""
 
 _LEGACY = """The monolith is Java 8, Spring MVC 3 and iBatis on Oracle, with JSP views. \
 Requests flow JSP → Controller → Service → DAO → iBatis SQL map."""
@@ -43,9 +99,14 @@ When the code is ambiguous or you cannot find a piece of the flow, ask the user 
 Read the AS-IS document first, then the code it references. Produce:
 - Business rules, with the code location that enforces each.
 - Validation, edge cases and exception paths, including what the user sees in each case.
-- Calls into other domains (services, DAOs or tables owned elsewhere) and shared state.
 - A test scenario catalogue: every behaviour a migrated version must preserve, each with a short id, preconditions, \
 input and expected outcome. The independent tests stage implements these scenarios, so make them concrete.
+- A cross-domain catalogue, `cross-domain.yaml`: every place this operation touches another domain. That includes \
+calls to another domain's services or DAOs, reads or writes of tables another domain owns, shared transactions, \
+other domains reading this domain's tables, and notifications or audit written as a side effect. Use the table and \
+package ownership you are given to tell domains apart; ask the user when ownership is unclear. Format:
+
+{CROSS_DOMAIN_SCHEMA}
 
 Ask the user when a rule's intent is unclear, for example whether an odd branch is a bug or deliberate.""",
 
@@ -54,21 +115,50 @@ AS-IS documentation and deep dive.
 
 Produce:
 - The bounded context: what this service owns and what it does not.
-- Table ownership: tables the service owns, tables it reads that another domain owns, and how each cross-domain \
-dependency is handled (API call, event, replicated read model, or left in the monolith for now).
+- Table ownership: tables the service owns (they move to the service's own Oracle schema) and tables it uses that \
+another domain owns. The next stage decides how each cross-domain interaction is integrated; note anything that \
+affects that decision.
 - The REST contract for the operation as an OpenAPI 3.1 document: paths, schemas, error responses. Keep it \
 faithful to the current behaviour; do not add features.
 - Risks and open decisions for the reviewer.
 
 Ask the user about ownership decisions you cannot settle from the code.""",
 
+    "integration_design": f"""You decide how each cross-domain interaction of this operation is handled once the \
+operation moves into its own microservice. The service must contain only its own domain's features; everything \
+it needs from other domains goes through an agreed contract.
+
+Read the deep dive's cross-domain.yaml, the boundary design, and the contracts catalogue you are given. For every \
+interaction choose one pattern.
+
+{_INTEGRATION_RULES}
+
+Messaging is Azure Service Bus: one topic per publishing domain, one subscription per consuming domain, queues for \
+saga commands, CloudEvents-style envelopes, sessions (SessionId = aggregate id) where order matters, dead-letter \
+queues monitored. Each service owns its tables in its own Oracle schema; other domains' tables are not granted.
+
+Write:
+- `integration-design.md`: each interaction, the pattern chosen and why, the ports and adapters in the service, \
+the monolith facades and events needed while other domains are still in the monolith, saga steps and \
+compensations, and anything deferred with its follow-up.
+- `integration-decisions.yaml` in this format:
+
+{DECISIONS_SCHEMA}
+- A spec file for each new or changed contract under `contracts/`: OpenAPI 3.1 for APIs, AsyncAPI 3 for events \
+and commands.
+
+Ask the user when a decision depends on business tolerance for stale data or on another team's plans.""",
+
     "modular_monolith": f"""You extract one operation into a module inside the monolith, shaped like the future \
 microservice. {_LEGACY}
 
-Using the approved boundary design:
+Using the approved boundary and integration design:
 - Create the module's package structure with a clear public API (service interface + DTOs) matching the REST contract.
 - Move or copy the operation's controller, service, DAO and iBatis mappings into the module. Callers outside the \
 module must go through its public API only.
+- The module contains only this domain's features. Every dependency on another domain becomes a port: an interface \
+in `<domain>.integration.port`, named after what it does (e.g. CustomerDirectory), with an in-monolith adapter for \
+now. Never copy another domain's classes or query its tables from the module.
 - Keep the code Java 8 / Spring 3 / iBatis compatible. Do not change behaviour.
 - Build with the project's build tool and fix compilation errors before finishing.
 
@@ -77,9 +167,15 @@ Summarise what moved, what still crosses the boundary, and how you verified the 
     "microservice_scaffold": """You wrap the extracted module in a standalone Spring Boot application that exposes the \
 approved REST contract.
 
-- Create the service as a separate project in the workspace, reusing the module's code.
+- Create the service in its own directory (given below), reusing the module's code. It contains only this domain's \
+features.
 - Implement the endpoints from the OpenAPI document exactly, including error responses.
-- Configure data access against the existing Oracle tables; no schema changes.
+- Data access only to the tables this domain owns, in the service's own Oracle schema; no schema changes otherwise.
+- Implement each integration decision: adapters for the ports (REST clients to the monolith facades for domains \
+still in the monolith, selected by configuration), a transactional outbox plus Azure Service Bus publisher for the \
+events this domain publishes, Service Bus consumers (idempotent, de-duplicated by message id) for events it uses, \
+and saga orchestration with compensations where decided.
+- Run check_boundaries and fix every violation.
 - Build it and make sure it starts. Fix failures before finishing.
 
 Summarise the project layout, how to run it, and any deviations from the contract.""",
@@ -88,6 +184,8 @@ Summarise the project layout, how to run it, and any deviations from the contrac
 the original code, for every scenario in the deep dive's test scenario catalogue.
 
 - Contract tests against the OpenAPI document.
+- Contract tests for each cross-domain dependency: stub providers generated from their OpenAPI contracts (e.g. \
+WireMock) and checks that published events match their AsyncAPI contracts.
 - Integration tests against the existing schema.
 - Characterisation tests that pin down current behaviour, including odd edge cases.
 - Run the tests and report results. A failing test that exposes a real behaviour difference is a finding: \
@@ -100,7 +198,8 @@ mapped onto the existing tables (no schema changes).
 
 - Upgrade the build, dependencies and code. Use modern Java where it simplifies the code.
 - Replace iBatis statements with JPA entities and repositories that produce equivalent queries.
-- Keep the REST contract unchanged. All independent tests must still pass; run them.
+- Keep the REST contract and the cross-domain contracts unchanged. All independent tests must still pass; run them.
+- Run check_boundaries and fix every violation.
 
 Summarise the changes, any query differences, and the test results.""",
 
@@ -109,6 +208,10 @@ Summarise the changes, any query differences, and the test results.""",
 - Add a REST client in the monolith for the microservice's contract.
 - Add a feature flag that routes calls to either the in-monolith module or the microservice, defaulting to the module.
 - Handle timeouts and errors from the microservice explicitly.
+- For each integration decision, add the monolith side: facade endpoints (`/internal/api/v1/<domain>/...`) for \
+the contracts the service consumes from domains still in the monolith, an OUTBOX table and relay that publishes the \
+monolith's events to Azure Service Bus (the Azure Service Bus Java SDK supports Java 8), and subscribers for the \
+service's events that the monolith still needs.
 - Build the monolith and run its tests with the flag in both positions.
 
 Document how to switch the flag, rollback steps, and what to monitor after the switch.""",
@@ -116,8 +219,9 @@ Document how to switch the flag, rollback steps, and what to monitor after the s
 
 OUTPUTS = {
     "as_is_doc": ["as-is.md"],
-    "deep_dive": ["deep-dive.md", "test-scenarios.md"],
+    "deep_dive": ["deep-dive.md", "test-scenarios.md", "cross-domain.yaml"],
     "boundary_design": ["boundary-design.md", "openapi.yaml"],
+    "integration_design": ["integration-design.md", "integration-decisions.yaml"],
     "modular_monolith": ["modular-monolith.md"],
     "microservice_scaffold": ["microservice.md"],
     "independent_tests": ["test-report.md"],
@@ -126,7 +230,8 @@ OUTPUTS = {
 }
 
 _MODERN_JDK = {"modernise", "monolith_integration"}
-_ANALYSIS = {"as_is_doc", "deep_dive", "boundary_design"}
+_ANALYSIS = {"as_is_doc", "deep_dive", "boundary_design", "integration_design"}
+_BOUNDARY_CHECKED = {"microservice_scaffold", "modernise"}
 
 
 def default_config(stage: str) -> dict:
@@ -139,4 +244,5 @@ def default_config(stage: str) -> dict:
         "tools": list(DOCS if stage in _ANALYSIS else CODE),
         "outputs": list(OUTPUTS[stage]),
         "max_turns": 80,
+        "checks": ["boundary"] if stage in _BOUNDARY_CHECKED else [],
     }

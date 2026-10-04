@@ -46,6 +46,93 @@ class StubAgent(StageAgent):
         if ctx.feedback:
             lines += ["", "## Reviewer feedback addressed", ctx.feedback]
         out.write_text("\n".join(lines) + "\n")
+        artifacts = [ArtifactOut(name=out.name, path=ctx.rel(out), kind="markdown")]
+        artifacts += _sample_cross_domain_files(ctx)
         time.sleep(STUB_DELAY)
-        ctx.log(f"[stub] wrote {ctx.rel(out)}")
-        return [ArtifactOut(name=out.name, path=ctx.rel(out), kind="markdown")]
+        ctx.log(f"[stub] wrote {', '.join(a.path for a in artifacts)}")
+        return artifacts
+
+
+def _sample_cross_domain_files(ctx: AgentContext) -> list[ArtifactOut]:
+    """Small, valid cross-domain catalogue/decision files, so the catalogue flow works end to end without AI: one
+    synchronous query to another domain and one event this domain publishes for it."""
+    outputs = ctx.config.get("outputs") or []
+    other = next((d for d in sorted(ctx.ownership) if d != ctx.domain), "shared")
+    op = ctx.operation.lower()
+    query, event = f"{other}.get-{other}-summary", f"{ctx.domain}.{op}-completed"
+    files: dict[str, str] = {}
+    if "cross-domain.yaml" in outputs:
+        files["cross-domain.yaml"] = f"""# [stub] sample cross-domain catalogue
+interactions:
+  - id: X1
+    direction: outbound
+    target: {other}
+    kind: query
+    summary: Reads a {other} summary while handling {ctx.operation}
+    code_refs: []
+    consistency: immediate
+  - id: X2
+    direction: inbound
+    target: {other}
+    kind: side-effect
+    summary: {other} reacts after {ctx.operation} completes
+    code_refs: []
+    consistency: eventual
+"""
+    if "integration-decisions.yaml" in outputs:
+        files["integration-decisions.yaml"] = f"""# [stub] sample integration decisions
+decisions:
+  - interaction: X1
+    direction: outbound
+    target: {other}
+    kind: query
+    pattern: sync-api
+    contract: {query}
+    port: {other.capitalize()}Directory
+    adapter: Monolith{other.capitalize()}DirectoryAdapter
+    status: planned
+    summary: REST call through the monolith facade until {other} is migrated
+  - interaction: X2
+    direction: inbound
+    target: {other}
+    kind: side-effect
+    pattern: event
+    contract: {event}
+    status: planned
+    summary: Published through the outbox to the {ctx.domain} topic
+contracts:
+  - key: {query}
+    provider: {other}
+    kind: api
+    name: Get {other} summary
+    version: "1"
+    consumers: [{ctx.domain}]
+    spec: contracts/{query}.yaml
+  - key: {event}
+    provider: {ctx.domain}
+    kind: event
+    name: {ctx.operation} completed
+    version: "1"
+    consumers: [{other}]
+    spec: contracts/{event}.yaml
+"""
+        files[f"contracts/{query}.yaml"] = f"""openapi: 3.1.0
+info: {{title: "{other} summary (stub)", version: "1"}}
+paths:
+  /internal/api/v1/{other}/summary/{{id}}:
+    get:
+      responses: {{"200": {{description: Summary}}}}
+"""
+        files[f"contracts/{event}.yaml"] = f"""asyncapi: 3.0.0
+info: {{title: "{ctx.operation} completed (stub)", version: "1"}}
+channels:
+  {ctx.domain}-events:
+    messages: {{{op}Completed: {{payload: {{type: object}}}}}}
+"""
+    written = []
+    for name, content in files.items():
+        f = ctx.output_dir / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+        written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
+    return written

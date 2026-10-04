@@ -65,14 +65,14 @@ class ClaudeAgent(StageAgent):
                 messages.append({"role": "user", "content": "Continue."})
                 continue
 
-            missing = common.missing_outputs(ctx)
-            if not missing:
+            problems = common.verify(ctx)
+            if not problems:
                 break
             if checks_left <= 0:
-                raise AgentFailed(f"Required documents still missing: {', '.join(missing)}")
+                raise AgentFailed("Verification still failing: " + "; ".join(problems[:5]))
             checks_left -= 1
-            ctx.log(f"Self-check: missing {', '.join(missing)}; asking the agent to finish")
-            messages.append({"role": "user", "content": common.missing_outputs_message(ctx, missing)})
+            ctx.log(f"Self-check: {len(problems)} problem(s) to fix, e.g. {problems[0]}")
+            messages.append({"role": "user", "content": common.verify_message(problems)})
         else:
             raise AgentFailed(f"The agent did not finish within {config['max_turns']} turns")
 

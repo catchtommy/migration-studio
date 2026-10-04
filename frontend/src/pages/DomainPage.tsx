@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Agent, type AgentInputs, type Domain } from "../lib/api";
+import { api, type Agent, type AgentInputs, type Dependency, type Domain } from "../lib/api";
+import { PatternChip } from "../components/Chips";
 import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
 import { ArtifactViewer } from "../components/ArtifactViewer";
 import { Field, inputClass } from "../components/Field";
@@ -9,12 +10,132 @@ import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 
-type Tab = "docs" | "inputs" | "details";
+type Tab = "docs" | "inputs" | "boundary" | "dependencies" | "details";
 const TABS: { key: Tab; label: string }[] = [
   { key: "docs", label: "Documentation" },
   { key: "inputs", label: "Agent inputs" },
+  { key: "boundary", label: "Boundary" },
+  { key: "dependencies", label: "Dependencies" },
   { key: "details", label: "Details" },
 ];
+
+const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
+
+/** Tables and Java packages this domain owns: given to agents and enforced by the boundary check. */
+function Boundary({ domain }: { domain: Domain }) {
+  const queryClient = useQueryClient();
+  const [tables, setTables] = useState((domain.owned_tables ?? []).join("\n"));
+  const [packages, setPackages] = useState((domain.owned_packages ?? []).join("\n"));
+  const dirty = lines(tables).join() !== (domain.owned_tables ?? []).join() || lines(packages).join() !== (domain.owned_packages ?? []).join();
+  const save = useMutation({
+    mutationFn: () => api.updateDomain(domain.key, { owned_tables: lines(tables), owned_packages: lines(packages) }),
+    onSuccess: (d) => {
+      queryClient.setQueryData(["domain", domain.key], d);
+      queryClient.invalidateQueries({ queryKey: ["domains"] });
+    },
+  });
+  return (
+    <form
+      className="max-w-3xl space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        save.mutate();
+      }}
+    >
+      <p className="text-sm text-subtle">
+        What belongs to {domain.name}. Agents use this to tell domains apart, and the boundary check fails another domain's microservice if it uses these
+        packages or tables directly instead of going through a contract.
+      </p>
+      <div className="card grid gap-4 p-4 md:grid-cols-2">
+        <Field label="Owned tables" hint="One per line, e.g. CUSTOMER, CUST_ADDRESS">
+          <textarea rows={8} className={`${inputClass} font-mono text-xs`} value={tables} onChange={(e) => setTables(e.target.value)} />
+        </Field>
+        <Field label="Owned Java packages" hint="One per line, e.g. com.acme.customer">
+          <textarea rows={8} className={`${inputClass} font-mono text-xs`} value={packages} onChange={(e) => setPackages(e.target.value)} />
+        </Field>
+      </div>
+      <div className="flex items-center gap-3">
+        <button type="submit" disabled={!dirty || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+          Save boundary
+        </button>
+        {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
+        {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
+        {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
+      </div>
+    </form>
+  );
+}
+
+function DependencyTable({ title, rows, other, names }: { title: string; rows: Dependency[]; other: (d: Dependency) => string; names: Map<string, string> }) {
+  return (
+    <section className="card overflow-x-auto">
+      <h3 className="border-b border-border px-4 py-3 font-semibold">{title}</h3>
+      {rows.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-subtle">None recorded.</p>
+      ) : (
+        <table className="w-full min-w-[44rem] text-left text-sm">
+          <thead className="text-xs uppercase tracking-wide text-subtle">
+            <tr>
+              <th className="px-4 py-2 font-medium">Domain</th>
+              <th className="px-4 py-2 font-medium">Interaction</th>
+              <th className="px-4 py-2 font-medium">Pattern</th>
+              <th className="px-4 py-2 font-medium">Contract</th>
+              <th className="px-4 py-2 font-medium">Operation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((d) => (
+              <tr key={d.id} className="border-t border-border align-top">
+                <td className="px-4 py-2">
+                  <Link to={`/domains/${other(d)}?tab=dependencies`} className="inline-flex items-center gap-1.5 hover:text-accent">
+                    <DomainAvatar name={names.get(other(d)) ?? other(d)} domainKey={other(d)} size="h-5 w-5 text-[10px]" />
+                    {names.get(other(d)) ?? other(d)}
+                  </Link>
+                </td>
+                <td className="px-4 py-2">
+                  {d.summary || d.interaction}
+                  <span className="block text-xs text-subtle">
+                    {d.kind}
+                    {d.status !== "planned" && ` · ${d.status}`}
+                  </span>
+                </td>
+                <td className="px-4 py-2">
+                  <PatternChip pattern={d.pattern} />
+                </td>
+                <td className="px-4 py-2">{d.contract ? <code className="text-xs">{d.contract}</code> : <span className="text-subtle">–</span>}</td>
+                <td className="px-4 py-2">
+                  <Link to={`/runs/${d.run_id}`} className="text-accent hover:underline">
+                    {d.operation ?? "run"}
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+function Dependencies({ domain }: { domain: Domain }) {
+  const { data: rows, isLoading } = useQuery({ queryKey: ["dependencies", domain.key], queryFn: () => api.domainDependencies(domain.key) });
+  const { data: domains = [] } = useDomains();
+  const names = new Map(domains.map((d) => [d.key, d.name]));
+  if (isLoading || !rows) return <p className="text-sm text-subtle">Loading…</p>;
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-subtle">
+        Cross-domain interactions from approved integration designs. Contracts are listed on the{" "}
+        <Link to="/contracts" className="text-accent hover:underline">
+          Contracts
+        </Link>{" "}
+        page.
+      </p>
+      <DependencyTable title={`${domain.name} depends on`} rows={rows.filter((d) => d.source === domain.key)} other={(d) => d.target} names={names} />
+      <DependencyTable title={`Depends on ${domain.name}`} rows={rows.filter((d) => d.target === domain.key)} other={(d) => d.source} names={names} />
+    </div>
+  );
+}
 
 function Documentation({ domain }: { domain: Domain }) {
   const [params, setParams] = useSearchParams();
@@ -267,6 +388,8 @@ export function DomainPage() {
       </nav>
       {tab === "docs" && <Documentation domain={domain} />}
       {tab === "inputs" && <AgentInputsForm domain={domain} agents={agents} />}
+      {tab === "boundary" && <Boundary key={domain.key} domain={domain} />}
+      {tab === "dependencies" && <Dependencies domain={domain} />}
       {tab === "details" && <Details domain={domain} />}
     </div>
   );

@@ -5,6 +5,7 @@ import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 
+from app import boundary_check
 from app.agents.base_agent import AgentContext
 
 MAX_LIST = 500
@@ -53,6 +54,11 @@ SCHEMAS: dict[str, dict] = {
                        "JAVA_HOME is set to the JDK configured for this stage. Returns the exit code and the "
                        "last 20,000 characters of combined output.",
         "input_schema": _obj({"command": _STR, "timeout_seconds": _INT}, ["command"]),
+    },
+    "check_boundaries": {
+        "description": "Check that this domain's microservice only uses its own domain: reports every reference to "
+                       "another domain's Java packages or tables, with file and line. Run it before finishing.",
+        "input_schema": _obj({}, []),
     },
     "ask_user": {
         "description": "Ask the person supervising this migration a question and wait for their answer. Use it "
@@ -182,6 +188,10 @@ class Toolbox:
             raise ToolError(f"Command timed out after {timeout_seconds}s")
         output = (proc.stdout + proc.stderr)[-MAX_COMMAND_OUTPUT:]
         return f"exit code {proc.returncode}\n{output}"
+
+    def check_boundaries(self) -> str:
+        ctx = self.ctx
+        return boundary_check.report(boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir, ctx.ownership))
 
     def ask_user(self, question: str, options: list[str] | None = None) -> str:
         return self.ctx.ask(question, [str(o) for o in options] if options else None)

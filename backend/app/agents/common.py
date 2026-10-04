@@ -4,6 +4,7 @@ the required-documents check and artifact collection."""
 import json
 from pathlib import Path
 
+from app import boundary_check, contracts_store
 from app.agents.base_agent import AgentContext, ArtifactOut
 from app.agents.tools import ToolError, Toolbox
 
@@ -85,6 +86,8 @@ def brief(ctx: AgentContext) -> str:
     guidance = ctx.inputs.as_markdown()
     parts.append(guidance or "## Guidance\nNo source locations or notes were provided for this domain or "
                              "operation. Explore the workspace, and ask the user if you cannot find the code.")
+    if ctx.catalogue:
+        parts.append(ctx.catalogue)
     if ctx.answered:
         parts.append("## Answers you already received\n" +
                      "\n\n".join(f"Q: {q}\nA: {a}" for q, a in ctx.answered))
@@ -112,14 +115,22 @@ def run_tool(ctx: AgentContext, toolbox: Toolbox, name: str, args: object) -> tu
         return f"{type(e).__name__}: {e}", True
 
 
-def missing_outputs(ctx: AgentContext) -> list[str]:
-    return [o for o in ctx.config["outputs"] if not (ctx.output_dir / o).is_file()]
-
-
-def missing_outputs_message(ctx: AgentContext, missing: list[str]) -> str:
+def verify(ctx: AgentContext) -> list[str]:
+    """Everything that must be fixed before the agent may finish: missing required documents, invalid cross-domain
+    YAML, and (for agents configured with the boundary check) references to other domains' packages or tables."""
     out_dir = ctx.rel(ctx.output_dir)
-    return ("These required documents have not been written yet: " +
-            ", ".join(f"`{out_dir}/{m}`" for m in missing) + ". Write them, then finish.")
+    problems = [f"Required document `{out_dir}/{o}` has not been written yet."
+                for o in ctx.config["outputs"] if not (ctx.output_dir / o).is_file()]
+    problems += contracts_store.validate_outputs(ctx.output_dir)
+    if "boundary" in (ctx.config.get("checks") or []):
+        problems += [f"Boundary: {v}" for v in boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir,
+                                                                      ctx.ownership)]
+    return problems
+
+
+def verify_message(problems: list[str]) -> str:
+    return ("Before you finish, fix these:\n" + "\n".join(f"- {p}" for p in problems) +
+            "\nThen finish with a short summary.")
 
 
 def artifacts(ctx: AgentContext, toolbox: Toolbox) -> list[ArtifactOut]:

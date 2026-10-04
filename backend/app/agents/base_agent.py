@@ -69,6 +69,9 @@ class AgentContext:
     # Documents from the earlier stages this stage uses (see StageDef.uses), latest attempt of each, in order.
     previous_artifacts: list[PriorDocument] = field(default_factory=list)
     answered: list[tuple[str, str]] = field(default_factory=list)  # (question, answer) from earlier attempts
+    catalogue: str = ""  # cross-domain ownership, conventions and contracts (markdown)
+    ownership: dict = field(default_factory=dict)  # domain key -> {"tables": [...], "packages": [...]}
+    service_dir: str = ""  # this domain's microservice directory, relative to the workspace
     # Asks a person a question (with optional suggested answers) and blocks until it is answered.
     ask: Callable[[str, list[str] | None], str] = lambda question, options=None: ""
 

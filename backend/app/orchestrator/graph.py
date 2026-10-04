@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from sqlalchemy import func, select
 
-from app import agent_store
+from app import agent_store, contracts_store
 from app.agents import get_agent
 from app.agents.base_agent import AgentContext, AgentInputs, PriorDocument
 from app.db.models import Artifact, Domain, Run, StageExecution, utcnow
@@ -44,6 +44,12 @@ def _inputs(run_id: str, stage: str) -> AgentInputs:
             stage_paths=stage_inputs["paths"], stage_notes=stage_inputs["notes"],
             run_paths=run_inputs["paths"], run_notes=run_inputs["notes"],
         )
+
+
+def _ownership() -> dict[str, dict]:
+    with session_scope() as s:
+        return {d.key: {"tables": d.owned_tables or [], "packages": d.owned_packages or []}
+                for d in s.scalars(select(Domain))}
 
 
 def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef, ws: Path) -> list[PriorDocument]:
@@ -91,6 +97,10 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             config = agent_store.get(stage.key)
         except KeyError:
             config = None
+        domain = state["domain"]
+        if contracts_store.export_specs(ws):
+            emit(run_id, "log", f"Copied the contracts catalogue's specs to {contracts_store.CATALOGUE_DIR}/",
+                 stage.key)
         ctx = AgentContext(
             run_id=run_id, domain=state["domain"], operation=state["operation"], stage=stage.key,
             attempt=attempt, workspace=ws, feedback=feedback, settings=settings,
@@ -98,6 +108,8 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             config=config or {}, stage_def=stage, inputs=_inputs(run_id, stage.key),
             previous_artifacts=_previous_artifacts(workflow, run_id, stage, ws),
             answered=questions.answered_for(run_id, stage.key),
+            catalogue=contracts_store.catalogue_brief(domain, settings), ownership=_ownership(),
+            service_dir=settings["service_dir_pattern"].format(domain=domain),
             ask=lambda question, options=None: questions.ask(run_id, stage.key, attempt, question, options),
         )
         try:

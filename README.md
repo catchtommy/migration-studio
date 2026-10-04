@@ -4,7 +4,7 @@ A web UI that drives the migration of the Java 8 / Spring MVC 3 / iBatis monolit
 one domain operation at a time. Each operation goes through a workflow of agent stages and human approval gates.
 Workflows are editable (Workflows page); the built-in *Standard migration* workflow is:
 
-AS-IS docs → Deep dive → 👤 → Boundary design → 👤 → Module in monolith → Spring Boot microservice → Independent tests → 👤 → Modernisation → Monolith integration → 👤
+AS-IS docs → Deep dive → 👤 → Boundary design → Cross-domain integration design → 👤 → Module in monolith → Spring Boot microservice → Independent tests → 👤 → Modernisation → Monolith integration → 👤
 
 ## Run it
 
@@ -81,6 +81,52 @@ GitHub's documentation: [Authenticating Copilot CLI](https://docs.github.com/en/
 - *Don't use WebSockets* helps behind proxies that block them.
 - The firewall must allow the GitHub host and its Copilot endpoints; GitHub documents the required hosts for
   Copilot on GHE.com, which IT can check against.
+
+## Cross-domain calls
+
+The monolith mixes all domains in one codebase and one Oracle schema. A domain's microservice must contain **only
+its own domain's features**; everything it needs from other domains goes through an agreed contract.
+
+**How each interaction is handled** (the integration design agent applies these rules; reviewers approve them at
+*Approve design*):
+
+| Interaction | Example | Pattern |
+| --- | --- | --- |
+| Query that needs current data | Loan approval reads the customer's KYC status | `sync-api`: REST call through a port + adapter (timeouts, circuit breaker, short cache) |
+| Bulk query, joins, reporting | A report joins customer and loan tables | `read-model`: local projection fed by the owner's events |
+| Side effect, no answer needed | After approval: notify, audit | `event`: domain event via a transactional outbox to Azure Service Bus |
+| Several domains must change together | Approve loan → reserve payment → confirm | `saga`: orchestrated by the initiating service, with compensations |
+| Shared write / shared table | One transaction updates loan and customer tables | One owner per table + saga, or `deferred` (stays in the monolith) with a follow-up |
+| Reference data | Countries, currencies, branches | `reference-copy`: owner publishes; consumers cache a read-only copy |
+
+Never a direct query or join on another domain's schema. Choreography (events) for one or two hops, orchestration
+beyond that.
+
+**What gets built:**
+- *Service:* each cross-domain dependency is a **port** (interface in `<domain>.integration.port`). Its
+  **adapter** calls the monolith's facade while the other domain is still in the monolith; it is swapped for the
+  other service's adapter by configuration once that domain migrates. No classes copied from other domains.
+- *Monolith:* **facade endpoints** (`/internal/api/v1/<domain>/…`) for what migrated services still need, an
+  **OUTBOX** table + relay publishing to Service Bus, and subscribers for the services' events.
+- *Azure Service Bus:* one topic per publishing domain (`{domain}-events`), one subscription per consumer, queues
+  for saga commands (`{domain}-commands`), idempotent consumers, sessions where order matters (Settings →
+  Cross-domain integration).
+- *Data:* each service owns its tables in its **own Oracle schema**; other domains' tables are not granted.
+
+**In Migration Studio:**
+- **Deep dive** writes `cross-domain.yaml` (every interaction, with code references). **Cross-domain integration
+  design** writes `integration-design.md`, `integration-decisions.yaml` and OpenAPI/AsyncAPI specs under
+  `contracts/`. Both YAML files are validated before the agent may finish.
+- Approving the design gate records the decisions in the **Contracts** catalogue (APIs, events and commands with
+  provider, consumers and status) and the domain's **Dependencies**. Later migrations get the catalogue in their
+  instructions and its specs in `.migration/contracts/`, so they reuse contracts instead of inventing new ones.
+  An invalid decisions file blocks approval with the reason.
+- Each domain's **Boundary** tab lists the tables and Java packages it owns. Agents with the **Boundary check**
+  (on by default for *Spring Boot microservice* and *Modernisation*) are sent back until their service uses no
+  other domain's packages or tables; they can also run `check_boundaries` themselves.
+- The **Domains** page shows the dependency matrix and a **suggested migration order**: domains others depend on
+  synchronously the least go first (typically event consumers such as notification and auditing).
+- Upgrading adds the new agent and step to the built-in *Standard migration* workflow, unless you customised it.
 
 ## How it works
 

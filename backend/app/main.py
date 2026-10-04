@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import agent_store, domain_store, workflow_store
-from app.api import agents_api, copilot_api, domains_api, runs, settings_api, workflows_api
+from app.api import agents_api, contracts_api, copilot_api, domains_api, runs, settings_api, workflows_api
 from app.config import settings
 from app.copilot_service import get_service
 from app.db.session import init_db
@@ -37,6 +37,7 @@ app.include_router(agents_api.router)
 app.include_router(domains_api.router)
 app.include_router(workflows_api.router)
 app.include_router(copilot_api.router)
+app.include_router(contracts_api.router)
 
 
 @app.get("/api/health")

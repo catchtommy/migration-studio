@@ -134,6 +134,25 @@ export function SettingsPage() {
         </section>
 
         <section className="space-y-4">
+          <h2 className="font-semibold">Cross-domain integration</h2>
+          <p className="text-sm text-subtle">Conventions given to the agents when they design and build cross-domain calls. No secrets are stored here.</p>
+          <Field label="Azure Service Bus namespace" hint="e.g. mycompany-migration.servicebus.windows.net">
+            <input className={input} value={form.event_bus_namespace as string} onChange={(e) => set("event_bus_namespace", e.target.value)} />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Event topic per domain" hint="{domain} is replaced">
+              <input className={input} value={form.event_topic_pattern as string} onChange={(e) => set("event_topic_pattern", e.target.value)} />
+            </Field>
+            <Field label="Command queue per domain" hint="For saga steps">
+              <input className={input} value={form.command_queue_pattern as string} onChange={(e) => set("command_queue_pattern", e.target.value)} />
+            </Field>
+            <Field label="Service directory" hint="Where each microservice lives in the repository">
+              <input className={input} value={form.service_dir_pattern as string} onChange={(e) => set("service_dir_pattern", e.target.value)} />
+            </Field>
+          </div>
+        </section>
+
+        <section className="space-y-4">
           <h2 className="font-semibold">Corporate network</h2>
           <p className="text-sm text-subtle">
             For the GitHub Copilot connection. HTTPS from this app already trusts the operating system's certificates, which usually include your company's root

@@ -24,7 +24,7 @@ def executions(run, stage):
     return [s for s in run["stages"] if s["stage"] == stage]
 
 
-def test_happy_path_runs_all_twelve_nodes(client):
+def test_happy_path_runs_every_stage_and_gate(client):
     run_id = new_run(client)
     for gate in GATES:
         run = wait_for(client, run_id, {"awaiting_approval"})
@@ -33,11 +33,14 @@ def test_happy_path_runs_all_twelve_nodes(client):
     run = wait_for(client, run_id, {"completed"})
 
     assert {s["stage"] for s in run["stages"]} == {
-        "as_is_doc", "deep_dive", "gate_analysis", "boundary_design", "gate_design", "modular_monolith",
+        "as_is_doc", "deep_dive", "gate_analysis", "boundary_design", "integration_design", "gate_design",
+        "modular_monolith",
         "microservice_scaffold", "independent_tests", "gate_tests", "modernise", "monolith_integration",
         "gate_release"}
     assert all(s["status"] in ("completed", "approved") for s in run["stages"])
-    assert len(client.get(f"/api/runs/{run_id}/artifacts").json()) == 8
+    names = [a["name"] for a in client.get(f"/api/runs/{run_id}/artifacts").json()]
+    assert len([n for n in names if n.endswith(".md")]) == 9  # one document per agent stage
+    assert {"cross-domain.yaml", "integration-decisions.yaml"} <= set(names)
     ws = Path(run["workspace"])
     assert git_ops.git(ws, "rev-parse", "--abbrev-ref", "HEAD") == run["branch"]
 

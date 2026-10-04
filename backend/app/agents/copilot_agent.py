@@ -96,16 +96,16 @@ class CopilotAgent(StageAgent):
             while True:
                 errors.clear()
                 await session.send_and_wait(prompt, timeout=SESSION_TIMEOUT)
-                missing = common.missing_outputs(ctx)
-                if not missing:
+                problems = common.verify(ctx)
+                if not problems:
                     break
                 if errors:
                     raise AgentFailed(f"Copilot: {errors[-1]}")
                 if checks_left <= 0:
-                    raise AgentFailed(f"Required documents still missing: {', '.join(missing)}")
+                    raise AgentFailed("Verification still failing: " + "; ".join(problems[:5]))
                 checks_left -= 1
-                ctx.log(f"Self-check: missing {', '.join(missing)}; asking the agent to finish")
-                prompt = common.missing_outputs_message(ctx, missing)
+                ctx.log(f"Self-check: {len(problems)} problem(s) to fix, e.g. {problems[0]}")
+                prompt = common.verify_message(problems)
         except TimeoutError:
             raise AgentFailed(f"The Copilot agent did not finish within {SESSION_TIMEOUT // 3600} hours")
         finally:

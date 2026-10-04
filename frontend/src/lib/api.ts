@@ -107,6 +107,7 @@ export interface AgentInput {
   tools: string[];
   outputs: string[];
   max_turns: number;
+  checks: string[]; // e.g. "boundary"
 }
 
 export interface Agent extends AgentInput {
@@ -151,6 +152,8 @@ export interface Domain {
   context: string;
   agent_inputs: Record<string, AgentInputs>;
   default_workflow: string | null;
+  owned_tables: string[] | null;
+  owned_packages: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -166,6 +169,49 @@ export interface DomainUpdate {
   context?: string;
   agent_inputs?: Record<string, AgentInputs>;
   default_workflow?: string;
+  owned_tables?: string[];
+  owned_packages?: string[];
+}
+
+export type ContractStatus = "proposed" | "approved" | "provided-by-monolith" | "provided-by-service" | "deprecated";
+export const CONTRACT_STATUSES: ContractStatus[] = ["proposed", "approved", "provided-by-monolith", "provided-by-service", "deprecated"];
+
+export interface Contract {
+  key: string;
+  provider: string;
+  kind: "api" | "event" | "command";
+  name: string;
+  version: string;
+  description: string;
+  spec: string | null;
+  spec_path: string | null;
+  consumers: string[];
+  status: ContractStatus;
+  run_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Dependency {
+  id: number;
+  run_id: string;
+  interaction: string;
+  source: string; // calls / consumes
+  target: string; // provides
+  kind: string;
+  pattern: string;
+  contract: string | null;
+  status: string;
+  summary: string;
+  code_refs: string[];
+  created_at: string;
+  operation: string | null;
+}
+
+export interface DependencyMap {
+  domains: string[];
+  edges: { source: string; target: string; count: number; patterns: Record<string, number> }[];
+  order: { domain: string; reason: string }[];
 }
 
 export interface OperationDocs {
@@ -259,4 +305,8 @@ export const api = {
   updateDomain: (key: string, body: DomainUpdate) => request<Domain>(`/domains/${key}`, json("PUT", body)),
   deleteDomain: (key: string) => request<void>(`/domains/${key}`, { method: "DELETE" }),
   domainDocs: (key: string) => request<OperationDocs[]>(`/domains/${key}/docs`),
+  domainDependencies: (key: string) => request<Dependency[]>(`/domains/${key}/dependencies`),
+  dependencyMap: () => request<DependencyMap>("/domains/dependency-map"),
+  contracts: (domain?: string) => request<Contract[]>(`/contracts${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`),
+  updateContract: (key: string, status: ContractStatus) => request<Contract>(`/contracts/${encodeURIComponent(key)}`, json("PUT", { status })),
 };

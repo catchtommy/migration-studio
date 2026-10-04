@@ -9,6 +9,7 @@ import { AgentsPage } from "./pages/AgentsPage";
 import { Dashboard } from "./pages/Dashboard";
 import { DomainPage } from "./pages/DomainPage";
 import { DomainsPage } from "./pages/DomainsPage";
+import { ContractsPage } from "./pages/ContractsPage";
 import { RunPage } from "./pages/RunPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
@@ -51,6 +52,9 @@ function App() {
             <NavLink to="/workflows" className={navLink}>
               Workflows
             </NavLink>
+            <NavLink to="/contracts" className={navLink}>
+              Contracts
+            </NavLink>
             <NavLink to="/agents" className={navLink}>
               Agents
             </NavLink>
@@ -69,6 +73,7 @@ function App() {
           <Route path="/domains/:domainKey" element={<DomainPage />} />
           <Route path="/workflows" element={<WorkflowsPage />} />
           <Route path="/workflows/:workflowKey" element={<WorkflowsPage />} />
+          <Route path="/contracts" element={<ContractsPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/agents/:agentKey" element={<AgentsPage />} />
           <Route path="/settings" element={<SettingsPage />} />

@@ -20,8 +20,8 @@ _ids = itertools.count()
 def test_builtin_agents_are_editable_and_resettable(client):
     agents = client.get("/api/agents").json()
     assert [a["key"] for a in agents if a["builtin"]] == [
-        "as_is_doc", "deep_dive", "boundary_design", "modular_monolith", "microservice_scaffold",
-        "independent_tests", "modernise", "monolith_integration"]
+        "as_is_doc", "deep_dive", "boundary_design", "integration_design", "modular_monolith",
+        "microservice_scaffold", "independent_tests", "modernise", "monolith_integration"]
 
     body = {**builtin_default("deep_dive"), "instructions": "Focus on the batch jobs.", "outputs": ["notes.md"]}
     r = client.put("/api/agents/deep_dive", json=body)
@@ -175,7 +175,7 @@ def test_claude_agent_uses_tools_asks_and_writes_outputs(ctx, monkeypatch):
     assert "LoanController.java:2:" in first_results[0]["content"]
     assert "void approve()" in first_results[1]["content"]
     assert client.requests[2]["messages"][-1]["content"][0]["content"] == "It is in LoanService"
-    assert "have not been written yet" in client.requests[3]["messages"][-1]["content"]
+    assert "has not been written yet" in client.requests[3]["messages"][-1]["content"]
     assert any("Self-check" in line for line in logs)
     req = client.requests[0]
     assert req["model"] == llm.DEFAULT_MODEL and req["output_config"] == {"effort": "high"}  # "auto" → default

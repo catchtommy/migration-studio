@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import agent_store
-from app.api.schemas import DomainCreate, DomainOut, DomainSummary, DomainUpdate, OperationDocs
-from app.db.models import Artifact, Domain, Run, WorkflowDef
+from app import agent_store, contracts_store
+from app.api.schemas import (
+    DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, OperationDocs,
+)
+from app.db.models import Artifact, Dependency, Domain, Run, WorkflowDef
 from app.db.session import get_db
 from app.domain_store import normalize_inputs
 
@@ -29,6 +31,12 @@ def list_domains(db: Session = Depends(get_db)):
         summary.completed = counts.get((d.key, "completed"), 0)
         out.append(summary)
     return out
+
+
+@router.get("/dependency-map", response_model=DependencyMap)
+def dependency_map():
+    """Which domains depend on which (from approved integration designs), and a suggested migration order."""
+    return contracts_store.dependency_map()
 
 
 @router.post("", response_model=DomainOut, status_code=201)
@@ -56,6 +64,10 @@ def update_domain(key: str, body: DomainUpdate, db: Session = Depends(get_db)):
         if body.default_workflow and db.get(WorkflowDef, body.default_workflow) is None:
             raise HTTPException(422, f"Unknown workflow {body.default_workflow}")
         domain.default_workflow = body.default_workflow or None
+    for field in ("owned_tables", "owned_packages"):
+        values = getattr(body, field)
+        if values is not None:
+            setattr(domain, field, list(dict.fromkeys(v.strip() for v in values if v.strip())))
     if body.agent_inputs is not None:
         unknown = set(body.agent_inputs) - set(agent_store.titles())
         if unknown:
@@ -86,3 +98,13 @@ def domain_docs(key: str, db: Session = Depends(get_db)):
             latest[a.stage] = max(latest.get(a.stage, 0), a.attempt)
         out.append({"run": run, "artifacts": [a for a in artifacts if a.attempt == latest[a.stage]]})
     return out
+
+
+@router.get("/{key}/dependencies", response_model=list[DependencyOut])
+def domain_dependencies(key: str, db: Session = Depends(get_db)):
+    """Cross-domain interactions where this domain is either side, from approved integration designs."""
+    _domain_or_404(db, key)
+    rows = db.scalars(select(Dependency).where((Dependency.source == key) | (Dependency.target == key))
+                      .order_by(Dependency.id)).all()
+    operations = {r.id: r.operation for r in db.scalars(select(Run).where(Run.id.in_({d.run_id for d in rows})))}
+    return [DependencyOut.model_validate(d).model_copy(update={"operation": operations.get(d.run_id)}) for d in rows]

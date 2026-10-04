@@ -96,7 +96,7 @@ def test_copilot_agent_runs_the_stage_with_only_this_apps_tools(ctx):  # noqa: F
     assert kw["working_directory"] == str(ctx.workspace)
     assert ctx.config["instructions"] in kw["system_message"]["content"]
     assert kw["model"] == "gpt-5" and kw["reasoning_effort"] == "high"
-    assert "# as_is_doc: loan / approve" in session.prompts[0] and "have not been written yet" in session.prompts[1]
+    assert "# as_is_doc: loan / approve" in session.prompts[0] and "has not been written yet" in session.prompts[1]
     assert session.disconnected and asked == [("Where is the rule?", None)]
     assert "Read the code." in logs and any("Self-check" in line for line in logs)
 

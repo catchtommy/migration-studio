@@ -13,6 +13,11 @@ DEFAULTS: dict[str, Any] = {
     "jdk_legacy_home": "",  # JDK 8; each agent picks legacy or modern on the Agents page
     "jdk_modern_home": "",  # JDK 25
     "oracle_test_url": "",
+    # Cross-domain integration conventions given to agents (no secrets)
+    "event_bus_namespace": "",  # Azure Service Bus namespace, e.g. mycompany-migration.servicebus.windows.net
+    "event_topic_pattern": "{domain}-events",  # one topic per publishing domain
+    "command_queue_pattern": "{domain}-commands",  # saga commands
+    "service_dir_pattern": "services/{domain}-service",  # where each extracted service lives in the workspace
     # Corporate network (applied to the Copilot runtime; the proxy also to this backend's own downloads)
     "https_proxy": "",  # e.g. http://proxy.corp.example:8080
     "no_proxy": "",

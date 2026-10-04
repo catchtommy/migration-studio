@@ -14,7 +14,7 @@ from app.api.schemas import (
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import workflow_store
+from app import contracts_store, workflow_store
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
 from app.orchestrator.runner import RunBusyError, get_runner
@@ -82,6 +82,16 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db)):
             raise HTTPException(422, "Comments are required when rejecting")
         if body.target_stage and body.target_stage not in gate["reviews"]:
             raise HTTPException(422, f"target_stage must be one of {gate['reviews']}")
+    else:
+        # An approved design becomes part of the company-wide contracts catalogue before the run moves on.
+        try:
+            recorded = contracts_store.record_approved_design(run_id, list(gate["reviews"]))
+        except contracts_store.InvalidDocument as e:
+            raise HTTPException(422, f"The integration decisions can't be recorded: {e}. Edit the file or reject "
+                                     "the design.")
+        if recorded:
+            emit(run_id, "artifact", f"Recorded {recorded} cross-domain decision(s) in the contracts catalogue",
+                 gate["gate"])
 
     approval = Approval(run_id=run_id, gate=gate["gate"], decision=body.decision, comments=body.comments,
                         target_stage=body.target_stage if body.decision == "reject" else None,

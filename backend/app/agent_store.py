@@ -10,12 +10,16 @@ from app.db.models import Agent, Setting
 from app.db.session import engine, session_scope
 from app.orchestrator.stages import STANDARD
 
-FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instructions", "tools", "outputs", "max_turns")
+FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instructions", "tools", "outputs", "max_turns",
+          "checks")
+# Built-in agents added after the first release, keyed by the settings marker that records they were added once.
+LATER_BUILTINS = {"_added_integration_design": ["integration_design"]}
 BUILTIN = tuple(STANDARD.agent_keys)
 
 
 def _as_dict(row: Agent) -> dict[str, Any]:
-    return {"key": row.key, **{f: getattr(row, f) for f in FIELDS}, "builtin": row.key in BUILTIN,
+    return {"key": row.key, **{f: getattr(row, f) for f in FIELDS}, "checks": row.checks or [],
+            "builtin": row.key in BUILTIN,
             "created_at": row.created_at, "updated_at": row.updated_at}
 
 
@@ -27,7 +31,7 @@ def builtin_default(key: str) -> dict[str, Any]:
 def custom_default(key: str, title: str, description: str) -> dict[str, Any]:
     return {
         "title": title, "description": description, "mode": "stub", "model": default_config("deep_dive")["model"],
-        "effort": "high", "jdk": "legacy", "tools": list(DOCS), "outputs": [f"{key}.md"], "max_turns": 80,
+        "effort": "high", "jdk": "legacy", "tools": list(DOCS), "outputs": [f"{key}.md"], "max_turns": 80, "checks": [],
         "instructions": f"You are the {title} agent.\n\nDescribe what this agent should do, which code and documents "
                         "it should read, and what it must produce.",
     }
@@ -46,7 +50,10 @@ def seed() -> None:
     with session_scope() as s:
         if s.scalar(select(Agent).limit(1)) is not None:
             _models_to_auto(s)
+            _add_later_builtins(s)
             return
+        for marker in LATER_BUILTINS:  # a fresh database gets every built-in below
+            s.add(Setting(key=marker, value=True))
         legacy = _legacy_configs()
         old_settings = {row.key: row.value for row in s.query(Setting).filter(
             Setting.key.in_(["agent_mode", "agent_models", "agent_effort"]))}
@@ -65,6 +72,18 @@ def seed() -> None:
                 if "agent_effort" in old_settings:
                     config["effort"] = old_settings["agent_effort"]
             s.add(Agent(key=key, **config))
+
+
+def _add_later_builtins(s) -> None:
+    """Once per release: add built-in agents introduced since the database was created. A built-in the user deleted
+    afterwards is not re-added."""
+    for marker, keys in LATER_BUILTINS.items():
+        if s.get(Setting, marker) is not None:
+            continue
+        for key in keys:
+            if s.get(Agent, key) is None:
+                s.add(Agent(key=key, **builtin_default(key)))
+        s.add(Setting(key=marker, value=True))
 
 
 def _models_to_auto(s) -> None:
