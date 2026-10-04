@@ -6,6 +6,8 @@ import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
 import { slug } from "../lib/slug";
 import { normalizeSteps, type EditableStep } from "../lib/workflowSteps";
 import { Field, inputClass } from "../components/Field";
+import { PageTitle } from "../components/PageTitle";
+import { FlowIcon } from "../components/icons";
 
 let nextUid = 1;
 const editable = (steps: WorkflowStep[]): EditableStep[] => steps.map((s) => ({ ...s, uid: nextUid++ }));
@@ -37,7 +39,7 @@ function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[
   });
   return (
     <form
-      className="space-y-3 rounded-lg border border-border bg-surface p-4"
+      className="space-y-3 card p-4"
       onSubmit={(e) => {
         e.preventDefault();
         create.mutate();
@@ -154,7 +156,7 @@ function StepRow({ step, index, steps, agents, onChange, onMove, onRemove, onIns
   const isGate = step.kind === "gate";
 
   return (
-    <li className={`rounded-lg border bg-surface p-3 ${isGate ? "border-warn/40" : "border-border"}`}>
+    <li className={`rounded-xl border border-l-4 p-3 shadow-sm ${isGate ? "border-warn/40 border-l-warn bg-warn/5" : "border-border border-l-accent bg-surface"}`}>
       <div className="flex items-start gap-3">
         <span className="mt-1.5 w-5 shrink-0 text-right text-xs tabular-nums text-subtle">{index + 1}</span>
         <span className={`mt-2 h-3 w-3 shrink-0 border-2 ${isGate ? "rotate-45 rounded-[2px] border-warn" : "rounded-full border-accent"}`} />
@@ -410,17 +412,13 @@ export function WorkflowsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Workflows</h1>
-          <p className="mt-1 text-sm text-subtle">Agent steps and human approval gates, in order. Pick a workflow when starting a run, or set a default per domain.</p>
-        </div>
+      <PageTitle icon={<FlowIcon />} title="Workflows" subtitle="Agent steps and human approval gates, in order. Pick a workflow when starting a run, or set a default per domain." tone="from-amber-500 to-rose-500">
         {!adding && (
           <button onClick={() => setAdding(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
             New workflow
           </button>
         )}
-      </div>
+      </PageTitle>
       {adding && <NewWorkflowForm workflows={workflows} agents={agents} onCancel={() => setAdding(false)} />}
       <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
         <nav className="space-y-0.5 lg:sticky lg:top-4 lg:self-start">

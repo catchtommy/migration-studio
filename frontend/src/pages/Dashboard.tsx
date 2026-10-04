@@ -6,6 +6,22 @@ import { useDomains, useWorkflows } from "../lib/hooks";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { ProgressStrip } from "../components/ProgressStrip";
 import { StatusBadge } from "../components/StatusBadge";
+import { DomainAvatar } from "../components/DomainAvatar";
+import { PageTitle } from "../components/PageTitle";
+import { ActivityIcon, CheckIcon, ClockIcon, LayersIcon, MessageIcon } from "../components/icons";
+
+/** emphasis: text colour for the count when something is waiting on a person. */
+function StatTile({ label, value, icon, tone, emphasis }: { label: string; value: number; icon: React.ReactNode; tone: string; emphasis?: string }) {
+  return (
+    <div className="card flex items-center gap-3 p-4">
+      <span className={`flex h-10 w-10 items-center justify-center rounded-lg ${tone}`}>{icon}</span>
+      <div>
+        <p className={`text-2xl font-semibold tabular-nums leading-none ${emphasis ?? ""}`}>{value}</p>
+        <p className="mt-1 text-xs text-subtle">{label}</p>
+      </div>
+    </div>
+  );
+}
 
 function NewRunForm() {
   const navigate = useNavigate();
@@ -36,7 +52,7 @@ function NewRunForm() {
 
   return (
     <form
-      className="flex flex-wrap items-end gap-3 rounded-lg border border-border bg-surface p-4"
+      className="card flex flex-wrap items-end gap-3 border-t-4 border-t-accent p-4"
       onSubmit={(e) => {
         e.preventDefault();
         create.mutate();
@@ -116,16 +132,17 @@ export function Dashboard() {
   const domainName = (key: string) => domains.find((d) => d.key === key)?.name ?? key;
   const waiting = runs.filter((r) => r.status === "awaiting_approval").length;
   const needsInput = runs.filter((r) => r.status === "awaiting_input").length;
+  const completed = runs.filter((r) => r.status === "completed").length;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h1 className="text-2xl font-semibold">Migrations</h1>
-        <p className="text-sm text-subtle">
-          {runs.length} runs · {runs.filter((r) => r.status === "completed").length} completed ·{" "}
-          <span className={waiting ? "font-medium text-warn" : ""}>{waiting} awaiting approval</span>
-          {needsInput > 0 && <span className="font-medium text-warn"> · {needsInput} need input</span>}
-        </p>
+      <PageTitle icon={<LayersIcon />} title="Migrations" subtitle="Move the monolith to microservices, one domain operation at a time." />
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatTile label="Runs" value={runs.length} icon={<ActivityIcon />} tone="bg-accent/15 text-accent" />
+        <StatTile label="Completed" value={completed} icon={<CheckIcon />} tone="bg-ok/15 text-ok" />
+        <StatTile label="Awaiting approval" value={waiting} icon={<ClockIcon />} tone="bg-warn/15 text-warn" emphasis={waiting > 0 ? "text-warn" : undefined} />
+        <StatTile label="Need your input" value={needsInput} icon={<MessageIcon />} tone="bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-300" emphasis={needsInput > 0 ? "text-fuchsia-600 dark:text-fuchsia-300" : undefined} />
       </div>
 
       <NewRunForm />
@@ -136,14 +153,19 @@ export function Dashboard() {
         <div className="grid gap-4 md:grid-cols-2">
           {[...byDomain].map(([domain, domainRuns]) => {
             const done = domainRuns.filter((r) => r.status === "completed").length;
+            const pct = domainRuns.length ? Math.round((100 * done) / domainRuns.length) : 0;
             return (
-              <section key={domain} className="rounded-lg border border-border bg-surface">
-                <header className="flex items-center justify-between border-b border-border px-4 py-3">
-                  <Link to={`/domains/${domain}`} className="font-semibold hover:text-accent">
+              <section key={domain} className="card overflow-hidden">
+                <header className="flex items-center gap-3 border-b border-border px-4 py-3">
+                  <DomainAvatar name={domainName(domain)} domainKey={domain} />
+                  <Link to={`/domains/${domain}`} className="flex-1 font-semibold hover:text-accent">
                     {domainName(domain)}
                   </Link>
-                  <span className="text-xs text-subtle">
+                  <span className="text-right text-xs text-subtle">
                     {done}/{domainRuns.length} operations migrated
+                    <span className="mt-1 block h-1.5 w-28 overflow-hidden rounded-full bg-muted">
+                      <span className="block h-full rounded-full bg-gradient-to-r from-ok to-emerald-400" style={{ width: `${pct}%` }} />
+                    </span>
                   </span>
                 </header>
                 {domainRuns.length === 0 ? (

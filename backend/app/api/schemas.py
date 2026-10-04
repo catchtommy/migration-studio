@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.agents.defaults import EFFORTS, MODELS, TOOLS
+from app.agents.defaults import EFFORTS, TOOLS
 
 
 class ORM(BaseModel):
@@ -139,7 +139,7 @@ class AgentIn(BaseModel):
     title: str = Field(min_length=1, max_length=128)
     description: str = ""
     mode: Literal["stub", "llm"]
-    model: Literal[MODELS]
+    model: str = Field(min_length=1, max_length=128)  # provider model id, or "auto"
     effort: Literal[EFFORTS]
     jdk: Literal["legacy", "modern"]
     instructions: str = Field(min_length=1)
@@ -161,7 +161,6 @@ class AgentIn(BaseModel):
 class AgentOut(AgentIn):
     key: str
     builtin: bool
-    model: str  # may be a model no longer offered in the picker
     created_at: datetime
     updated_at: datetime
 
@@ -173,7 +172,8 @@ class AgentCreate(BaseModel):
 
 
 class AgentCatalog(BaseModel):
-    models: list[str]
+    provider: str
+    models: list[str]  # suggestions; "auto" first
     efforts: list[str]
     tools: list[dict[str, str]]
 

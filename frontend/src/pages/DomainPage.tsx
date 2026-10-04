@@ -7,6 +7,7 @@ import { ArtifactViewer } from "../components/ArtifactViewer";
 import { Field, inputClass } from "../components/Field";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { StatusBadge } from "../components/StatusBadge";
+import { DomainAvatar } from "../components/DomainAvatar";
 
 type Tab = "docs" | "inputs" | "details";
 const TABS: { key: Tab; label: string }[] = [
@@ -121,13 +122,13 @@ function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Agent[] }
         Every run in this domain passes these to its agents (whichever workflow it uses). Operation-specific entry points can be added when starting a run. Agents can still ask you questions while
         they work.
       </p>
-      <section className="rounded-lg border border-border bg-surface p-4">
+      <section className="card p-4">
         <Field label="Shared context (all agents)" hint="Module layout, naming conventions, schemas, known quirks: anything every stage should know.">
           <textarea rows={4} className={inputClass} value={form.context} onChange={(e) => setForm({ ...form, context: e.target.value })} />
         </Field>
       </section>
       {agents.map((s, i) => (
-        <section key={s.key} className="space-y-3 rounded-lg border border-border bg-surface p-4">
+        <section key={s.key} className="space-y-3 card p-4">
           <h3 className="font-semibold">
             <span className="mr-2 text-xs tabular-nums text-subtle">{i + 1}</span>
             {s.title}
@@ -242,11 +243,16 @@ export function DomainPage() {
         <Link to="/domains" className="text-sm text-subtle hover:text-fg">
           ← All domains
         </Link>
-        <div className="mt-2 flex flex-wrap items-baseline gap-3">
-          <h1 className="text-2xl font-semibold">{domain.name}</h1>
-          <code className="text-xs text-subtle">{domain.key}</code>
+        <div className="mt-3 flex items-center gap-3">
+          <DomainAvatar name={domain.name} domainKey={domain.key} size="h-11 w-11 text-lg" />
+          <div>
+            <div className="flex flex-wrap items-baseline gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight">{domain.name}</h1>
+              <code className="text-xs text-subtle">{domain.key}</code>
+            </div>
+            {domain.description && <p className="mt-0.5 max-w-3xl text-sm text-subtle">{domain.description}</p>}
+          </div>
         </div>
-        {domain.description && <p className="mt-1 max-w-3xl text-sm text-subtle">{domain.description}</p>}
       </div>
       <nav className="flex gap-4 border-b border-border text-sm">
         {TABS.map((t) => (

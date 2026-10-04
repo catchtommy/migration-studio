@@ -103,7 +103,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         try:
             if config is None:
                 raise RuntimeError(f"Agent {stage.key!r} no longer exists in the agent library")
-            outputs = get_agent(stage.key, config).run(ctx)
+            outputs = get_agent(stage.key, config, settings["ai_provider"]).run(ctx)
         except Exception as e:
             git_ops.reset_hard(ws, start_sha)  # leave a clean tree for the retry
             with session_scope() as s:

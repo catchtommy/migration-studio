@@ -16,6 +16,7 @@ export default {
         fg: token("fg"),
         subtle: token("subtle"),
         accent: token("accent"),
+        "accent-2": token("accent-2"),
         ok: token("ok"),
         warn: token("warn"),
         bad: token("bad"),

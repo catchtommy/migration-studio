@@ -1,10 +1,8 @@
 """Starting configuration for each stage's agent. Everything here can be changed on the Agents page;
 "Reset to default" restores these values."""
 
-OPUS = "claude-opus-5-5"
-SONNET = "claude-sonnet-5-5"
-FABLE = "claude-fable-5-1"
-MODELS = (OPUS, SONNET, FABLE)
+AUTO = "auto"  # let the AI provider choose the model
+CLAUDE_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 # Tool name -> one-line description shown in the UI. The schemas live in app/agents/tools.py.
@@ -127,7 +125,6 @@ OUTPUTS = {
     "monolith_integration": ["integration.md"],
 }
 
-_MODELS = {"as_is_doc": SONNET, "independent_tests": SONNET}
 _MODERN_JDK = {"modernise", "monolith_integration"}
 _ANALYSIS = {"as_is_doc", "deep_dive", "boundary_design"}
 
@@ -135,7 +132,7 @@ _ANALYSIS = {"as_is_doc", "deep_dive", "boundary_design"}
 def default_config(stage: str) -> dict:
     return {
         "mode": "stub",
-        "model": _MODELS.get(stage, OPUS),
+        "model": AUTO,
         "effort": "high",
         "jdk": "modern" if stage in _MODERN_JDK else "legacy",
         "instructions": INSTRUCTIONS[stage],

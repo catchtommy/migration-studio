@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import inspect, select, text
 
-from app.agents.defaults import DOCS, default_config
+from app.agents.defaults import AUTO, CLAUDE_MODELS, DOCS, default_config
 from app.db.models import Agent, Setting
 from app.db.session import engine, session_scope
 from app.orchestrator.stages import STANDARD
@@ -45,6 +45,7 @@ def seed() -> None:
     """On first start, create the built-in agents, keeping choices saved under older versions."""
     with session_scope() as s:
         if s.scalar(select(Agent).limit(1)) is not None:
+            _models_to_auto(s)
             return
         legacy = _legacy_configs()
         old_settings = {row.key: row.value for row in s.query(Setting).filter(
@@ -64,6 +65,16 @@ def seed() -> None:
                 if "agent_effort" in old_settings:
                     config["effort"] = old_settings["agent_effort"]
             s.add(Agent(key=key, **config))
+
+
+def _models_to_auto(s) -> None:
+    """Once: agents created with the old Claude-only defaults let the AI provider choose instead, since Copilot
+    model ids differ."""
+    if s.get(Setting, "_migrated_models_to_auto") is not None:
+        return
+    for agent in s.scalars(select(Agent).where(Agent.model.in_(CLAUDE_MODELS))):
+        agent.model = AUTO
+    s.add(Setting(key="_migrated_models_to_auto", value=True))
 
 
 def list_all() -> list[dict[str, Any]]:

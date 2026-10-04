@@ -23,7 +23,7 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
   if (isLoading || !artifact) return <p className="text-sm text-subtle">Loading artifact…</p>;
 
   return (
-    <div className="rounded-lg border border-border bg-surface">
+    <div className="card">
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <code className="truncate text-xs text-subtle">{artifact.path}</code>
         {editable && !editing && (

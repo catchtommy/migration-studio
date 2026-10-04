@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agents import llm
+from app.agents import common, llm
 from app.agents.base_agent import AgentContext
 from app.agent_store import builtin_default
 from app.agents.defaults import default_config
@@ -32,8 +32,8 @@ def test_builtin_agents_are_editable_and_resettable(client):
     assert reset["outputs"] == default_config("deep_dive")["outputs"]
 
 
-@pytest.mark.parametrize("change", [{"tools": ["rm_rf"]}, {"outputs": ["../escape.md"]}, {"model": "gpt"},
-                                    {"max_turns": 0}, {"title": ""}])
+@pytest.mark.parametrize("change", [{"tools": ["rm_rf"]}, {"outputs": ["../escape.md"]},
+                                    {"max_turns": 0}, {"title": ""}, {"model": ""}])
 def test_invalid_agent_config_is_refused(client, change):
     r = client.put("/api/agents/as_is_doc", json={**builtin_default("as_is_doc"), **change})
     assert r.status_code == 422
@@ -178,7 +178,7 @@ def test_claude_agent_uses_tools_asks_and_writes_outputs(ctx, monkeypatch):
     assert "have not been written yet" in client.requests[3]["messages"][-1]["content"]
     assert any("Self-check" in line for line in logs)
     req = client.requests[0]
-    assert req["model"] == ctx.config["model"] and req["output_config"] == {"effort": "high"}
+    assert req["model"] == llm.DEFAULT_MODEL and req["output_config"] == {"effort": "high"}  # "auto" → default
     assert ctx.config["instructions"] in req["system"]
     assert [t["name"] for t in req["tools"]] == ["list_files", "read_file", "search_code", "write_file", "ask_user"]
 
@@ -225,8 +225,8 @@ def test_claude_agent_brief_includes_earlier_documents(ctx, monkeypatch):
         PriorDocument("deep_dive", "Deep dive", "a/deep-dive.md", "x" * 50),
         PriorDocument("deep_dive", "Deep dive", "a/scenarios.md", None),
     ]
-    monkeypatch.setattr(llm, "INLINE_LIMIT", 30)
-    brief = llm._brief(ctx)
+    monkeypatch.setattr(common, "INLINE_LIMIT", 30)
+    brief = common.brief(ctx)
     assert '### AS-IS documentation\n<document path="a/as-is.md">\n# AS-IS\nflow\n</document>' in brief
     assert "- `a/deep-dive.md` (too large to include here; read it with read_file)" in brief
     assert "- `a/scenarios.md`" in brief

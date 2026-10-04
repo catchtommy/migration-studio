@@ -20,7 +20,7 @@ export function DiffView({ runId, executionId }: { runId: string; executionId: n
   if (error) return <p className="text-sm text-subtle">{(error as Error).message}</p>;
   if (!data?.diff) return <p className="text-sm text-subtle">No file changes in this attempt.</p>;
   return (
-    <pre className="overflow-x-auto rounded-lg border border-border bg-surface p-3 font-mono text-xs leading-5">
+    <pre className="overflow-x-auto card p-3 font-mono text-xs leading-5">
       {data.diff.split("\n").map((line, i) => (
         <div key={i} className={lineClass(line)}>
           {line || " "}

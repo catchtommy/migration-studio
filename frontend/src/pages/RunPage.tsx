@@ -9,6 +9,7 @@ import { QuestionPanel } from "../components/QuestionPanel";
 import { StageDetail } from "../components/StageDetail";
 import { StageTimeline } from "../components/StageTimeline";
 import { StatusBadge } from "../components/StatusBadge";
+import { DomainAvatar } from "../components/DomainAvatar";
 
 export function RunPage() {
   const { runId = "" } = useParams();
@@ -46,7 +47,8 @@ export function RunPage() {
           ← All migrations
         </Link>
         <div className="mt-2 flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold">
+          <DomainAvatar name={run.domain} domainKey={run.domain} />
+          <h1 className="text-2xl font-semibold tracking-tight">
             <span className="text-subtle">{run.domain} /</span> {run.operation}
           </h1>
           <StatusBadge status={run.status} />
@@ -92,7 +94,7 @@ export function RunPage() {
       )}
 
       <div className="grid gap-6 lg:grid-cols-[18rem_1fr]">
-        <aside className="lg:sticky lg:top-4 lg:self-start">
+        <aside className="card p-2 lg:sticky lg:top-4 lg:self-start">
           <StageTimeline
             stages={stages}
             run={run}

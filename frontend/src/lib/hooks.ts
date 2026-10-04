@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type AuditEvent } from "./api";
 
+export function useCopilotStatus() {
+  return useQuery({ queryKey: ["copilotStatus"], queryFn: api.copilotStatus, staleTime: 60_000 });
+}
+
 export function useAgents() {
   return useQuery({ queryKey: ["agents"], queryFn: api.agents });
 }

@@ -5,6 +5,8 @@ import { api, type Agent, type AgentCatalog, type AgentInput } from "../lib/api"
 import { useAgents, useWorkflows } from "../lib/hooks";
 import { slug } from "../lib/slug";
 import { Field, inputClass } from "../components/Field";
+import { PageTitle } from "../components/PageTitle";
+import { ChipIcon } from "../components/icons";
 
 function toInput(agent: Agent): AgentInput {
   const { key: _key, builtin: _builtin, created_at: _created, updated_at: _updated, ...rest } = agent;
@@ -28,7 +30,7 @@ function NewAgentForm({ onCancel }: { onCancel: () => void }) {
   });
   return (
     <form
-      className="space-y-3 rounded-lg border border-border bg-surface p-4"
+      className="space-y-3 card p-4"
       onSubmit={(e) => {
         e.preventDefault();
         create.mutate();
@@ -56,8 +58,8 @@ function NewAgentForm({ onCancel }: { onCancel: () => void }) {
 
 function ModeBadge({ mode }: { mode: string }) {
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${mode === "llm" ? "bg-accent/15 text-accent" : "bg-muted text-subtle"}`}>
-      {mode === "llm" ? "Claude" : "Stub"}
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${mode === "llm" ? "bg-gradient-to-r from-accent to-accent-2 text-white shadow-sm" : "bg-muted text-subtle"}`}>
+      {mode === "llm" ? "AI" : "Stub"}
     </span>
   );
 }
@@ -98,7 +100,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
   const dirty = JSON.stringify({ ...form, outputs: outputs.split("\n").map((o) => o.trim()).filter(Boolean) }) !== JSON.stringify(toInput(config));
   const toggleTool = (name: string) =>
     set("tools", form.tools.includes(name) ? form.tools.filter((t) => t !== name) : [...form.tools, name]);
-  const claude = form.mode === "llm";
+  const ai = form.mode === "llm";
 
   return (
     <form
@@ -157,22 +159,38 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
             onClick={() => set("mode", m)}
             className={`rounded px-3 py-1 ${form.mode === m ? "bg-fg text-bg" : "text-subtle hover:text-fg"}`}
           >
-            {m === "llm" ? "Claude" : "Stub"}
+            {m === "llm" ? "AI" : "Stub"}
           </button>
         ))}
       </div>
-      {!claude && <p className="text-sm text-subtle">The stub writes a placeholder document without calling Claude. Switch to Claude to run this agent for real.</p>}
+      <p className="text-sm text-subtle">
+        {ai ? (
+          <>
+            Runs with {catalog.provider === "copilot" ? "GitHub Copilot, using your account" : "the Claude API"} (
+            <Link to="/settings" className="text-accent hover:underline">
+              Settings
+            </Link>
+            ).
+          </>
+        ) : (
+          "The stub writes a placeholder document without calling an AI model. Switch to AI to run this agent for real."
+        )}
+      </p>
 
-      <div className={`space-y-6 ${claude ? "" : "opacity-60"}`}>
+      <div className={`space-y-6 ${ai ? "" : "opacity-60"}`}>
         <div className="grid gap-4 sm:grid-cols-4">
-          <Field label="Model">
-            <select className={inputClass} value={form.model} onChange={(e) => set("model", e.target.value)}>
-              {[...new Set([...catalog.models, form.model])].map((m) => (
-                <option key={m}>{m}</option>
+          <Field
+            label="Model"
+            hint={catalog.provider === "copilot" && catalog.models.length <= 1 ? "Sign in to Copilot to see your models" : "auto lets the provider choose"}
+          >
+            <input className={inputClass} list="model-options" value={form.model} onChange={(e) => set("model", e.target.value)} />
+            <datalist id="model-options">
+              {catalog.models.map((m) => (
+                <option key={m} value={m} />
               ))}
-            </select>
+            </datalist>
           </Field>
-          <Field label="Effort">
+          <Field label="Effort" hint="Used when the model supports it">
             <select className={inputClass} value={form.effort} onChange={(e) => set("effort", e.target.value)}>
               {catalog.efforts.map((v) => (
                 <option key={v}>{v}</option>
@@ -270,17 +288,13 @@ export function AgentsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Agents</h1>
-          <p className="mt-1 text-sm text-subtle">The agent library. Workflows use these agents as steps; changes apply to stages that start after saving.</p>
-        </div>
+      <PageTitle icon={<ChipIcon />} title="Agents" subtitle="The agent library. Workflows use these agents as steps; changes apply to stages that start after saving." tone="from-emerald-500 to-teal-500">
         {!adding && (
           <button onClick={() => setAdding(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
             New agent
           </button>
         )}
-      </div>
+      </PageTitle>
       {adding && <NewAgentForm onCancel={() => setAdding(false)} />}
       <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
         <nav className="space-y-0.5 lg:sticky lg:top-4 lg:self-start">

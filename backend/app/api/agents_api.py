@@ -3,7 +3,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import agent_store, workflow_store
-from app.agents.defaults import EFFORTS, MODELS, TOOLS
+from app import settings_store
+from app.agents.defaults import AUTO, CLAUDE_MODELS, EFFORTS, TOOLS
+from app.copilot_service import get_service
 from app.api.schemas import AgentCatalog, AgentCreate, AgentIn, AgentOut
 from app.db.models import Run
 from app.db.session import get_db
@@ -26,8 +28,10 @@ def create_agent(body: AgentCreate):
 
 @router.get("/catalog", response_model=AgentCatalog)
 def catalog():
-    """Choices offered by the agent editor."""
-    return {"models": list(MODELS), "efforts": list(EFFORTS),
+    """Choices offered by the agent editor. Copilot models depend on the signed-in account."""
+    provider = settings_store.get("ai_provider")
+    models = [m["id"] for m in get_service().models()] if provider == "copilot" else list(CLAUDE_MODELS)
+    return {"provider": provider, "models": [AUTO, *models], "efforts": list(EFFORTS),
             "tools": [{"name": k, "description": v} for k, v in TOOLS.items()]}
 
 

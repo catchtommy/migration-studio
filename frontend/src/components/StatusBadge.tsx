@@ -1,7 +1,7 @@
 const STYLES: Record<string, string> = {
   pending: "bg-muted text-subtle",
   running: "bg-accent/15 text-accent",
-  awaiting_input: "bg-warn/15 text-warn",
+  awaiting_input: "bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-300",
   awaiting_approval: "bg-warn/15 text-warn",
   completed: "bg-ok/15 text-ok",
   approved: "bg-ok/15 text-ok",

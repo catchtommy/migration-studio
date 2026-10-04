@@ -138,6 +138,7 @@ export interface Workflow {
 }
 
 export interface AgentCatalog {
+  provider: "copilot" | "claude";
   models: string[];
   efforts: string[];
   tools: { name: string; description: string }[];
@@ -173,6 +174,23 @@ export interface OperationDocs {
 }
 
 export type Settings = Record<string, unknown>;
+
+export interface CopilotStatus {
+  available: boolean; // the Copilot runtime started
+  signed_in: boolean;
+  login: string | null;
+  host: string | null;
+  auth_type: string | null;
+  message: string | null;
+}
+
+export interface LoginStep {
+  kind: "awaiting" | "completed" | "error" | "input-required" | "needs-interaction" | "open-url";
+  url: string | null;
+  prompt: string | null;
+  message: string | null;
+  result: { status: "completed" | "declined" | "needs-plaintext-consent"; host: string | null; login: string | null } | null;
+}
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -215,6 +233,12 @@ export const api = {
   questions: (runId: string) => request<Question[]>(`/runs/${runId}/questions`),
   answer: (questionId: number, answer: string, answered_by: string) =>
     request<Question>(`/questions/${questionId}/answer`, json("POST", { answer, answered_by })),
+  copilotStatus: () => request<CopilotStatus>("/copilot/status"),
+  copilotLogin: (kind: "github" | "entra") => request<{ flow_id: string; step: LoginStep }>("/copilot/login", json("POST", { kind })),
+  copilotLoginAdvance: (flowId: string, input?: string) => request<LoginStep>(`/copilot/login/${flowId}/advance`, json("POST", { input })),
+  copilotLoginCancel: (flowId: string) => request<void>(`/copilot/login/${flowId}`, { method: "DELETE" }),
+  copilotToken: (token: string, host: string) => request<CopilotStatus>("/copilot/token", json("POST", { token, host })),
+  copilotLogout: () => request<CopilotStatus>("/copilot/logout", { method: "POST" }),
   settings: () => request<Settings>("/settings"),
   updateSettings: (values: Settings) => request<Settings>("/settings", json("PUT", values)),
   agents: () => request<Agent[]>("/agents"),

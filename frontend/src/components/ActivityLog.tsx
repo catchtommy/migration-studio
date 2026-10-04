@@ -21,7 +21,7 @@ export function ActivityLog({ events, stage }: { events: AuditEvent[]; stage?: s
 
   if (shown.length === 0) return <p className="text-sm text-subtle">No activity yet.</p>;
   return (
-    <div className="max-h-[28rem] overflow-y-auto rounded-lg border border-border bg-surface p-3 font-mono text-xs leading-6">
+    <div className="max-h-[28rem] overflow-y-auto card p-3 font-mono text-xs leading-6">
       {shown.map((e) => (
         <div key={e.id} className="flex gap-3">
           <span className="shrink-0 tabular-nums text-subtle">{new Date(e.created_at).toLocaleTimeString()}</span>

@@ -5,6 +5,9 @@ import { api } from "../lib/api";
 import { useDomains } from "../lib/hooks";
 import { slug } from "../lib/slug";
 import { Field, inputClass } from "../components/Field";
+import { PageTitle } from "../components/PageTitle";
+import { GridIcon } from "../components/icons";
+import { DomainAvatar } from "../components/DomainAvatar";
 
 function NewDomainForm() {
   const navigate = useNavigate();
@@ -24,7 +27,7 @@ function NewDomainForm() {
 
   return (
     <form
-      className="space-y-3 rounded-lg border border-border bg-surface p-4"
+      className="space-y-3 card p-4"
       onSubmit={(e) => {
         e.preventDefault();
         create.mutate();
@@ -73,17 +76,13 @@ export function DomainsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Domains</h1>
-          <p className="mt-1 text-sm text-subtle">Tell each domain's agents where to look, and read the documentation they produced.</p>
-        </div>
+      <PageTitle icon={<GridIcon />} title="Domains" subtitle="Tell each domain's agents where to look, and read the documentation they produced." tone="from-sky-500 to-indigo-500">
         {!adding && (
           <button onClick={() => setAdding(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
             New domain
           </button>
         )}
-      </div>
+      </PageTitle>
       {adding && <NewDomainForm />}
       {isLoading || !domains ? (
         <p className="text-subtle">Loading…</p>
@@ -92,9 +91,10 @@ export function DomainsPage() {
           {domains.map((d) => {
             const configured = Object.values(d.agent_inputs).filter((i) => i.paths.length || i.notes).length;
             return (
-              <Link key={d.key} to={`/domains/${d.key}`} className="block space-y-2 rounded-lg border border-border bg-surface p-4 hover:border-accent/50">
-                <div className="flex items-baseline justify-between gap-2">
-                  <h2 className="font-semibold">{d.name}</h2>
+              <Link key={d.key} to={`/domains/${d.key}`} className="card block space-y-3 p-4 transition hover:-translate-y-0.5 hover:border-accent/50 hover:shadow-md">
+                <div className="flex items-center gap-3">
+                  <DomainAvatar name={d.name} domainKey={d.key} />
+                  <h2 className="flex-1 font-semibold">{d.name}</h2>
                   <code className="text-xs text-subtle">{d.key}</code>
                 </div>
                 <p className="line-clamp-2 min-h-10 text-sm text-subtle">{d.description || "No description."}</p>

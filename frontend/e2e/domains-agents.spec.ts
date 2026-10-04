@@ -43,13 +43,14 @@ test("an agent's configuration can be edited and reset", async ({ page }) => {
   await expect(instructions).toHaveValue(/test scenario catalogue/);
 
   await instructions.fill("Focus on the nightly batch jobs.");
-  await page.getByRole("radio", { name: "Claude" }).click();
+  await page.getByRole("radio", { name: "AI" }).click();
+  await expect(page.getByText("Runs with GitHub Copilot, using your account")).toBeVisible();
   await page.getByRole("button", { name: "Save agent" }).click();
   await expect(page.getByText("Saved. Applies from the next stage run.")).toBeVisible();
 
   await page.reload();
   await expect(page.getByLabel("Instructions")).toHaveValue("Focus on the nightly batch jobs.");
-  await expect(page.getByRole("link", { name: /Deep dive/ })).toContainText("Claude");
+  await expect(page.getByRole("link", { name: /Deep dive/ })).toContainText("AI");
 
   page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: "Reset to default" }).click();

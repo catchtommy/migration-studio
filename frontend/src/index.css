@@ -3,33 +3,57 @@
 @tailwind utilities;
 
 :root {
-  --bg: 248 249 251;
+  --bg: 246 247 252;
   --surface: 255 255 255;
-  --muted: 241 243 246;
-  --border: 226 229 234;
-  --fg: 20 24 31;
-  --subtle: 99 108 122;
-  --accent: 37 99 235;
-  --ok: 22 135 81;
-  --warn: 180 115 0;
-  --bad: 200 40 50;
+  --muted: 240 241 249;
+  --border: 224 226 238;
+  --fg: 22 23 42;
+  --subtle: 98 102 128;
+  --accent: 79 70 229; /* indigo */
+  --accent-2: 168 85 247; /* violet, the far end of the brand gradient */
+  --ok: 5 150 105;
+  --warn: 217 119 6;
+  --bad: 225 29 72;
+  --glow: 129 140 248;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: 13 16 21;
-    --surface: 21 25 32;
-    --muted: 30 35 44;
-    --border: 44 50 61;
-    --fg: 230 233 238;
-    --subtle: 146 154 167;
-    --accent: 96 145 255;
-    --ok: 74 200 130;
-    --warn: 235 175 60;
-    --bad: 240 100 105;
+    --bg: 12 13 24;
+    --surface: 21 22 38;
+    --muted: 31 33 54;
+    --border: 46 48 74;
+    --fg: 233 234 245;
+    --subtle: 151 154 184;
+    --accent: 129 140 248;
+    --accent-2: 192 132 252;
+    --ok: 52 211 153;
+    --warn: 251 191 36;
+    --bad: 251 113 133;
+    --glow: 99 102 241;
   }
 }
 
 body {
   @apply bg-bg text-fg font-sans antialiased;
+  /* A soft brand-coloured glow behind the top of every page. */
+  background-image:
+    radial-gradient(60rem 24rem at 15% -6rem, rgb(var(--glow) / 0.16), transparent 70%),
+    radial-gradient(50rem 22rem at 90% -8rem, rgb(var(--accent-2) / 0.12), transparent 70%);
+  background-repeat: no-repeat;
+  min-height: 100vh;
+}
+
+@layer components {
+  /* Raised panel used for most content blocks. */
+  .card {
+    @apply rounded-xl border border-border bg-surface shadow-sm shadow-accent/5;
+  }
+
+  /* Primary actions share the brand gradient. */
+  button.bg-accent,
+  a.bg-accent {
+    background-image: linear-gradient(135deg, rgb(var(--accent)), rgb(var(--accent-2)));
+    @apply shadow-sm shadow-accent/30 transition hover:brightness-110;
+  }
 }
