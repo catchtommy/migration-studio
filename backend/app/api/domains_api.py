@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import agent_store, contracts_store, discovery_store, workflow_store
+from app import agent_store, contracts_store, discovery_store, domain_store, workflow_store
 from app.api.discovery_api import start_features
 from app.api.schemas import (
     DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, FeatureCreate, FeatureIn,
@@ -86,13 +86,18 @@ def update_domain(key: str, body: DomainUpdate, db: Session = Depends(get_db)):
 
 
 @router.delete("/{key}", status_code=204)
-def delete_domain(key: str, db: Session = Depends(get_db)):
+def delete_domain(key: str, with_runs: bool = False, db: Session = Depends(get_db)):
+    """Delete a domain. One with runs (migrations or feature listings) is only deleted with_runs=true, which also
+    deletes the runs, their documents and workspaces, its features, dependencies and the contracts it provides."""
     domain = _domain_or_404(db, key)
-    if db.scalar(select(func.count()).where(Run.domain == key)):
-        raise HTTPException(409, "Domains with migration runs cannot be deleted")
-    db.query(Feature).filter(Feature.domain == key).delete()
-    db.delete(domain)
-    db.commit()
+    runs = db.scalar(select(func.count()).where(Run.domain == key))
+    if runs and not with_runs:
+        raise HTTPException(409, f"{domain.name} has {runs} run(s); delete it with its runs to remove them too")
+    db.close()
+    try:
+        domain_store.delete_with_runs(key)
+    except domain_store.DomainBusy as e:
+        raise HTTPException(409, str(e))
 
 
 @router.get("/{key}/docs", response_model=list[OperationDocs])

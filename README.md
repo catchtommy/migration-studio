@@ -103,6 +103,12 @@ from the **Discovery** panel on the Domains page.
    replaces the domain's feature list; features that are already being migrated are kept and marked *Not in latest
    list*.
 
+**Nothing starts until you've set it up.** *Find bounded contexts…*, *List features…* (a domain's Features tab, where
+a new domain opens) and *List features for all domains…* first show a setup step. It shows whether the agent is in
+*Stub* mode (sample results only) with a *Switch to AI* button, and the paths and notes to give it. For a domain these
+are saved as its *Domain features* inputs, so re-lists use them too. *Start* then begins the run, which pauses at its
+approval gate when the agent is done.
+
 **Migrations start from the feature list.** The New migration form picks a feature, and its entry points go to the
 agents unless you give others. A run for anything else is refused. You can also add, edit and remove features by
 hand on the Features tab, for example to correct the list.

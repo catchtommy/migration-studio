@@ -15,6 +15,12 @@ test("domain inputs and operation entry points reach the agents and show up in t
 
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   const domainKey = new URL(page.url()).pathname.split("/").pop()!;
+  // A new domain opens on its feature listing setup, not on a running listing.
+  const listing = page.getByRole("region", { name: "Set up feature listing" });
+  await expect(listing.getByRole("button", { name: "Start feature listing" })).toBeVisible();
+  await expect(listing.getByRole("note")).toContainText("Stub");
+  await listing.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Agent inputs", exact: true }).click();
   await page.getByLabel("Shared context (all agents)").fill("Tables live in the COLL schema");
   const asIs = page.locator("section", { has: page.getByRole("heading", { name: "AS-IS documentation" }) });
   await asIs.getByLabel("Where to look").fill("src/main/java/com/acme/collateral/**\nsqlmap/Collateral.xml");
@@ -35,6 +41,13 @@ test("domain inputs and operation entry points reach the agents and show up in t
   await expect(doc.getByText("Tables live in the COLL schema")).toBeVisible();
   await expect(doc.getByText("sqlmap/Collateral.xml")).toBeVisible();
   await expect(doc.getByText("CollateralController.value")).toBeVisible();
+
+  // A test domain with runs can be deleted with them, after typing its key.
+  await page.getByRole("button", { name: "Details", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept(domainKey));
+  await page.getByRole("button", { name: `Delete ${name} and its runs` }).click();
+  await expect(page).toHaveURL(/\/domains$/);
+  await expect(page.getByRole("link", { name: new RegExp(name) })).toHaveCount(0);
 });
 
 test("an agent's configuration can be edited and reset", async ({ page }) => {

@@ -14,10 +14,12 @@ test("bounded contexts, then a domain's features, then migrating a feature", asy
   // Step 1: the stub agent finds the known domains plus a "documents" context.
   await page.goto("/domains");
   const discovery = page.locator("section", { has: page.getByRole("heading", { name: "Discovery" }) });
-  // Point it at existing documentation in the monolith.
-  await discovery.getByRole("button", { name: /Where to look/ }).click();
-  await discovery.getByLabel("Where to look").fill("docs/architecture/*.md");
-  await discovery.getByRole("button", { name: /Find (bounded contexts|them again)/ }).click();
+  // Set it up first: the agent's mode is shown, and it can be pointed at existing documentation in the monolith.
+  await discovery.getByRole("button", { name: /Find (bounded contexts|them again)…/ }).click();
+  const setup = discovery.getByRole("region", { name: "Set up bounded contexts" });
+  await expect(setup.getByText(/Bounded contexts.*agent is in Stub mode/)).toBeVisible();
+  await setup.getByLabel("Where to look").fill("docs/architecture/*.md");
+  await setup.getByRole("button", { name: "Start" }).click();
   await discovery.getByRole("link", { name: /Bounded contexts.*Open/ }).click();
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Whole monolith · bounded contexts");
   await page.getByText("Paths and notes given to the agents").click();
@@ -29,7 +31,10 @@ test("bounded contexts, then a domain's features, then migrating a feature", asy
 
   // Step 2: the domain opens on its feature list; list (or re-list) the features and approve them.
   await expect(page.getByRole("button", { name: "Features", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: /^(List|Re-list) features$/ }).click();
+  await page.getByRole("button", { name: /^(List|Re-list) features…$/ }).click();
+  const listing = page.getByRole("region", { name: "Set up feature listing" });
+  await listing.getByLabel("Where to look").fill("docs/documents/*.md");
+  await listing.getByRole("button", { name: "Start feature listing" }).click();
   await page.getByRole("link", { name: /Feature listing.*Open/ }).click();
   await expect(page.getByRole("heading", { level: 1 })).toContainText("documents · feature list");
   await approveGate(page, "Approve feature list");

@@ -114,6 +114,10 @@ class Runner:
         elif not gate:
             emit(run_id, "status", "Migration run completed")
 
+    def forget(self, run_id: str) -> None:
+        """Drop a deleted run's checkpoints."""
+        self._saver.delete_thread(run_id)
+
     def shutdown(self) -> None:
         questions.shutting_down.set()  # agents waiting for an answer give up so their threads can finish
         self._pool.shutdown(wait=True, cancel_futures=True)

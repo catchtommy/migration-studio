@@ -11,6 +11,7 @@ import { DomainAvatar } from "../components/DomainAvatar";
 import { PATTERN_CELL, PATTERN_NAMES, PatternChip } from "../components/Chips";
 import { StatusBadge } from "../components/StatusBadge";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
+import { AgentModeNote } from "../components/AgentModeNote";
 
 const ACTIVE = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested"];
 const isActive = (run: RunBrief | null) => !!run && ACTIVE.includes(run.status);
@@ -46,14 +47,23 @@ function DiscoveryPanel() {
   };
   // Paths and notes for the bounded-contexts run (e.g. existing documentation); starts from the last run's.
   const [inputs, setInputs] = useState<typeof EMPTY_INPUTS | null>(null);
-  const [showInputs, setShowInputs] = useState(false);
+  const [setup, setSetup] = useState<"contexts" | "features" | null>(null);
   const shownInputs = inputs ?? data?.contexts_inputs ?? EMPTY_INPUTS;
   const given = { paths: shownInputs.paths.map((p) => p.trim()).filter(Boolean), notes: shownInputs.notes.trim() };
   const contexts = useMutation({
     mutationFn: () => api.discoverBoundedContexts(given.paths.length || given.notes ? given : undefined),
-    onSuccess: refresh,
+    onSuccess: () => {
+      setSetup(null);
+      refresh();
+    },
   });
-  const features = useMutation({ mutationFn: api.discoverAllFeatures, onSuccess: refresh });
+  const features = useMutation({
+    mutationFn: api.discoverAllFeatures,
+    onSuccess: () => {
+      setSetup(null);
+      refresh();
+    },
+  });
   if (!data) return null;
 
   const run = data.bounded_contexts;
@@ -79,24 +89,16 @@ function DiscoveryPanel() {
                 Bounded contexts <StatusBadge status={run.status} /> <span className="text-accent">Open →</span>
               </Link>
             ) : (
-              <button onClick={() => contexts.mutate()} disabled={contexts.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-                {data.contexts_approved ? "Find them again" : "Find bounded contexts"}
-              </button>
+              setup !== "contexts" && (
+                <button onClick={() => setSetup("contexts")} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
+                  {data.contexts_approved ? "Find them again…" : "Find bounded contexts…"}
+                </button>
+              )
             )}
             {run && !unfinished(run) && (
               <Link to={`/runs/${run.id}`} className="text-sm text-accent hover:underline">
                 Last result
               </Link>
-            )}
-            {!(run && unfinished(run)) && (
-              <button
-                type="button"
-                onClick={() => setShowInputs(!showInputs)}
-                aria-expanded={showInputs}
-                className="rounded-md px-2 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
-              >
-                {showInputs ? "Hide where to look" : `Where to look & notes${given.paths.length || given.notes ? ` (${given.paths.length} path${given.paths.length === 1 ? "" : "s"}${given.notes ? " + notes" : ""})` : ""}`}
-              </button>
             )}
           </div>
           {run && unfinished(run) && (
@@ -105,14 +107,25 @@ function DiscoveryPanel() {
               (the agent re-runs with them).
             </p>
           )}
-          {showInputs && !(run && unfinished(run)) && (
-            <InputsEditor
-              value={shownInputs}
-              onChange={setInputs}
-              pathsLabel="Where to look"
-              pathsHint="One per line, relative to the repository root: existing documentation (docs/**/*.md), an index file, key modules."
-              notesHint="E.g. which folders to ignore, domains you already know, or that the docs may be out of date and the code wins."
-            />
+          {setup === "contexts" && !(run && unfinished(run)) && (
+            <div role="region" className="space-y-3 rounded-md border border-border bg-bg p-3" aria-label="Set up bounded contexts">
+              <AgentModeNote agentKey="bounded_contexts" />
+              <InputsEditor
+                value={shownInputs}
+                onChange={setInputs}
+                pathsLabel="Where to look"
+                pathsHint="One per line, relative to the repository root: existing documentation (docs/**/*.md), an index file, key modules."
+                notesHint="E.g. which folders to ignore, domains you already know, or that the docs may be out of date and the code wins."
+              />
+              <div className="flex items-center gap-2">
+                <button onClick={() => contexts.mutate()} disabled={contexts.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+                  Start
+                </button>
+                <button onClick={() => setSetup(null)} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
           {contexts.error && <p className="text-sm text-bad">{(contexts.error as Error).message}</p>}
         </Step>
@@ -122,15 +135,30 @@ function DiscoveryPanel() {
             {listing > 0 && `, ${listing} being listed`}. Migrations start from these lists; review each one at its gate.
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => features.mutate()}
-              disabled={features.isPending || missing === 0}
-              className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-            >
-              List features for {missing === data.domains.length ? "all" : missing} domain{missing === 1 ? "" : "s"}
-            </button>
+            {setup !== "features" && (
+              <button onClick={() => setSetup("features")} disabled={missing === 0} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+                List features for {missing === data.domains.length ? "all" : missing} domain{missing === 1 ? "" : "s"}…
+              </button>
+            )}
             {!data.contexts_approved && <span className="text-xs text-warn">Best after step 1 is approved.</span>}
           </div>
+          {setup === "features" && (
+            <div role="region" className="space-y-3 rounded-md border border-border bg-bg p-3" aria-label="Set up feature listing">
+              <AgentModeNote agentKey="domain_features" />
+              <p className="text-sm text-subtle">
+                Each domain's run uses that domain's <em>Domain features</em> inputs (where to look and notes). To set them first, open a domain's Features tab and
+                use <strong>List features…</strong> there.
+              </p>
+              <div className="flex items-center gap-2">
+                <button onClick={() => features.mutate()} disabled={features.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+                  Start for {missing} domain{missing === 1 ? "" : "s"}
+                </button>
+                <button onClick={() => setSetup(null)} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           {features.error && <p className="text-sm text-bad">{(features.error as Error).message}</p>}
         </Step>
       </div>
@@ -150,7 +178,7 @@ function NewDomainForm() {
     mutationFn: () => api.createDomain({ key, name: name.trim(), description }),
     onSuccess: (d) => {
       queryClient.invalidateQueries({ queryKey: ["domains"] });
-      navigate(`/domains/${d.key}?tab=inputs`);
+      navigate(`/domains/${d.key}?tab=features&setup=1`);
     },
   });
 

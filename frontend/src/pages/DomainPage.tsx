@@ -289,9 +289,11 @@ function Details({ domain }: { domain: Domain }) {
     },
   });
   const remove = useMutation({
-    mutationFn: () => api.deleteDomain(domain.key),
+    mutationFn: () => api.deleteDomain(domain.key, true),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["domains"] });
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      queryClient.invalidateQueries({ queryKey: ["discovery"] });
       navigate("/domains");
     },
   });
@@ -333,16 +335,21 @@ function Details({ domain }: { domain: Domain }) {
       </form>
       <section className="space-y-2 border-t border-border pt-6">
         <h3 className="font-semibold">Delete domain</h3>
-        {runs > 0 ? (
-          <p className="text-sm text-subtle">This domain has {runs} migration run(s), so it cannot be deleted.</p>
-        ) : (
-          <button
-            className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10"
-            onClick={() => window.confirm(`Delete the ${domain.name} domain and its agent inputs?`) && remove.mutate()}
-          >
-            Delete {domain.name}
-          </button>
-        )}
+        <p className="text-sm text-subtle">
+          Deletes the domain with everything recorded for it: its migration and feature-listing runs (documents, approvals, workspaces), its feature list, its
+          cross-domain dependencies and the contracts it provides. This can't be undone.
+          {runs > 0 && ` It has ${runs} migration run${runs === 1 ? "" : "s"}.`}
+        </p>
+        <button
+          className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
+          disabled={remove.isPending}
+          onClick={() => {
+            const typed = window.prompt(`Type ${domain.key} to delete the ${domain.name} domain and all its runs.`);
+            if (typed?.trim() === domain.key) remove.mutate();
+          }}
+        >
+          Delete {domain.name} and its runs
+        </button>
         {remove.error && <p className="text-sm text-bad">{(remove.error as Error).message}</p>}
       </section>
     </div>

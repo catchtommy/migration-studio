@@ -377,7 +377,7 @@ export const api = {
   domain: (key: string) => request<Domain>(`/domains/${key}`),
   createDomain: (body: { key: string; name: string; description: string }) => request<Domain>("/domains", json("POST", body)),
   updateDomain: (key: string, body: DomainUpdate) => request<Domain>(`/domains/${key}`, json("PUT", body)),
-  deleteDomain: (key: string) => request<void>(`/domains/${key}`, { method: "DELETE" }),
+  deleteDomain: (key: string, withRuns = false) => request<void>(`/domains/${key}${withRuns ? "?with_runs=true" : ""}`, { method: "DELETE" }),
   domainDocs: (key: string) => request<OperationDocs[]>(`/domains/${key}/docs`),
   domainDependencies: (key: string) => request<Dependency[]>(`/domains/${key}/dependencies`),
   dependencyMap: () => request<DependencyMap>("/domains/dependency-map"),

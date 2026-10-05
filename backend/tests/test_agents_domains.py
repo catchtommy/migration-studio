@@ -307,3 +307,20 @@ def test_agent_is_saved_from_agent_md_text(client):
         r = client.put("/api/agents/modernise/agent-md", json={"content": f"---\n{bad}\n---\nGo\n"})
         assert r.status_code == 422 and reason in r.json()["detail"], (bad, r.json())
     assert client.post("/api/agents/modernise/reset").status_code == 200
+
+
+def test_domain_with_runs_is_deleted_only_with_its_runs(client):
+    key = f"scratch{next(_ids)}"
+    client.post("/api/domains", json={"key": key, "name": "Scratch"})
+    run = start_run(client, {"domain": key, "operation": "tryout"}).json()
+    run = wait_for(client, run["id"], {"awaiting_approval"})
+    listing = client.post(f"/api/domains/{key}/discover-features").json()
+    wait_for(client, listing["id"], {"awaiting_approval"})
+
+    r = client.delete(f"/api/domains/{key}")
+    assert r.status_code == 409 and "with its runs" in r.json()["detail"]
+    assert client.delete(f"/api/domains/{key}?with_runs=true").status_code == 204
+    assert client.get(f"/api/domains/{key}").status_code == 404
+    assert client.get(f"/api/runs/{run['id']}").status_code == 404
+    assert not Path(run["workspace"]).exists()
+    assert all(r["domain"] != key for r in client.get("/api/runs").json())

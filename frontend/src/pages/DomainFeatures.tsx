@@ -1,11 +1,65 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Domain, type Feature, type FeatureInput } from "../lib/api";
 import { useDomains } from "../lib/hooks";
 import { Field, inputClass } from "../components/Field";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
+import { AgentModeNote } from "../components/AgentModeNote";
+import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
+
+const FEATURES_AGENT = "domain_features";
+
+/** Before listing a domain's features: check the agent, and say where to look. The paths and notes are saved as the
+ * domain's inputs for the Domain features agent, so re-listing uses them too. */
+function ListingSetup({ domain, onStarted, onCancel }: { domain: Domain; onStarted: () => void; onCancel: () => void }) {
+  const queryClient = useQueryClient();
+  const saved = domain.agent_inputs[FEATURES_AGENT] ?? EMPTY_INPUTS;
+  const [inputs, setInputs] = useState(saved);
+  const clean = (i: typeof inputs) => ({ paths: i.paths.map((p) => p.trim()).filter(Boolean), notes: i.notes.trim() });
+  const start = useMutation({
+    mutationFn: async () => {
+      if (JSON.stringify(clean(inputs)) !== JSON.stringify(clean(saved))) {
+        const updated = await api.updateDomain(domain.key, { agent_inputs: { ...domain.agent_inputs, [FEATURES_AGENT]: clean(inputs) } });
+        queryClient.setQueryData(["domain", domain.key], updated);
+      }
+      return api.discoverFeatures(domain.key);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["discovery"] });
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      onStarted();
+    },
+  });
+  return (
+    <section className="card space-y-3 border-t-4 border-t-accent p-4" aria-label="Set up feature listing">
+      <div>
+        <h3 className="font-semibold">Set up the feature listing for {domain.name}</h3>
+        <p className="mt-0.5 text-sm text-subtle">
+          The agent lists every feature in the domain's code, then the run waits for you to review the list. Tell it where the domain's code and documentation are.
+        </p>
+      </div>
+      <AgentModeNote agentKey={FEATURES_AGENT} />
+      <InputsEditor
+        value={inputs}
+        onChange={setInputs}
+        pathsLabel="Where to look"
+        pathsHint="One per line, relative to the repository root: the domain's packages, controllers, sqlmaps, documentation (docs/loan/*.md). Saved for later re-lists."
+        notesHint="E.g. naming conventions, batch jobs to include, code that is no longer used."
+      />
+      <div className="flex items-center gap-2">
+        <button onClick={() => start.mutate()} disabled={start.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+          Start feature listing
+        </button>
+        <button onClick={onCancel} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
+          Cancel
+        </button>
+        {start.error && <span className="text-sm text-bad">{(start.error as Error).message}</span>}
+      </div>
+    </section>
+  );
+}
 
 const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
 const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "failed"];
@@ -149,7 +203,6 @@ function FeatureRow({ domain, feature, names, onEdit }: { domain: Domain; featur
 
 /** The domain's features: what its migrations pick from. Listed by the feature-listing workflow, or by hand. */
 export function DomainFeatures({ domain }: { domain: Domain }) {
-  const queryClient = useQueryClient();
   const { data: domains = [] } = useDomains();
   const names = new Map(domains.map((d) => [d.key, d.name]));
   const { data: discovery } = useQuery({
@@ -164,10 +217,12 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
     queryFn: () => api.features(domain.key),
   });
   const [editing, setEditing] = useState<string | null>(null); // feature key, or "" for a new one
-  const start = useMutation({
-    mutationFn: () => api.discoverFeatures(domain.key),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["discovery"] }),
-  });
+  const [params, setParams] = useSearchParams();
+  const [setup, setSetupOpen] = useState(params.get("setup") === "1"); // a new domain arrives here with it open
+  const closeSetup = () => {
+    setSetupOpen(false);
+    if (params.has("setup")) setParams({ tab: "features" }, { replace: true });
+  };
 
   return (
     <div className="space-y-4">
@@ -187,17 +242,20 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
             <span className="text-accent">Open →</span>
           </Link>
         ) : (
-          <button onClick={() => start.mutate()} disabled={start.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-            {features?.length ? "Re-list features" : "List features"}
-          </button>
+          !setup && (
+            <button onClick={() => setSetupOpen(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
+              {features?.length ? "Re-list features…" : "List features…"}
+            </button>
+          )
         )}
         {editing === null && (
           <button onClick={() => setEditing("")} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted">
             Add by hand
           </button>
         )}
-        {start.error && <p className="w-full text-sm text-bad">{(start.error as Error).message}</p>}
       </div>
+
+      {setup && !listingBusy && <ListingSetup domain={domain} onStarted={closeSetup} onCancel={closeSetup} />}
 
       {editing === "" && <FeatureForm domain={domain} onDone={() => setEditing(null)} />}
       {editing && features?.some((f) => f.key === editing) && (
@@ -208,7 +266,7 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
         <p className="text-sm text-subtle">Loading…</p>
       ) : features.length === 0 ? (
         <p className="text-sm text-subtle">
-          Features must be listed before any of {domain.name}'s operations can be migrated. Start with <strong>List features</strong>
+          Features must be listed before this domain's features can be migrated. Start with <strong>List features…</strong>
           {listing ? "" : ", ideally after the bounded contexts are approved on the Domains page"}.
         </p>
       ) : (
