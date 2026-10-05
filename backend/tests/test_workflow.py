@@ -3,14 +3,14 @@ from pathlib import Path
 
 from app.agents import stub
 from app.tools import git_ops
-from tests.conftest import wait_for
+from tests.conftest import start_run, wait_for
 
 GATES = ["gate_analysis", "gate_design", "gate_tests", "gate_release"]
 _ids = itertools.count()
 
 
 def new_run(client):
-    r = client.post("/api/runs", json={"domain": "customer", "operation": f"op{next(_ids)}"})
+    r = start_run(client, {"domain": "customer", "operation": f"op{next(_ids)}"})
     assert r.status_code == 201, r.text
     return r.json()["id"]
 
@@ -124,7 +124,50 @@ def test_manual_artifact_edit_is_committed(client):
 
 
 def test_duplicate_unfinished_run_is_refused(client):
-    r = client.post("/api/runs", json={"domain": "broker", "operation": "dup"})
+    r = start_run(client, {"domain": "broker", "operation": "dup"})
     assert r.status_code == 201
-    assert client.post("/api/runs", json={"domain": "broker", "operation": "dup"}).status_code == 409
+    assert start_run(client, {"domain": "broker", "operation": "dup"}).status_code == 409
     wait_for(client, r.json()["id"], {"awaiting_approval"})
+
+
+def test_rejection_can_be_held_for_amendments_before_the_rerun(client):
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    decide(client, run_id, decision="reject", comments="Cover the batch job too", target_stage="as_is_doc",
+           rerun="later")
+    run = client.get(f"/api/runs/{run_id}").json()
+    assert run["status"] == "changes_requested"
+    assert run["pending_rerun"] == {"gate": "gate_analysis", "target_stage": "as_is_doc",
+                                    "comments": "Cover the batch job too"}
+    assert run["pending_gate"]["gate"] == "gate_analysis"
+    assert len(executions(run, "as_is_doc")) == 1  # nothing re-ran yet
+    assert client.post(f"/api/runs/{run_id}/decision",
+                       json={"reviewer": "t", "decision": "approve"}).status_code == 409
+
+    # Amend while held: the run's inputs and a document; then re-run with refined comments.
+    r = client.put(f"/api/runs/{run_id}/inputs", json={"paths": ["BatchJob.java"], "notes": "Nightly batch"})
+    assert r.status_code == 200 and r.json()["inputs"]["paths"] == ["BatchJob.java"]
+    doc = next(a for a in client.get(f"/api/runs/{run_id}/artifacts").json() if a["stage"] == "deep_dive")
+    assert client.put(f"/api/artifacts/{doc['id']}", json={"content": "# edited\n"}).status_code == 200
+    r = client.post(f"/api/runs/{run_id}/rerun", json={"comments": "Cover BatchJob as well"})
+    assert r.status_code == 200, r.text
+    assert client.post(f"/api/runs/{run_id}/rerun", json={}).status_code == 409  # only once
+
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    attempts = executions(run, "as_is_doc")
+    assert len(attempts) == 2 and attempts[1]["feedback"] == "Cover BatchJob as well"
+    assert run["approvals"][-1]["comments"] == "Cover BatchJob as well" and run["pending_rerun"] is None
+    as_is = next(a for a in client.get(f"/api/runs/{run_id}/artifacts").json()
+                 if a["stage"] == "as_is_doc" and a["attempt"] == 2)
+    assert "BatchJob.java" in client.get(f"/api/artifacts/{as_is['id']}").json()["content"]  # new inputs used
+
+
+def test_held_rejection_can_be_withdrawn(client):
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    decide(client, run_id, decision="reject", comments="Hmm", rerun="later")
+    assert client.post(f"/api/runs/{run_id}/back-to-review").status_code == 200
+    run = client.get(f"/api/runs/{run_id}").json()
+    assert run["status"] == "awaiting_approval" and run["approvals"] == []
+    decide(client, run_id, decision="approve")
+    assert wait_for(client, run_id, {"awaiting_approval"})["pending_gate"]["gate"] == "gate_design"

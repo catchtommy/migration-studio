@@ -61,6 +61,31 @@ contracts:                          # new contracts, or changes to existing ones
     spec: contracts/customer.get-kyc-status.yaml   # OpenAPI (api) or AsyncAPI (event/command), relative to this file
 ```"""
 
+# Machine-readable discovery results. Validated before the agent finishes; approving the gate updates the domains
+# (bounded contexts) or the domain's feature list (features).
+BOUNDED_CONTEXTS_SCHEMA = """```yaml
+# bounded-contexts.yaml: every bounded context of the monolith
+contexts:
+  - key: loan                       # lower-case, letters, digits, - or _; becomes the domain key
+    name: Loan
+    description: Loan origination, approval and servicing
+    packages: [com.acme.loan]       # Java package prefixes it owns
+    tables: [LOAN, LOAN_SCHEDULE]   # tables it owns (one owner per table)
+    entry_points: [src/main/java/com/acme/web/LoanController.java]   # where its code starts
+    depends_on: [customer]          # other contexts it calls or reads from
+```"""
+
+FEATURES_SCHEMA = """```yaml
+# features.yaml: every feature (business operation) of this domain
+features:
+  - key: create-loan                # letters, digits, - or _; becomes the migration's operation name
+    name: Create loan
+    description: Captures a loan application and runs the eligibility checks
+    entry_points: [LoanController.create, /loan/create.do, LoanMapper.xml#insertLoan]
+    tables: [LOAN, LOAN_SCHEDULE]   # tables it reads or writes
+    calls: [customer]               # other domains it reaches into
+```"""
+
 _INTEGRATION_RULES = """Decision rules, in order:
 - side-effect (no answer needed) → event: publish a domain event through a transactional outbox to the provider's \
 Service Bus topic; consumers subscribe.
@@ -215,6 +240,46 @@ service's events that the monolith still needs.
 - Build the monolith and run its tests with the flag in both positions.
 
 Document how to switch the flag, rollback steps, and what to monitor after the switch.""",
+
+    "bounded_contexts": f"""You map a legacy monolith into bounded contexts, so that it can be migrated one domain at a \
+time. {_LEGACY}
+
+Survey the whole codebase: the package structure, controllers and URL mappings, services, DAOs, iBatis SQL maps and \
+the tables they use, Spring XML configuration and JSPs. Group the code by business capability, not by technical \
+layer. For each bounded context record:
+- What it does, in business terms.
+- The Java package prefixes and the tables it owns. Give every table exactly one owner; when two contexts write the \
+same table, pick the owner and note the conflict.
+- Where its code starts: controllers, scheduled jobs, message listeners.
+- The other contexts it depends on, and how (service calls, shared tables, shared transactions).
+
+The domains already known to Migration Studio are listed under "Known domains". Reuse a domain's key when a \
+context matches it, so its settings are kept.
+
+Write `bounded-contexts.md` (an overview, a section per context, a dependency summary, and shared code or tables \
+that don't fit one context) and `bounded-contexts.yaml` in this format:
+
+{BOUNDED_CONTEXTS_SCHEMA}
+
+Ask the user when the boundary between two contexts is a business decision rather than something the code shows.""",
+
+    "domain_features": f"""You list every feature of one domain of a legacy monolith, so that each can be migrated \
+on its own. {_LEGACY}
+
+A feature is one business operation a user or another system triggers: a screen action, an API call, a batch job or \
+a message handler, together with the code and SQL behind it. Use the domain's packages, tables and entry points \
+given below, and find every controller method, URL mapping, scheduled job and listener in the domain. Group request \
+mappings that serve one operation (for example the form and its submit) into one feature.
+
+For each feature record its entry points (class and method, URL, iBatis statement ids), the tables it reads or \
+writes, and the other domains it calls. Keys are short and stable, like `create-loan`; they become the names of \
+the migrations.
+
+Write `features.md` (a table of the features, then a short section per feature) and `features.yaml` in this format:
+
+{FEATURES_SCHEMA}
+
+Ask the user when you can't tell whether code belongs to this domain, or whether it is still in use.""",
 }
 
 OUTPUTS = {
@@ -227,10 +292,13 @@ OUTPUTS = {
     "independent_tests": ["test-report.md"],
     "modernise": ["modernisation.md"],
     "monolith_integration": ["integration.md"],
+    "bounded_contexts": ["bounded-contexts.md", "bounded-contexts.yaml"],
+    "domain_features": ["features.md", "features.yaml"],
 }
 
 _MODERN_JDK = {"modernise", "monolith_integration"}
-_ANALYSIS = {"as_is_doc", "deep_dive", "boundary_design", "integration_design"}
+_ANALYSIS = {"as_is_doc", "deep_dive", "boundary_design", "integration_design", "bounded_contexts",
+             "domain_features"}
 _BOUNDARY_CHECKED = {"microservice_scaffold", "modernise"}
 
 

@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from sqlalchemy import func, select
 
-from app import agent_store, contracts_store
+from app import agent_store, contracts_store, discovery_store
 from app.agents import get_agent
 from app.agents.base_agent import AgentContext, AgentInputs, PriorDocument
 from app.db.models import Artifact, Domain, Run, StageExecution, utcnow
@@ -36,13 +36,16 @@ def _inputs(run_id: str, stage: str) -> AgentInputs:
         run = s.get(Run, run_id)
         domain = s.get(Domain, run.domain)
         run_inputs = normalize_inputs(run.inputs)
+        label = "this operation" if (run.scope or "operation") == "operation" else "this discovery run"
         if domain is None:
-            return AgentInputs(domain_name=run.domain, run_paths=run_inputs["paths"], run_notes=run_inputs["notes"])
+            name = "Whole monolith" if run.domain == discovery_store.MONOLITH else run.domain
+            return AgentInputs(domain_name=name, run_paths=run_inputs["paths"], run_notes=run_inputs["notes"],
+                               run_label=label)
         stage_inputs = normalize_inputs((domain.agent_inputs or {}).get(stage))
         return AgentInputs(
             domain_name=domain.name, domain_description=domain.description, domain_context=domain.context,
             stage_paths=stage_inputs["paths"], stage_notes=stage_inputs["notes"],
-            run_paths=run_inputs["paths"], run_notes=run_inputs["notes"],
+            run_paths=run_inputs["paths"], run_notes=run_inputs["notes"], run_label=label,
         )
 
 
@@ -98,7 +101,8 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         except KeyError:
             config = None
         domain = state["domain"]
-        if contracts_store.export_specs(ws):
+        discovery = domain == discovery_store.MONOLITH or state["operation"] == discovery_store.FEATURES_OP
+        if not discovery and contracts_store.export_specs(ws):
             emit(run_id, "log", f"Copied the contracts catalogue's specs to {contracts_store.CATALOGUE_DIR}/",
                  stage.key)
         ctx = AgentContext(
@@ -108,7 +112,9 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             config=config or {}, stage_def=stage, inputs=_inputs(run_id, stage.key),
             previous_artifacts=_previous_artifacts(workflow, run_id, stage, ws),
             answered=questions.answered_for(run_id, stage.key),
-            catalogue=contracts_store.catalogue_brief(domain, settings), ownership=_ownership(),
+            catalogue=(discovery_store.domains_brief(domain) if discovery else
+                       contracts_store.catalogue_brief(domain, settings)),
+            ownership=_ownership(),
             service_dir=settings["service_dir_pattern"].format(domain=domain),
             ask=lambda question, options=None: questions.ask(run_id, stage.key, attempt, question, options),
         )
@@ -124,7 +130,8 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             emit(run_id, "error", f"{stage.title} failed: {e}", stage.key)
             raise
 
-        end_sha = git_ops.commit_all(ws, f"[{stage.key}] {state['domain']}/{state['operation']} attempt {attempt}")
+        end_sha = git_ops.commit_all(
+            ws, f"[{stage.key}] {discovery_store.subject(state['domain'], state['operation'])} attempt {attempt}")
         with session_scope() as s:
             for out in outputs:
                 s.add(Artifact(run_id=run_id, stage=stage.key, attempt=attempt, name=out.name, path=out.path,

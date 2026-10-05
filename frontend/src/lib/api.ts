@@ -1,4 +1,4 @@
-export type RunStatus = "pending" | "running" | "awaiting_input" | "awaiting_approval" | "completed" | "failed";
+export type RunStatus = "pending" | "running" | "awaiting_input" | "awaiting_approval" | "changes_requested" | "completed" | "failed";
 
 export interface StageDef {
   key: string;
@@ -10,10 +10,22 @@ export interface StageDef {
   include_content?: boolean;
 }
 
+export type Scope = "operation" | "domain" | "monolith";
+export const SCOPE_LABELS: Record<Scope, string> = {
+  operation: "Migration of one feature",
+  domain: "Feature listing of one domain",
+  monolith: "Bounded contexts of the whole monolith",
+};
+
+/** Reserved names of discovery runs (see backend app/discovery_store.py). */
+export const MONOLITH = "_monolith";
+export const FEATURES_OP = "_features";
+
 export interface Run {
   id: string;
   domain: string;
   operation: string;
+  scope: Scope; // operation: a migration of one feature; domain / monolith: discovery
   workflow: string | null;
   workflow_stages: StageDef[];
   status: RunStatus;
@@ -58,6 +70,7 @@ export interface RunDetail extends Run {
   stages: StageExecution[];
   approvals: Approval[];
   pending_gate: { gate: string; reviews: string[] } | null;
+  pending_rerun: { gate: string; target_stage: string; comments: string | null } | null; // rejection held for amendments
 }
 
 export interface ArtifactSummary {
@@ -117,6 +130,12 @@ export interface Agent extends AgentInput {
   updated_at: string;
 }
 
+/** Fields read from agent.md text; only those the text sets are present. */
+export type ParsedAgentFile = Partial<AgentInput> & { instructions: string; warnings: string[] };
+
+/** True when text starts with agent.md frontmatter (a pasted agent.md file). */
+export const looksLikeAgentMd = (text: string) => /^\s*---[ \t]*\n[\s\S]*?\n---[ \t]*(\n|$)/.test(text);
+
 export interface WorkflowStep {
   kind: "agent" | "gate";
   key: string;
@@ -131,6 +150,7 @@ export interface Workflow {
   key: string;
   name: string;
   description: string;
+  scope: Scope;
   steps: WorkflowStep[];
   stages: StageDef[];
   runs: number;
@@ -159,8 +179,54 @@ export interface Domain {
 }
 
 export interface DomainSummary extends Domain {
-  runs: number;
+  runs: number; // migration runs
   completed: number;
+  features: number;
+}
+
+export interface RunBrief {
+  id: string;
+  status: RunStatus;
+  current_stage: string | null;
+  created_at: string;
+}
+
+export interface FeatureInput {
+  name?: string;
+  description?: string;
+  entry_points?: string[];
+  tables?: string[];
+  calls?: string[];
+}
+
+export interface Feature {
+  key: string;
+  domain: string;
+  name: string;
+  description: string;
+  entry_points: string[];
+  tables: string[];
+  calls: string[]; // other domains it reaches into
+  run_id: string | null; // discovery run that listed it; null when added by hand
+  missing_from_latest: boolean; // kept because it is being migrated, though the latest list dropped it
+  migration: RunBrief | null; // latest migration run
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DiscoveryOverview {
+  bounded_contexts: RunBrief | null;
+  contexts_inputs: AgentInputs | null; // paths and notes the latest bounded-contexts run was given
+  contexts_approved: boolean;
+  domains: { key: string; name: string; features: number; run: RunBrief | null }[];
+  not_found: string[]; // domains the latest approved bounded contexts did not include
+}
+
+/** What a run covers, for headings: the whole monolith, a domain's feature list, or one feature. */
+export function runSubject(run: Pick<Run, "domain" | "operation">): string {
+  if (run.domain === MONOLITH) return "Whole monolith · bounded contexts";
+  if (run.operation === FEATURES_OP) return `${run.domain} · feature list`;
+  return `${run.domain} / ${run.operation}`;
 }
 
 export interface DomainUpdate {
@@ -269,8 +335,11 @@ export const api = {
   runs: () => request<Run[]>("/runs"),
   run: (id: string) => request<RunDetail>(`/runs/${id}`),
   createRun: (body: { domain: string; operation: string; workflow?: string; inputs?: AgentInputs }) => request<Run>("/runs", json("POST", body)),
-  decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; reviewer: string }) =>
+  decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; reviewer: string; rerun?: "now" | "later" }) =>
     request<Approval>(`/runs/${id}/decision`, json("POST", body)),
+  rerun: (id: string, body: { comments?: string; target_stage?: string }) => request<Run>(`/runs/${id}/rerun`, json("POST", body)),
+  backToReview: (id: string) => request<Run>(`/runs/${id}/back-to-review`, { method: "POST" }),
+  updateRunInputs: (id: string, inputs: AgentInputs) => request<RunDetail>(`/runs/${id}/inputs`, json("PUT", inputs)),
   retry: (id: string) => request<Run>(`/runs/${id}/retry`, { method: "POST" }),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
@@ -293,8 +362,13 @@ export const api = {
   updateAgent: (key: string, config: AgentInput) => request<Agent>(`/agents/${key}`, json("PUT", config)),
   resetAgent: (key: string) => request<Agent>(`/agents/${key}/reset`, { method: "POST" }),
   deleteAgent: (key: string) => request<void>(`/agents/${key}`, { method: "DELETE" }),
+  parseAgentMd: (content: string) => request<ParsedAgentFile>("/agents/parse-agent-md", json("POST", { content })),
+  agentMdUrl: (key: string) => `/api/agents/${key}/agent.md`,
+  renderAgentMd: (fields: AgentInput) => request<{ content: string }>("/agents/render-agent-md", json("POST", fields)),
+  saveAgentMd: (key: string, content: string) =>
+    request<{ agent: Agent; warnings: string[] }>(`/agents/${key}/agent-md`, json("PUT", { content })),
   workflows: () => request<Workflow[]>("/workflows"),
-  createWorkflow: (body: { key: string; name: string; description: string; copy_from?: string; steps?: WorkflowStep[] }) =>
+  createWorkflow: (body: { key: string; name: string; description: string; scope?: Scope; copy_from?: string; steps?: WorkflowStep[] }) =>
     request<Workflow>("/workflows", json("POST", body)),
   updateWorkflow: (key: string, body: { name?: string; description?: string; steps?: WorkflowStep[] }) =>
     request<Workflow>(`/workflows/${key}`, json("PUT", body)),
@@ -307,6 +381,17 @@ export const api = {
   domainDocs: (key: string) => request<OperationDocs[]>(`/domains/${key}/docs`),
   domainDependencies: (key: string) => request<Dependency[]>(`/domains/${key}/dependencies`),
   dependencyMap: () => request<DependencyMap>("/domains/dependency-map"),
+  features: (domain: string) => request<Feature[]>(`/domains/${domain}/features`),
+  addFeature: (domain: string, body: FeatureInput & { key: string; name: string }) =>
+    request<Feature>(`/domains/${domain}/features`, json("POST", body)),
+  updateFeature: (domain: string, key: string, body: FeatureInput) =>
+    request<Feature>(`/domains/${domain}/features/${encodeURIComponent(key)}`, json("PUT", body)),
+  deleteFeature: (domain: string, key: string) =>
+    request<void>(`/domains/${domain}/features/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  discovery: () => request<DiscoveryOverview>("/discovery"),
+  discoverBoundedContexts: (inputs?: AgentInputs) => request<Run>("/discovery/bounded-contexts", json("POST", { inputs })),
+  discoverFeatures: (domain: string) => request<Run>(`/domains/${domain}/discover-features`, { method: "POST" }),
+  discoverAllFeatures: () => request<Run[]>("/discovery/features", { method: "POST" }),
   contracts: (domain?: string) => request<Contract[]>(`/contracts${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`),
   updateContract: (key: string, status: ContractStatus) => request<Contract>(`/contracts/${encodeURIComponent(key)}`, json("PUT", { status })),
 };

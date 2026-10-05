@@ -8,9 +8,18 @@ from sqlalchemy import select
 from app import agent_store
 from app.db.models import Domain, Setting, WorkflowDef
 from app.db.session import session_scope
-from app.orchestrator.stages import STANDARD, StageDef, Workflow
+from app.orchestrator.stages import BOUNDED_CONTEXTS, DOMAIN_FEATURES, STANDARD, StageDef, Workflow
 
 STANDARD_KEY = "standard"
+# Built-in discovery workflows: (key, name, description, workflow), by scope.
+DISCOVERY = {
+    "monolith": ("discover_bounded_contexts", "Discover bounded contexts",
+                 "Find the monolith's bounded contexts, with their packages, tables and entry points.",
+                 BOUNDED_CONTEXTS),
+    "domain": ("list_features", "List domain features",
+               "List every feature of a domain, with its entry points, tables and calls to other domains.",
+               DOMAIN_FEATURES),
+}
 _GATE_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -44,13 +53,18 @@ def seed() -> None:
             s.add(WorkflowDef(key=STANDARD_KEY, name="Standard migration", steps=steps_of(STANDARD),
                               description=STANDARD_DESCRIPTION))
             s.add(Setting(key="_standard_workflow_v2", value=True))
-            return
-        if s.get(Setting, "_standard_workflow_v2") is None:
+        elif s.get(Setting, "_standard_workflow_v2") is None:
             # Upgrade the standard workflow only if nobody has changed it; customised ones are left alone.
             standard = s.get(WorkflowDef, STANDARD_KEY)
             if standard is not None and _shape(standard.steps) == _STANDARD_V1:
                 standard.steps, standard.description = steps_of(STANDARD), STANDARD_DESCRIPTION
             s.add(Setting(key="_standard_workflow_v2", value=True))
+        if s.get(Setting, "_added_discovery_workflows") is None:
+            for scope, (key, name, description, workflow) in DISCOVERY.items():
+                if s.get(WorkflowDef, key) is None:
+                    s.add(WorkflowDef(key=key, name=name, description=description, steps=steps_of(workflow),
+                                      scope=scope))
+            s.add(Setting(key="_added_discovery_workflows", value=True))
 
 
 def _slug(text: str) -> str:
@@ -129,6 +143,7 @@ def resolve(steps: list[dict]) -> Workflow:
 
 def _as_dict(row: WorkflowDef) -> dict[str, Any]:
     return {"key": row.key, "name": row.name, "description": row.description, "steps": row.steps,
+            "scope": row.scope or "operation",
             "stages": resolve(row.steps).to_dicts(), "created_at": row.created_at, "updated_at": row.updated_at}
 
 
@@ -145,12 +160,13 @@ def get(key: str) -> dict[str, Any]:
         return _as_dict(row)
 
 
-def create(key: str, name: str, description: str, steps: list[dict]) -> dict[str, Any]:
+def create(key: str, name: str, description: str, steps: list[dict], scope: str = "operation") -> dict[str, Any]:
     steps = validate(steps)
     with session_scope() as s:
         if s.get(WorkflowDef, key) is not None:
             raise WorkflowInvalid(f"A workflow with key {key} already exists")
-        s.add(WorkflowDef(key=key, name=name, description=description, steps=steps))
+        s.add(WorkflowDef(key=key, name=name, description=description, steps=steps,
+                          scope=None if scope == "operation" else scope))
     return get(key)
 
 
@@ -173,8 +189,10 @@ def delete(key: str) -> None:
         row = s.get(WorkflowDef, key)
         if row is None:
             raise KeyError(key)
-        if s.query(WorkflowDef).count() == 1:
-            raise WorkflowInvalid("The last workflow cannot be deleted")
+        scope = row.scope or "operation"
+        if sum(1 for w in s.scalars(select(WorkflowDef)) if (w.scope or "operation") == scope) == 1:
+            raise WorkflowInvalid("The last migration workflow cannot be deleted" if scope == "operation" else
+                                  "The last discovery workflow of its kind cannot be deleted")
         s.query(Domain).filter(Domain.default_workflow == key).update({Domain.default_workflow: None})
         s.delete(row)
 
@@ -186,11 +204,20 @@ def using_agent(agent_key: str) -> list[str]:
                 if any(st["kind"] == "agent" and st["key"] == agent_key for st in w.steps)]
 
 
-def default_for(domain: Domain | None) -> str | None:
+def scope_of(key: str) -> str | None:
     with session_scope() as s:
-        if domain is not None and domain.default_workflow and s.get(WorkflowDef, domain.default_workflow):
+        row = s.get(WorkflowDef, key)
+        return None if row is None else row.scope or "operation"
+
+
+def default_for(domain: Domain | None, scope: str = "operation") -> str | None:
+    """The workflow a new run of this scope uses: for migrations the domain's default, otherwise the built-in one,
+    otherwise the first one created."""
+    with session_scope() as s:
+        rows = [w for w in s.scalars(select(WorkflowDef).order_by(WorkflowDef.created_at))
+                if (w.scope or "operation") == scope]
+        keys = [w.key for w in rows]
+        if scope == "operation" and domain is not None and domain.default_workflow in keys:
             return domain.default_workflow
-        if s.get(WorkflowDef, STANDARD_KEY):
-            return STANDARD_KEY
-        first = s.scalar(select(WorkflowDef).order_by(WorkflowDef.created_at).limit(1))
-        return first.key if first else None
+        preferred = STANDARD_KEY if scope == "operation" else DISCOVERY[scope][0]
+        return preferred if preferred in keys else (keys[0] if keys else None)

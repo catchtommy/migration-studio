@@ -2,7 +2,8 @@
 
 Workflows are edited on the Workflows page (see app/workflow_store.py); each run keeps a snapshot of the workflow it
 started with. STANDARD is the built-in migration workflow, seeded on first start and used by runs created before
-workflows were editable.
+workflows were editable. BOUNDED_CONTEXTS and DOMAIN_FEATURES are the built-in discovery workflows that come before
+any migration: find the monolith's bounded contexts, then list each domain's features.
 """
 
 from collections.abc import Iterable
@@ -94,3 +95,23 @@ STANDARD = Workflow((
              "Final review of the modernised service and monolith integration.",
              ("modernise", "monolith_integration")),
 ))
+
+BOUNDED_CONTEXTS = Workflow((
+    StageDef("bounded_contexts", "Bounded contexts", "agent",
+             "Find the monolith's bounded contexts: what each one does, the packages and tables it owns, and where "
+             "its code starts."),
+    StageDef("gate_bounded_contexts", "Approve bounded contexts", "gate",
+             "Review the bounded contexts. Approving adds new ones as domains and fills in their ownership.",
+             ("bounded_contexts",)),
+))
+
+DOMAIN_FEATURES = Workflow((
+    StageDef("domain_features", "Domain features", "agent",
+             "List every feature of the domain, with its entry points, tables and calls to other domains."),
+    StageDef("gate_features", "Approve feature list", "gate",
+             "Review the feature list. Approving makes these features available to migrate.", ("domain_features",)),
+))
+
+# Agent stages of every built-in workflow: the built-in agents.
+BUILTIN_STAGES = {s.key: s for w in (BOUNDED_CONTEXTS, DOMAIN_FEATURES, STANDARD) for s in w.stages
+                  if s.kind == "agent"}

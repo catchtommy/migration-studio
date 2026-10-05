@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, type RunBrief } from "../lib/api";
 import { useDomains } from "../lib/hooks";
 import { slug } from "../lib/slug";
 import { Field, inputClass } from "../components/Field";
@@ -9,6 +9,134 @@ import { PageTitle } from "../components/PageTitle";
 import { GridIcon } from "../components/icons";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { PATTERN_CELL, PATTERN_NAMES, PatternChip } from "../components/Chips";
+import { StatusBadge } from "../components/StatusBadge";
+import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
+
+const ACTIVE = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested"];
+const isActive = (run: RunBrief | null) => !!run && ACTIVE.includes(run.status);
+const unfinished = (run: RunBrief | null) => !!run && run.status !== "completed";
+
+function Step({ n, title, done, children }: { n: number; title: string; done: boolean; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-3">
+      <span
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${done ? "bg-ok/15 text-ok" : "bg-accent/15 text-accent"}`}
+      >
+        {done ? "✓" : n}
+      </span>
+      <div className="min-w-0 flex-1 space-y-2">
+        <h3 className="font-semibold">{title}</h3>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Before migrating: find the bounded contexts, then list each domain's features. */
+function DiscoveryPanel() {
+  const queryClient = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ["discovery"],
+    queryFn: api.discovery,
+    refetchInterval: (q) => (q.state.data && (isActive(q.state.data.bounded_contexts) || q.state.data.domains.some((d) => isActive(d.run))) ? 3000 : false),
+  });
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ["discovery"] });
+    queryClient.invalidateQueries({ queryKey: ["runs"] });
+  };
+  // Paths and notes for the bounded-contexts run (e.g. existing documentation); starts from the last run's.
+  const [inputs, setInputs] = useState<typeof EMPTY_INPUTS | null>(null);
+  const [showInputs, setShowInputs] = useState(false);
+  const shownInputs = inputs ?? data?.contexts_inputs ?? EMPTY_INPUTS;
+  const given = { paths: shownInputs.paths.map((p) => p.trim()).filter(Boolean), notes: shownInputs.notes.trim() };
+  const contexts = useMutation({
+    mutationFn: () => api.discoverBoundedContexts(given.paths.length || given.notes ? given : undefined),
+    onSuccess: refresh,
+  });
+  const features = useMutation({ mutationFn: api.discoverAllFeatures, onSuccess: refresh });
+  if (!data) return null;
+
+  const run = data.bounded_contexts;
+  const listed = data.domains.filter((d) => d.features > 0).length;
+  const listing = data.domains.filter((d) => isActive(d.run)).length;
+  const missing = data.domains.filter((d) => d.features === 0 && !unfinished(d.run)).length;
+
+  return (
+    <section className="card space-y-4 border-t-4 border-t-accent p-4">
+      <div>
+        <h2 className="font-semibold">Discovery</h2>
+        <p className="mt-0.5 text-sm text-subtle">Map the monolith before migrating it. Each step is a workflow run with an approval gate; approving it updates the domains below.</p>
+      </div>
+      <div className="grid gap-5 md:grid-cols-2">
+        <Step n={1} title="Find the bounded contexts" done={data.contexts_approved}>
+          <p className="text-sm text-subtle">
+            Groups the monolith's code and tables by business capability. Approving adds new contexts as domains and fills in their packages, tables and entry points; no
+            domain is deleted.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {run && unfinished(run) ? (
+              <Link to={`/runs/${run.id}`} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted">
+                Bounded contexts <StatusBadge status={run.status} /> <span className="text-accent">Open →</span>
+              </Link>
+            ) : (
+              <button onClick={() => contexts.mutate()} disabled={contexts.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+                {data.contexts_approved ? "Find them again" : "Find bounded contexts"}
+              </button>
+            )}
+            {run && !unfinished(run) && (
+              <Link to={`/runs/${run.id}`} className="text-sm text-accent hover:underline">
+                Last result
+              </Link>
+            )}
+            {!(run && unfinished(run)) && (
+              <button
+                type="button"
+                onClick={() => setShowInputs(!showInputs)}
+                aria-expanded={showInputs}
+                className="rounded-md px-2 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
+              >
+                {showInputs ? "Hide where to look" : `Where to look & notes${given.paths.length || given.notes ? ` (${given.paths.length} path${given.paths.length === 1 ? "" : "s"}${given.notes ? " + notes" : ""})` : ""}`}
+              </button>
+            )}
+          </div>
+          {run && unfinished(run) && (
+            <p className="text-xs text-subtle">
+              <em>Where to look & notes</em> is set when a run starts. Finish this one first: approve it, or reject it with comments naming the documentation to read
+              (the agent re-runs with them).
+            </p>
+          )}
+          {showInputs && !(run && unfinished(run)) && (
+            <InputsEditor
+              value={shownInputs}
+              onChange={setInputs}
+              pathsLabel="Where to look"
+              pathsHint="One per line, relative to the repository root: existing documentation (docs/**/*.md), an index file, key modules."
+              notesHint="E.g. which folders to ignore, domains you already know, or that the docs may be out of date and the code wins."
+            />
+          )}
+          {contexts.error && <p className="text-sm text-bad">{(contexts.error as Error).message}</p>}
+        </Step>
+        <Step n={2} title="List each domain's features" done={data.domains.length > 0 && listed === data.domains.length}>
+          <p className="text-sm text-subtle">
+            {listed} of {data.domains.length} domains have a feature list
+            {listing > 0 && `, ${listing} being listed`}. Migrations start from these lists; review each one at its gate.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => features.mutate()}
+              disabled={features.isPending || missing === 0}
+              className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              List features for {missing === data.domains.length ? "all" : missing} domain{missing === 1 ? "" : "s"}
+            </button>
+            {!data.contexts_approved && <span className="text-xs text-warn">Best after step 1 is approved.</span>}
+          </div>
+          {features.error && <p className="text-sm text-bad">{(features.error as Error).message}</p>}
+        </Step>
+      </div>
+    </section>
+  );
+}
 
 function NewDomainForm() {
   const navigate = useNavigate();
@@ -155,6 +283,7 @@ function MigrationOverview({ names }: { names: Map<string, string> }) {
 
 export function DomainsPage() {
   const { data: domains, isLoading } = useDomains();
+  const { data: discovery } = useQuery({ queryKey: ["discovery"], queryFn: api.discovery });
   const [adding, setAdding] = useState(false);
 
   return (
@@ -167,6 +296,7 @@ export function DomainsPage() {
         )}
       </PageTitle>
       {adding && <NewDomainForm />}
+      <DiscoveryPanel />
       {domains && <MigrationOverview names={new Map(domains.map((d) => [d.key, d.name]))} />}
       {isLoading || !domains ? (
         <p className="text-subtle">Loading…</p>
@@ -174,6 +304,7 @@ export function DomainsPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {domains.map((d) => {
             const configured = Object.values(d.agent_inputs).filter((i) => i.paths.length || i.notes).length;
+            const listing = discovery?.domains.find((x) => x.key === d.key)?.run;
             return (
               <Link key={d.key} to={`/domains/${d.key}`} className="card block space-y-3 p-4 transition hover:-translate-y-0.5 hover:border-accent/50 hover:shadow-md">
                 <div className="flex items-center gap-3">
@@ -181,10 +312,18 @@ export function DomainsPage() {
                   <h2 className="flex-1 font-semibold">{d.name}</h2>
                   <code className="text-xs text-subtle">{d.key}</code>
                 </div>
+                {discovery?.not_found.includes(d.key) && (
+                  <span
+                    className="inline-block rounded-full bg-warn/15 px-2 py-0.5 text-xs font-medium text-warn"
+                    title="The latest approved bounded contexts don't include this domain. Check whether it should stay."
+                  >
+                    Not found by discovery
+                  </span>
+                )}
                 <p className="line-clamp-2 min-h-10 text-sm text-subtle">{d.description || "No description."}</p>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-subtle">
-                  <span>
-                    {d.completed}/{d.runs} operations migrated
+                  <span className={d.features ? "" : "text-warn"}>
+                    {d.features ? `${d.completed}/${d.features} features migrated` : isActive(listing ?? null) ? "Listing features…" : "No features listed"}
                   </span>
                   <span className={configured || d.context ? "" : "text-warn"}>
                     {configured || d.context ? `Inputs for ${configured} agent${configured === 1 ? "" : "s"}${d.context ? " + shared context" : ""}` : "No agent inputs yet"}

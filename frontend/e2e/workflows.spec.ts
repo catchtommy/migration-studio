@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { newMigration } from "./helpers";
 
 test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this mode");
 
@@ -25,10 +26,8 @@ test("a workflow built in the UI drives a run, including its approval gate", asy
   await page.getByRole("button", { name: "Save workflow" }).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
 
-  await page.goto("/");
-  await page.getByLabel("Domain").selectOption("broker");
+  await newMigration(page, "broker", `wfOp${Date.now()}`);
   await page.getByLabel("Workflow").selectOption({ label: name });
-  await page.getByLabel("Operation").fill(`wfOp${Date.now()}`);
   await page.getByRole("button", { name: "Start migration" }).click();
 
   await expect(page.getByText(`${name} workflow`)).toBeVisible();

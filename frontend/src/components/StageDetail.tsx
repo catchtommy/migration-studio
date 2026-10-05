@@ -37,7 +37,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
 
   const execution = attempts[attemptIdx];
   const isLatest = attemptIdx === attempts.length - 1;
-  const editable = isLatest && run.status === "awaiting_approval" && !!run.pending_gate?.reviews.includes(stage.key);
+  const editable = isLatest && (run.status === "awaiting_approval" || run.status === "changes_requested") && !!run.pending_gate?.reviews.includes(stage.key);
   const shown = artifacts.filter((a) => a.stage === stage.key && a.attempt === execution?.attempt);
   const gateApprovals = run.approvals.filter((a) => a.gate === stage.key);
   const title = (key: string) => stages.find((s) => s.key === key)?.title ?? key;
@@ -48,7 +48,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
       <header>
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold">{stage.title}</h2>
-          <StatusBadge status={status} />
+          <StatusBadge status={run.status === "changes_requested" && run.pending_rerun?.gate === stage.key ? "changes_requested" : status} />
         </div>
         <p className="mt-1 text-sm text-subtle">{stage.description}</p>
         {stage.kind === "agent" && <StageInputs stage={stage} stages={stages} />}

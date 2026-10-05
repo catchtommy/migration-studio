@@ -11,12 +11,13 @@ export function ApprovalPanel({ runId, gate, stages }: { runId: string; gate: { 
   const title = (key: string) => stages.find((s) => s.key === key)?.title ?? key;
 
   const decide = useMutation({
-    mutationFn: (decision: "approve" | "reject") =>
+    mutationFn: ({ decision, rerun }: { decision: "approve" | "reject"; rerun?: "now" | "later" }) =>
       api.decide(runId, {
         decision,
         reviewer,
         comments: comments || undefined,
         target_stage: decision === "reject" ? target : undefined,
+        rerun,
       }),
     onSuccess: () => {
       setComments("");
@@ -28,7 +29,8 @@ export function ApprovalPanel({ runId, gate, stages }: { runId: string; gate: { 
     <section className="rounded-lg border border-warn/40 bg-warn/5 p-4">
       <h2 className="font-semibold">👤 {title(gate.gate)}</h2>
       <p className="mt-1 text-sm text-subtle">
-        Review the output of {gate.reviews.map(title).join(", ")} in the timeline. You can edit artifacts before approving.
+        Review the output of {gate.reviews.map(title).join(", ")} in the timeline. You can edit artifacts before approving. To change the agent, its inputs or the
+        documents before the re-run, choose <em>Reject, amend first</em>.
       </p>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-[12rem_1fr]">
@@ -70,14 +72,22 @@ export function ApprovalPanel({ runId, gate, stages }: { runId: string; gate: { 
         <button
           className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
           disabled={!reviewer || !comments || decide.isPending}
-          onClick={() => decide.mutate("reject")}
+          onClick={() => decide.mutate({ decision: "reject", rerun: "later" })}
+          title="Hold the run so you can change the agent, the inputs or the documents, then re-run when ready"
         >
-          Reject &amp; re-run
+          Reject, amend first
+        </button>
+        <button
+          className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
+          disabled={!reviewer || !comments || decide.isPending}
+          onClick={() => decide.mutate({ decision: "reject", rerun: "now" })}
+        >
+          Reject &amp; re-run now
         </button>
         <button
           className="rounded-md bg-ok px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           disabled={!reviewer || decide.isPending}
-          onClick={() => decide.mutate("approve")}
+          onClick={() => decide.mutate({ decision: "approve" })}
         >
           Approve
         </button>

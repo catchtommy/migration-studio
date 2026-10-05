@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Run } from "../lib/api";
+import { api, runSubject, type Run } from "../lib/api";
 import { useDomains, useWorkflows } from "../lib/hooks";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { ProgressStrip } from "../components/ProgressStrip";
@@ -26,26 +26,34 @@ function StatTile({ label, value, icon, tone, emphasis }: { label: string; value
 function NewRunForm() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [params, setParams] = useSearchParams();
   const { data: domains = [] } = useDomains();
-  const { data: workflows = [] } = useWorkflows();
-  const [chosen, setChosen] = useState<string | null>(null);
+  const { data: allWorkflows = [] } = useWorkflows();
+  const workflows = allWorkflows.filter((w) => w.scope === "operation");
+  const [chosen, setChosen] = useState<string | null>(params.get("domain"));
   const domain = chosen ?? domains[0]?.key ?? "";
   // The workflow follows the domain's default until the user picks one.
   const [chosenWorkflow, setChosenWorkflow] = useState<string | null>(null);
   const domainDefault = domains.find((d) => d.key === domain)?.default_workflow;
   const workflow =
     chosenWorkflow ?? (workflows.some((w) => w.key === domainDefault) ? domainDefault! : (workflows.find((w) => w.key === "standard") ?? workflows[0])?.key ?? "");
-  const [operation, setOperation] = useState("");
+  const { data: features } = useQuery({ queryKey: ["features", domain], queryFn: () => api.features(domain), enabled: !!domain });
+  const [chosenFeature, setChosenFeature] = useState<string | null>(params.get("feature"));
+  const available = (features ?? []).filter((f) => !f.migration);
+  const operation = chosenFeature && available.some((f) => f.key === chosenFeature) ? chosenFeature : (available[0]?.key ?? "");
+  const feature = features?.find((f) => f.key === operation);
   const [showInputs, setShowInputs] = useState(false);
   const [inputs, setInputs] = useState(EMPTY_INPUTS);
   const create = useMutation({
     mutationFn: () => {
       const paths = inputs.paths.map((p) => p.trim()).filter(Boolean);
       const notes = inputs.notes.trim();
-      return api.createRun({ domain, operation: operation.trim(), workflow, inputs: paths.length || notes ? { paths, notes } : undefined });
+      return api.createRun({ domain, operation, workflow, inputs: paths.length || notes ? { paths, notes } : undefined });
     },
     onSuccess: (run) => {
       queryClient.invalidateQueries({ queryKey: ["runs"] });
+      queryClient.invalidateQueries({ queryKey: ["features", domain] });
+      if (params.has("feature")) setParams({}, { replace: true });
       navigate(`/runs/${run.id}`);
     },
   });
@@ -65,6 +73,7 @@ function NewRunForm() {
           onChange={(e) => {
             setChosen(e.target.value);
             setChosenWorkflow(null);
+            setChosenFeature(null);
           }}
           className="rounded-md border border-border bg-bg px-2 py-1.5"
         >
@@ -76,13 +85,25 @@ function NewRunForm() {
         </select>
       </label>
       <label className="min-w-48 flex-1 text-sm">
-        <span className="mb-1 block text-xs font-medium text-subtle">Operation</span>
-        <input
-          value={operation}
-          onChange={(e) => setOperation(e.target.value)}
-          placeholder="e.g. createCustomer"
-          className="w-full rounded-md border border-border bg-bg px-2 py-1.5"
-        />
+        <span className="mb-1 block text-xs font-medium text-subtle">Feature</span>
+        {features && features.length === 0 ? (
+          <span className="block py-1.5 text-sm text-warn">
+            No features listed yet.{" "}
+            <Link to={`/domains/${domain}?tab=features`} className="text-accent hover:underline">
+              List them first →
+            </Link>
+          </span>
+        ) : (
+          <select value={operation} onChange={(e) => setChosenFeature(e.target.value)} className="w-full rounded-md border border-border bg-bg px-2 py-1.5">
+            {available.length === 0 && <option value="">Every feature is already migrating</option>}
+            {(features ?? []).map((f) => (
+              <option key={f.key} value={f.key} disabled={!!f.migration}>
+                {f.name}
+                {f.migration ? (f.migration.status === "completed" ? " (migrated)" : " (in progress)") : ""}
+              </option>
+            ))}
+          </select>
+        )}
       </label>
       <label className="text-sm">
         <span className="mb-1 block text-xs font-medium text-subtle">Workflow</span>
@@ -103,15 +124,21 @@ function NewRunForm() {
       >
         {showInputs ? "Hide agent inputs" : "Add entry points & notes"}
       </button>
-      <button type="submit" disabled={!domain || !workflow || !operation.trim() || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+      <button type="submit" disabled={!domain || !workflow || !operation || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
         Start migration
       </button>
+      {feature && feature.entry_points.length > 0 && (
+        <p className="w-full text-xs text-subtle">
+          Agents start from the feature's entry points: <span className="font-mono">{feature.entry_points.join(", ")}</span>
+          {showInputs ? ". Entry points you add below replace them." : "."}
+        </p>
+      )}
       {showInputs && (
         <div className="w-full">
           <InputsEditor
             value={inputs}
             onChange={setInputs}
-            pathsLabel="Entry points and files for this operation"
+            pathsLabel="Entry points and files for this feature"
             notesLabel="Notes for the agents"
             notesHint="Given to every agent in this run, alongside the domain's inputs."
           />
@@ -126,17 +153,19 @@ export function Dashboard() {
   const { data: domains = [] } = useDomains();
   const { data: runs = [], isLoading } = useQuery({ queryKey: ["runs"], queryFn: api.runs, refetchInterval: 3000 });
 
+  const migrations = runs.filter((r) => r.scope === "operation");
+  const discovery = runs.filter((r) => r.scope !== "operation").sort((a, b) => b.created_at.localeCompare(a.created_at));
   const byDomain = new Map<string, Run[]>();
   for (const d of domains) byDomain.set(d.key, []);
-  for (const r of runs) byDomain.set(r.domain, [...(byDomain.get(r.domain) ?? []), r]);
+  for (const r of migrations) byDomain.set(r.domain, [...(byDomain.get(r.domain) ?? []), r]);
   const domainName = (key: string) => domains.find((d) => d.key === key)?.name ?? key;
-  const waiting = runs.filter((r) => r.status === "awaiting_approval").length;
+  const waiting = runs.filter((r) => r.status === "awaiting_approval" || r.status === "changes_requested").length;
   const needsInput = runs.filter((r) => r.status === "awaiting_input").length;
   const completed = runs.filter((r) => r.status === "completed").length;
 
   return (
     <div className="space-y-6">
-      <PageTitle icon={<LayersIcon />} title="Migrations" subtitle="Move the monolith to microservices, one domain operation at a time." />
+      <PageTitle icon={<LayersIcon />} title="Migrations" subtitle="Move the monolith to microservices, one domain feature at a time." />
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile label="Runs" value={runs.length} icon={<ActivityIcon />} tone="bg-accent/15 text-accent" />
@@ -153,7 +182,8 @@ export function Dashboard() {
         <div className="grid gap-4 md:grid-cols-2">
           {[...byDomain].map(([domain, domainRuns]) => {
             const done = domainRuns.filter((r) => r.status === "completed").length;
-            const pct = domainRuns.length ? Math.round((100 * done) / domainRuns.length) : 0;
+            const total = Math.max(domains.find((d) => d.key === domain)?.features ?? 0, domainRuns.length);
+            const pct = total ? Math.round((100 * done) / total) : 0;
             return (
               <section key={domain} className="card overflow-hidden">
                 <header className="flex items-center gap-3 border-b border-border px-4 py-3">
@@ -162,14 +192,19 @@ export function Dashboard() {
                     {domainName(domain)}
                   </Link>
                   <span className="text-right text-xs text-subtle">
-                    {done}/{domainRuns.length} operations migrated
+                    {total ? `${done}/${total} features migrated` : "No features listed"}
                     <span className="mt-1 block h-1.5 w-28 overflow-hidden rounded-full bg-muted">
                       <span className="block h-full rounded-full bg-gradient-to-r from-ok to-emerald-400" style={{ width: `${pct}%` }} />
                     </span>
                   </span>
                 </header>
                 {domainRuns.length === 0 ? (
-                  <p className="px-4 py-6 text-sm text-subtle">No operations started.</p>
+                  <p className="px-4 py-6 text-sm text-subtle">
+                    No migrations started.{" "}
+                    <Link to={`/domains/${domain}?tab=features`} className="text-accent hover:underline">
+                      Features →
+                    </Link>
+                  </p>
                 ) : (
                   <ul className="divide-y divide-border">
                     {domainRuns.map((r) => (
@@ -189,6 +224,31 @@ export function Dashboard() {
             );
           })}
         </div>
+      )}
+
+      {discovery.length > 0 && (
+        <section className="card overflow-hidden">
+          <header className="border-b border-border px-4 py-3">
+            <h2 className="font-semibold">Discovery</h2>
+            <p className="text-xs text-subtle">
+              Bounded contexts and feature lists, from the{" "}
+              <Link to="/domains" className="text-accent hover:underline">
+                Domains
+              </Link>{" "}
+              page.
+            </p>
+          </header>
+          <ul className="divide-y divide-border">
+            {discovery.map((r) => (
+              <li key={r.id}>
+                <Link to={`/runs/${r.id}`} className="flex items-center justify-between gap-2 px-4 py-2.5 hover:bg-muted">
+                  <span className="truncate text-sm font-medium">{runSubject(r)}</span>
+                  <StatusBadge status={r.status} />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );

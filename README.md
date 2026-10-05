@@ -82,6 +82,35 @@ GitHub's documentation: [Authenticating Copilot CLI](https://docs.github.com/en/
 - The firewall must allow the GitHub host and its Copilot endpoints; GitHub documents the required hosts for
   Copilot on GHE.com, which IT can check against.
 
+## Start here: discovery
+
+Before any domain feature is migrated, map the monolith. Both steps are workflow runs with an approval gate, started
+from the **Discovery** panel on the Domains page.
+
+1. **Find the bounded contexts** (workflow *Discover bounded contexts*, one run for the whole monolith). The
+   *Bounded contexts* agent writes `bounded-contexts.md` and `bounded-contexts.yaml`: each context's key, name,
+   description, owned packages and tables, entry points and dependencies. On a large codebase, use *Where to look &
+   notes* to point it at existing documentation in the monolith (paths relative to the repository root, e.g.
+   `docs/**/*.md` or an index file) and at the modules that matter. Notes can say what to ignore, and that the code
+   wins where the docs are out of date. The next run starts with the same paths and notes. Approving it:
+   - adds new contexts as domains
+   - fills in an existing domain's empty description, merges in its packages and tables, and gives the
+     *Domain features* agent the context's entry points
+   - deletes nothing; domains the result doesn't include get a *Not found by discovery* chip for you to review
+2. **List each domain's features** (workflow *List domain features*, one run per domain). Start it from a domain's
+   **Features** tab, or for every domain without a list at once. The *Domain features* agent writes `features.md`
+   and `features.yaml`: each feature's key, name, entry points, tables and the domains it calls. Approving it
+   replaces the domain's feature list; features that are already being migrated are kept and marked *Not in latest
+   list*.
+
+**Migrations start from the feature list.** The New migration form picks a feature, and its entry points go to the
+agents unless you give others. A run for anything else is refused. You can also add, edit and remove features by
+hand on the Features tab, for example to correct the list.
+
+Both YAML files are validated before the agent may finish, and again when the gate is approved, after any manual
+edits. The two discovery agents are ordinary agents: paste your own agent.md into them, or build other discovery
+workflows (*New workflow → Each run covers*). The output stays in the domain's *Documentation* tab.
+
 ## Cross-domain calls
 
 The monolith mixes all domains in one codebase and one Oracle schema. A domain's microservice must contain **only
@@ -130,7 +159,7 @@ beyond that.
 
 ## How it works
 
-- **Run** = one `(domain, operation)` through one workflow; one LangGraph thread, checkpointed in
+- **Run** = one `(domain, feature)` through one workflow; one LangGraph thread, checkpointed in
   `backend/data/checkpoints.db`. The run keeps a snapshot of its workflow, so editing or deleting a workflow only
   affects runs started afterwards. The graph is built per workflow snapshot (`orchestrator/graph.py`).
 - **Workflows** (Workflows page): create, copy, edit and delete named workflows. Steps are agents from the library and
@@ -142,16 +171,32 @@ beyond that.
   characters; larger documents are listed for the agent to read).
 - **Workspace**: each run clones the monolith (Settings → Monolith repository) into `backend/data/workspaces/<run id>`
   on branch `migration/<domain>/<operation>`. Every stage commits its output, so each attempt has a reviewable diff.
-- **Gates** pause the graph with `interrupt()`. *Approve* continues. *Reject* requires comments: the workspace is reset
-  to where the chosen stage started, and the stage re-runs with the comments as feedback.
+- **Gates** pause the graph with `interrupt()`. *Approve* continues. Rejecting requires comments, and has two forms:
+  - *Reject & re-run now*: the workspace is reset to where the chosen stage started, and the stage re-runs straight
+    away with the comments as feedback.
+  - *Reject, amend first*: the run shows *Changes requested* and nothing runs. Meanwhile you can change the agent
+    (for example paste a new agent.md), the run's or the domain's paths and notes, and the reviewed documents.
+    *Re-run* then runs the stage with your (editable) comments. *Withdraw rejection* reopens the gate instead.
+    Agents and inputs are read when a stage starts, so the re-run uses the amended versions.
   Artifacts can be edited and committed from the UI while a gate is open.
 - **Failures** reset the stage's partial changes. *Retry* resumes from the failed stage; completed stages are not repeated.
-- **Agents** (Agents page): a library of agents; the eight built-in ones can be reset to their defaults, and custom
+- **Agents** (Agents page): a library of agents; the built-in ones can be reset to their defaults, and custom
   agents can be added (and deleted once no workflow or unfinished run uses them). Each has a title, mode (*Stub* writes a placeholder; *AI* runs with the AI provider),
   model, effort, JDK, instructions (its system prompt), enabled tools, required documents and a turn limit.
   AI agents (`agents/copilot_agent.py`, `agents/llm.py` for Claude) work in the run workspace with the tools in `agents/tools.py`
   and is sent back if a required document is missing. Defaults live in `agents/defaults.py` (*Reset to default*).
   With the Claude API as provider it needs Anthropic credentials in the backend's environment.
+- **agent.md text**: each agent is edited as one plain text in GitHub Copilot's agent.md format, so you can
+  **paste your agent.md from GitHub** into it (the editor opens on this view; *Form* shows the same agent field by
+  field). *New agent* starts with a paste box. The header's `name`, `description`, `model` and `tools` set the
+  agent (Copilot tool aliases `read`, `search`, `edit`, `execute` map to this app's tools; web, sub-agent and to-do
+  tools are reported and skipped); the text below it is the instructions. A GitHub agent.md has no Migration Studio
+  settings, so the agent **keeps** its mode (Stub/AI), effort, JDK, max turns, required documents and checks; the
+  editor says so. To set them in the text too, add `metadata` with `mode`, `effort`, `jdk`, `max-turns`,
+  `required-documents` and `checks`. Required documents are added to the agent's brief automatically, so your
+  instructions don't need to repeat them. *Import agent.md* and *Download agent.md* use the same format.
+- **Upgrades**: built-in agents still holding an earlier release's default instructions (never edited) are brought
+  up to the current defaults once, keeping their mode and model.
 - **Domains** (Domains page): add and edit domains; give every agent shared context, and each stage's agent its own
   *where to look* paths and notes. Starting a run can add operation-specific entry points and notes. The domain's
   *Documentation* tab shows the latest documents of every operation.

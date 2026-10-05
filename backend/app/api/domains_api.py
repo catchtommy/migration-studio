@@ -2,11 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import agent_store, contracts_store
+from app import agent_store, contracts_store, discovery_store, workflow_store
+from app.api.discovery_api import start_features
 from app.api.schemas import (
-    DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, OperationDocs,
+    DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, FeatureCreate, FeatureIn,
+    DiscoveryStart, FeatureOut, OperationDocs, RunOut,
 )
-from app.db.models import Artifact, Dependency, Domain, Run, WorkflowDef
+from app.db.models import Artifact, Dependency, Domain, Feature, Run
 from app.db.session import get_db
 from app.domain_store import normalize_inputs
 
@@ -23,12 +25,15 @@ def _domain_or_404(db: Session, key: str) -> Domain:
 @router.get("", response_model=list[DomainSummary])
 def list_domains(db: Session = Depends(get_db)):
     counts = {(d, st): n for d, st, n in db.execute(
-        select(Run.domain, Run.status, func.count()).group_by(Run.domain, Run.status))}
+        select(Run.domain, Run.status, func.count()).where(discovery_store.MIGRATION_RUN)
+        .group_by(Run.domain, Run.status))}
+    features = dict(db.execute(select(Feature.domain, func.count()).group_by(Feature.domain)).all())
     out = []
     for d in db.scalars(select(Domain).order_by(Domain.created_at, Domain.key)):
         summary = DomainSummary.model_validate(d)
         summary.runs = sum(n for (dom, _), n in counts.items() if dom == d.key)
         summary.completed = counts.get((d.key, "completed"), 0)
+        summary.features = features.get(d.key, 0)
         out.append(summary)
     return out
 
@@ -61,8 +66,11 @@ def update_domain(key: str, body: DomainUpdate, db: Session = Depends(get_db)):
         if getattr(body, field) is not None:
             setattr(domain, field, getattr(body, field))
     if body.default_workflow is not None:
-        if body.default_workflow and db.get(WorkflowDef, body.default_workflow) is None:
+        scope = workflow_store.scope_of(body.default_workflow) if body.default_workflow else "operation"
+        if scope is None:
             raise HTTPException(422, f"Unknown workflow {body.default_workflow}")
+        if scope != "operation":
+            raise HTTPException(422, "A domain's default workflow must be a migration workflow")
         domain.default_workflow = body.default_workflow or None
     for field in ("owned_tables", "owned_packages"):
         values = getattr(body, field)
@@ -82,6 +90,7 @@ def delete_domain(key: str, db: Session = Depends(get_db)):
     domain = _domain_or_404(db, key)
     if db.scalar(select(func.count()).where(Run.domain == key)):
         raise HTTPException(409, "Domains with migration runs cannot be deleted")
+    db.query(Feature).filter(Feature.domain == key).delete()
     db.delete(domain)
     db.commit()
 
@@ -108,3 +117,45 @@ def domain_dependencies(key: str, db: Session = Depends(get_db)):
                       .order_by(Dependency.id)).all()
     operations = {r.id: r.operation for r in db.scalars(select(Run).where(Run.id.in_({d.run_id for d in rows})))}
     return [DependencyOut.model_validate(d).model_copy(update={"operation": operations.get(d.run_id)}) for d in rows]
+
+
+@router.get("/{key}/features", response_model=list[FeatureOut])
+def list_features(key: str, db: Session = Depends(get_db)):
+    """The domain's features, each with its latest migration run. Migrations can only start for these."""
+    _domain_or_404(db, key)
+    return discovery_store.features_of(key)
+
+
+@router.post("/{key}/features", response_model=FeatureOut, status_code=201)
+def add_feature(key: str, body: FeatureCreate, db: Session = Depends(get_db)):
+    _domain_or_404(db, key)
+    try:
+        return discovery_store.save_feature(key, body.key, body.model_dump(), create=True)
+    except discovery_store.DiscoveryError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.put("/{key}/features/{feature}", response_model=FeatureOut)
+def update_feature(key: str, feature: str, body: FeatureIn, db: Session = Depends(get_db)):
+    _domain_or_404(db, key)
+    try:
+        return discovery_store.save_feature(key, feature, body.model_dump(), create=False)
+    except KeyError:
+        raise HTTPException(404, "Feature not found")
+
+
+@router.delete("/{key}/features/{feature}", status_code=204)
+def delete_feature(key: str, feature: str, db: Session = Depends(get_db)):
+    _domain_or_404(db, key)
+    try:
+        discovery_store.delete_feature(key, feature)
+    except KeyError:
+        raise HTTPException(404, "Feature not found")
+    except discovery_store.DiscoveryError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.post("/{key}/discover-features", response_model=RunOut, status_code=201)
+def discover_features(key: str, body: DiscoveryStart | None = None, db: Session = Depends(get_db)):
+    """Start the run that lists this domain's features."""
+    return start_features(db, key, body or DiscoveryStart())

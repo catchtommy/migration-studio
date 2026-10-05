@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, MONOLITH, runSubject } from "../lib/api";
 import { useRunEvents, useWorkflows } from "../lib/hooks";
 import { ActivityLog } from "../components/ActivityLog";
+import { AmendPanel } from "../components/AmendPanel";
 import { ApprovalPanel } from "../components/ApprovalPanel";
 import { QuestionPanel } from "../components/QuestionPanel";
 import { StageDetail } from "../components/StageDetail";
@@ -47,9 +48,15 @@ export function RunPage() {
           ← All migrations
         </Link>
         <div className="mt-2 flex flex-wrap items-center gap-3">
-          <DomainAvatar name={run.domain} domainKey={run.domain} />
+          <DomainAvatar name={run.domain === MONOLITH ? "Monolith" : run.domain} domainKey={run.domain} />
           <h1 className="text-2xl font-semibold tracking-tight">
-            <span className="text-subtle">{run.domain} /</span> {run.operation}
+            {run.scope === "operation" ? (
+              <>
+                <span className="text-subtle">{run.domain} /</span> {run.operation}
+              </>
+            ) : (
+              runSubject(run)
+            )}
           </h1>
           <StatusBadge status={run.status} />
         </div>
@@ -59,7 +66,7 @@ export function RunPage() {
         </p>
         {run.inputs && (run.inputs.paths.length > 0 || run.inputs.notes) && (
           <details className="mt-2 text-sm">
-            <summary className="cursor-pointer text-subtle hover:text-fg">Operation inputs given to the agents</summary>
+            <summary className="cursor-pointer text-subtle hover:text-fg">{run.scope === "operation" ? "Operation inputs" : "Paths and notes"} given to the agents</summary>
             <div className="mt-2 space-y-2 rounded-md border border-border bg-surface p-3">
               {run.inputs.paths.length > 0 && (
                 <ul className="font-mono text-xs">
@@ -79,6 +86,8 @@ export function RunPage() {
       {run.status === "awaiting_approval" && run.pending_gate && (
         <ApprovalPanel key={run.pending_gate.gate + run.stages.length} runId={run.id} gate={run.pending_gate} stages={stages} />
       )}
+
+      {run.status === "changes_requested" && run.pending_rerun && <AmendPanel key={run.pending_rerun.gate + run.stages.length} run={run} />}
 
       {run.status === "failed" && (
         <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-bad/40 bg-bad/5 p-4">

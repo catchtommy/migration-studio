@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { newMigration } from "./helpers";
 
 test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this mode");
 
@@ -13,6 +14,7 @@ test("domain inputs and operation entry points reach the agents and show up in t
   await page.getByRole("button", { name: "Add domain" }).click();
 
   await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  const domainKey = new URL(page.url()).pathname.split("/").pop()!;
   await page.getByLabel("Shared context (all agents)").fill("Tables live in the COLL schema");
   const asIs = page.locator("section", { has: page.getByRole("heading", { name: "AS-IS documentation" }) });
   await asIs.getByLabel("Where to look").fill("src/main/java/com/acme/collateral/**\nsqlmap/Collateral.xml");
@@ -20,16 +22,14 @@ test("domain inputs and operation entry points reach the agents and show up in t
   await page.getByRole("button", { name: "Save inputs" }).click();
   await expect(page.getByText("Saved")).toBeVisible();
 
-  await page.goto("/");
-  await page.getByLabel("Domain").selectOption({ label: name });
-  await page.getByLabel("Operation").fill("valuePledge");
+  await newMigration(page, domainKey, "valuePledge");
   await page.getByRole("button", { name: "Add entry points & notes" }).click();
-  await page.getByLabel("Entry points and files for this operation").fill("CollateralController.value");
+  await page.getByLabel("Entry points and files for this feature").fill("CollateralController.value");
   await page.getByRole("button", { name: "Start migration" }).click();
   await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible({ timeout: 30_000 });
 
   await page.getByRole("link", { name: "Domains", exact: true }).click();
-  await page.getByRole("link", { name: new RegExp(name) }).click();
+  await page.getByRole("link", { name: new RegExp(`${name}.*Collateral valuation and pledges`) }).click(); // the domain card, not the migration order
   await page.getByRole("button", { name: "Documentation", exact: true }).click();
   const doc = page.locator("article");
   await expect(doc.getByText("Tables live in the COLL schema")).toBeVisible();
@@ -39,6 +39,7 @@ test("domain inputs and operation entry points reach the agents and show up in t
 
 test("an agent's configuration can be edited and reset", async ({ page }) => {
   await page.goto("/agents/deep_dive");
+  await page.getByRole("tab", { name: "Form" }).click(); // the form view is remembered from here on
   const instructions = page.getByLabel("Instructions");
   await expect(instructions).toHaveValue(/test scenario catalogue/);
 

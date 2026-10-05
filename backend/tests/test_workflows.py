@@ -1,6 +1,6 @@
 import itertools
 
-from tests.conftest import wait_for
+from tests.conftest import start_run, wait_for
 
 _ids = itertools.count()
 
@@ -28,7 +28,7 @@ def test_custom_workflow_runs_its_own_steps_and_gates(client):
     gate = r.json()["steps"][1]
     assert gate["key"] == "gate_check_docs"  # generated from the title
 
-    run = client.post("/api/runs", json={"domain": "broker", "operation": _key("op"), "workflow": key}).json()
+    run = start_run(client, {"domain": "broker", "operation": _key("op"), "workflow": key}).json()
     assert [s["key"] for s in run["workflow_stages"]] == ["as_is_doc", "gate_check_docs", "deep_dive"]
     run = wait_for(client, run["id"], {"awaiting_approval"})
     assert run["pending_gate"] == {"gate": "gate_check_docs", "reviews": ["as_is_doc"]}
@@ -46,7 +46,7 @@ def test_custom_workflow_runs_its_own_steps_and_gates(client):
 def test_running_runs_keep_the_workflow_they_started_with(client):
     key = _key("wf")
     client.post("/api/workflows", json={"key": key, "name": "Snapshot", "steps": _two_step()})
-    run = client.post("/api/runs", json={"domain": "broker", "operation": _key("op"), "workflow": key}).json()
+    run = start_run(client, {"domain": "broker", "operation": _key("op"), "workflow": key}).json()
     wait_for(client, run["id"], {"awaiting_approval"})
 
     # Remove the gate and the second agent, then delete the workflow altogether.
@@ -85,7 +85,7 @@ def test_custom_agent_in_a_copied_workflow(client):
                                    {"kind": "gate", "title": "Approve security", "reviews": [agent, "deep_dive"]}]
     assert client.put(f"/api/workflows/{wf}", json={"steps": steps}).status_code == 200
 
-    run = client.post("/api/runs", json={"domain": "payments", "operation": _key("op"), "workflow": wf}).json()
+    run = start_run(client, {"domain": "payments", "operation": _key("op"), "workflow": wf}).json()
     run = wait_for(client, run["id"], {"awaiting_approval"})
     assert run["pending_gate"]["reviews"] == [agent, "deep_dive"]
     artifacts = client.get(f"/api/runs/{run['id']}/artifacts").json()
@@ -106,13 +106,13 @@ def test_domain_default_workflow_is_used_and_cleared_on_delete(client):
     assert client.put("/api/domains/reports", json={"default_workflow": "missing"}).status_code == 422
     assert client.put("/api/domains/reports", json={"default_workflow": wf}).json()["default_workflow"] == wf
 
-    run = client.post("/api/runs", json={"domain": "reports", "operation": _key("op")}).json()
+    run = start_run(client, {"domain": "reports", "operation": _key("op")}).json()
     assert run["workflow"] == wf
     wait_for(client, run["id"], {"completed"})
 
     client.delete(f"/api/workflows/{wf}")
     assert client.get("/api/domains/reports").json()["default_workflow"] is None
-    assert client.post("/api/runs", json={"domain": "reports", "operation": _key("op")}).json()["workflow"] == "standard"
+    assert start_run(client, {"domain": "reports", "operation": _key("op")}).json()["workflow"] == "standard"
 
 
 
@@ -131,7 +131,7 @@ def test_steps_receive_only_the_outputs_they_use(client):
     assert r.status_code == 201, r.text
     assert r.json()["stages"][2]["uses"] == ["as_is_doc"] and r.json()["stages"][3]["uses"] is None
 
-    run = client.post("/api/runs", json={"domain": "broker", "operation": _key("op"), "workflow": key}).json()
+    run = start_run(client, {"domain": "broker", "operation": _key("op"), "workflow": key}).json()
     run = wait_for(client, run["id"], {"completed"})
     assert "Inputs from earlier steps" not in _doc(run, "boundary_design")
     deep = _doc(run, "deep_dive")

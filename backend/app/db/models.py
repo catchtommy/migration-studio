@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.orchestrator.stages import STANDARD
@@ -16,14 +16,15 @@ class Base(DeclarativeBase):
 
 
 class Run(Base):
-    """One migration of a single (domain, operation) through a workflow."""
+    """One migration of a single (domain, operation) through a workflow. Discovery runs use the same machinery with a
+    reserved domain or operation (see app/discovery_store.py)."""
 
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     domain: Mapped[str] = mapped_column(String(64), index=True)
     operation: Mapped[str] = mapped_column(String(128))
-    # pending | running | awaiting_input | awaiting_approval | completed | failed
+    # pending | running | awaiting_input | awaiting_approval | changes_requested | completed | failed
     status: Mapped[str] = mapped_column(String(32), default="pending")
     current_stage: Mapped[str | None] = mapped_column(String(64))
     workspace: Mapped[str | None] = mapped_column(Text)
@@ -34,6 +35,10 @@ class Run(Base):
     workflow: Mapped[str | None] = mapped_column(String(64))  # key of the workflow the run started from
     # Snapshot of that workflow's stages (StageDef dicts), so later edits to the workflow don't affect this run.
     workflow_stages: Mapped[list | None] = mapped_column(JSON)
+    scope: Mapped[str | None] = mapped_column(String(16))  # operation (None) | domain | monolith: see WorkflowDef
+    # A rejection held back so people can amend agents, inputs or documents before the re-run:
+    # {"gate", "target_stage", "comments"}. Set while the status is changes_requested.
+    pending_rerun: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -168,6 +173,9 @@ class WorkflowDef(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     # [{"kind": "agent", "key": <agent key>} | {"kind": "gate", "key", "title", "description", "reviews": [...]}]
     steps: Mapped[list] = mapped_column(JSON)
+    # What one run covers: operation (None; a migration of one feature), domain (discovering a domain's features)
+    # or monolith (discovering the bounded contexts).
+    scope: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -229,3 +237,25 @@ class Dependency(Base):
     summary: Mapped[str] = mapped_column(Text, default="")
     code_refs: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Feature(Base):
+    """A feature (business operation) of a domain: what a migration run migrates. Listed by the domain's feature
+    discovery when its gate is approved, or added by hand."""
+
+    __tablename__ = "features"
+    __table_args__ = (UniqueConstraint("domain", "key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(64), index=True)
+    key: Mapped[str] = mapped_column(String(128))  # the operation name of its migration runs
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str] = mapped_column(Text, default="")
+    entry_points: Mapped[list] = mapped_column(JSON, default=list)
+    tables: Mapped[list] = mapped_column(JSON, default=list)
+    calls: Mapped[list] = mapped_column(JSON, default=list)  # other domains it reaches into
+    run_id: Mapped[str | None] = mapped_column(String(36))  # discovery run that listed it; None = added by hand
+    # Kept because it has migration runs, although the latest approved feature list no longer has it.
+    missing_from_latest: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

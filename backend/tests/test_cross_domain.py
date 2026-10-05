@@ -7,14 +7,14 @@ from app import agent_store, boundary_check, contracts_store, workflow_store
 from app.agents import llm
 from app.db.models import Agent, Setting, WorkflowDef
 from app.db.session import session_scope
-from tests.conftest import wait_for
+from tests.conftest import start_run, wait_for
 from tests.test_agents_domains import ScriptedClient, _reply, _text, _tool, ctx  # noqa: F401  (fixture)
 
 _ids = itertools.count()
 
 
 def _start(client, domain):
-    r = client.post("/api/runs", json={"domain": domain, "operation": f"xd{next(_ids)}"})
+    r = start_run(client, {"domain": domain, "operation": f"xd{next(_ids)}"})
     assert r.status_code == 201, r.text
     return r.json()["id"]
 
@@ -212,3 +212,33 @@ def test_new_builtin_agent_is_added_once(client):
         s.query(Setting).filter(Setting.key == "_added_integration_design").delete()
     agent_store.seed()
     assert agent_store.exists("integration_design")
+
+
+def test_untouched_builtin_agents_are_brought_up_to_date_once(client, monkeypatch):
+    import hashlib
+    from app.agents.defaults import default_config
+
+    old = "Old default instructions from an earlier release."
+    monkeypatch.setattr(agent_store, "PREVIOUS_DEFAULT_HASHES", {
+        "deep_dive": {hashlib.sha256(old.encode()).hexdigest()},
+        "modernise": {hashlib.sha256(old.encode()).hexdigest()},
+    })
+    with session_scope() as s:
+        s.query(Setting).filter(Setting.key == agent_store.UPGRADE_MARKER).delete()
+        deep = s.get(Agent, "deep_dive")
+        deep.instructions, deep.outputs, deep.mode, deep.model = old, ["deep-dive.md"], "llm", "gpt-5"
+        s.get(Agent, "modernise").instructions = "Edited by the team."  # not a known default: left alone
+    agent_store.seed()
+
+    deep = client.get("/api/agents/deep_dive").json()
+    assert deep["instructions"] == default_config("deep_dive")["instructions"]
+    assert "cross-domain.yaml" in deep["outputs"]
+    assert (deep["mode"], deep["model"]) == ("llm", "gpt-5")  # kept
+    assert client.get("/api/agents/modernise").json()["instructions"] == "Edited by the team."
+
+    with session_scope() as s:  # runs once: a later old-looking text is not touched
+        s.get(Agent, "deep_dive").instructions = old
+    agent_store.seed()
+    assert client.get("/api/agents/deep_dive").json()["instructions"] == old
+    for key in ("deep_dive", "modernise"):
+        client.post(f"/api/agents/{key}/reset")

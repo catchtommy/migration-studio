@@ -4,7 +4,7 @@ the required-documents check and artifact collection."""
 import json
 from pathlib import Path
 
-from app import boundary_check, contracts_store
+from app import boundary_check, contracts_store, discovery_store
 from app.agents.base_agent import AgentContext, ArtifactOut
 from app.agents.tools import ToolError, Toolbox
 
@@ -77,7 +77,7 @@ def brief(ctx: AgentContext) -> str:
     if ctx.config.get("outputs"):
         where += " Required: " + ", ".join(f"`{out_dir}/{o}`" for o in ctx.config["outputs"]) + "."
     parts = [
-        f"# {title}: {ctx.domain} / {ctx.operation}",
+        f"# {title}: {discovery_store.subject(ctx.domain, ctx.operation)}",
         f"{description}\n\nThis is attempt {ctx.attempt}.",
         where,
     ]
@@ -117,11 +117,13 @@ def run_tool(ctx: AgentContext, toolbox: Toolbox, name: str, args: object) -> tu
 
 def verify(ctx: AgentContext) -> list[str]:
     """Everything that must be fixed before the agent may finish: missing required documents, invalid cross-domain
-    YAML, and (for agents configured with the boundary check) references to other domains' packages or tables."""
+    or discovery YAML, and (for agents configured with the boundary check) references to other domains' packages or
+    tables."""
     out_dir = ctx.rel(ctx.output_dir)
     problems = [f"Required document `{out_dir}/{o}` has not been written yet."
                 for o in ctx.config["outputs"] if not (ctx.output_dir / o).is_file()]
     problems += contracts_store.validate_outputs(ctx.output_dir)
+    problems += discovery_store.validate_outputs(ctx.output_dir)
     if "boundary" in (ctx.config.get("checks") or []):
         problems += [f"Boundary: {v}" for v in boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir,
                                                                       ctx.ownership)]

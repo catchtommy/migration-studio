@@ -8,13 +8,13 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.schemas import (
-    AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, Decision, EventOut, QuestionOut, RunCreate,
-    RunDetail, RunOut,
+    AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, Decision, EventOut, QuestionOut,
+    RunCreate, RunDetail, RunOut, Rerun,
 )
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import contracts_store, workflow_store
+from app import contracts_store, discovery_store, workflow_store
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
 from app.orchestrator.runner import RunBusyError, get_runner
@@ -35,37 +35,61 @@ def list_runs(db: Session = Depends(get_db)):
     return db.scalars(select(Run).order_by(Run.domain, Run.operation)).all()
 
 
-@router.post("/runs", response_model=RunOut, status_code=201)
-def create_run(body: RunCreate, db: Session = Depends(get_db)):
-    domain = db.get(Domain, body.domain)
-    if domain is None:
-        raise HTTPException(422, f"Unknown domain {body.domain}; add it on the Domains page first")
-    workflow_key = body.workflow or workflow_store.default_for(domain)
+SCOPE_LABELS = {"operation": "migration", "domain": "feature listing", "monolith": "bounded-context discovery"}
+
+
+def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key: str | None,
+              inputs: dict | None = None) -> Run:
+    """Create a run of a workflow of the given scope and start it."""
     try:
         workflow = workflow_store.get(workflow_key or "")
     except KeyError:
-        raise HTTPException(422, f"Unknown workflow {workflow_key}")
-    active = db.scalar(select(Run).where(Run.domain == body.domain, Run.operation == body.operation,
+        raise HTTPException(422, f"Unknown workflow {workflow_key}" if workflow_key else
+                                 "There is no workflow for this; add one on the Workflows page")
+    if workflow["scope"] != scope:
+        raise HTTPException(422, f"{workflow['name']} is not a {SCOPE_LABELS[scope]} workflow")
+    active = db.scalar(select(Run).where(Run.domain == domain, Run.operation == operation,
                                          Run.status != "completed"))
     if active:
-        raise HTTPException(409, f"{body.domain}/{body.operation} already has an unfinished run")
-    run = Run(domain=body.domain, operation=body.operation, branch=f"migration/{body.domain}/{body.operation}",
-              inputs=normalize_inputs(body.inputs.model_dump()) if body.inputs else None,
+        raise HTTPException(409, f"{discovery_store.subject(domain, operation)} already has an unfinished run")
+    branch = (f"migration/{domain}/{operation}" if scope == "operation" else
+              "discovery/bounded-contexts" if scope == "monolith" else f"discovery/{domain}/features")
+    run = Run(domain=domain, operation=operation, branch=branch, inputs=inputs, scope=scope,
               workflow=workflow["key"], workflow_stages=workflow["stages"])
     db.add(run)
     db.flush()
     run.workspace = str(settings.workspaces_dir / run.id)
     db.commit()
-    emit(run.id, "status", f"Run created for {body.domain}/{body.operation} ({workflow['name']})")
+    emit(run.id, "status", f"Run created for {discovery_store.subject(domain, operation)} ({workflow['name']})")
     get_runner().start(run.id)
     return run
+
+
+@router.post("/runs", response_model=RunOut, status_code=201)
+def create_run(body: RunCreate, db: Session = Depends(get_db)):
+    """A migration of one feature. The domain's features must have been listed first."""
+    domain = db.get(Domain, body.domain)
+    if domain is None:
+        raise HTTPException(422, f"Unknown domain {body.domain}; add it on the Domains page first")
+    feature = discovery_store.feature(body.domain, body.operation)
+    if feature is None:
+        if not discovery_store.features_of(body.domain):
+            raise HTTPException(422, f"List {domain.name}'s features first: open the domain's Features tab")
+        raise HTTPException(422, f"{body.operation} is not in {domain.name}'s feature list; add it on the domain's "
+                                 "Features tab first")
+    inputs = normalize_inputs(body.inputs.model_dump()) if body.inputs else {"paths": [], "notes": ""}
+    if not inputs["paths"]:
+        inputs["paths"] = feature["entry_points"]
+    return start_run(db, body.domain, body.operation, "operation",
+                     body.workflow or workflow_store.default_for(domain),
+                     inputs if inputs["paths"] or inputs["notes"] else None)
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
 def get_run(run_id: str, db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id)
     detail = RunDetail.model_validate(run)
-    if run.status == "awaiting_approval":
+    if run.status in ("awaiting_approval", "changes_requested"):
         detail.pending_gate = get_runner().pending_gate(run_id)
     return detail
 
@@ -92,17 +116,102 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db)):
         if recorded:
             emit(run_id, "artifact", f"Recorded {recorded} cross-domain decision(s) in the contracts catalogue",
                  gate["gate"])
+        try:
+            summary = discovery_store.record_approved(run_id, list(gate["reviews"]))
+        except contracts_store.InvalidDocument as e:
+            raise HTTPException(422, f"The discovery results can't be recorded: {e}. Edit the file or reject it.")
+        if summary:
+            emit(run_id, "artifact", summary, gate["gate"])
 
+    target = (body.target_stage or gate["reviews"][0]) if body.decision == "reject" else None
     approval = Approval(run_id=run_id, gate=gate["gate"], decision=body.decision, comments=body.comments,
-                        target_stage=body.target_stage if body.decision == "reject" else None,
-                        reviewer=body.reviewer)
+                        target_stage=target, reviewer=body.reviewer)
     db.add(approval)
+    if body.decision == "reject" and body.rerun == "later":
+        # The graph stays paused at the gate; agents and inputs are read when a stage starts, so amendments made now
+        # apply to the re-run.
+        run.status = "changes_requested"
+        run.pending_rerun = {"gate": gate["gate"], "target_stage": target, "comments": body.comments}
+        db.commit()
+        emit(run_id, "approval", f"Changes requested by {body.reviewer}; {_stage_title(run, target)} re-runs once "
+                                 "the amendments are made", gate["gate"])
+        return approval
     db.commit()
     try:
         runner.resume(run_id, body.model_dump())
     except RunBusyError as e:
         raise HTTPException(409, str(e))
     return approval
+
+
+def _stage_title(run: Run, key: str) -> str:
+    return next((s["title"] for s in run.stage_defs if s["key"] == key), key)
+
+
+def _held(db: Session, run_id: str) -> Run:
+    run = _run_or_404(db, run_id)
+    if run.status != "changes_requested" or not run.pending_rerun:
+        raise HTTPException(409, "The run is not waiting for amendments")
+    return run
+
+
+@router.post("/runs/{run_id}/rerun", response_model=RunOut)
+def rerun(run_id: str, body: Rerun, db: Session = Depends(get_db)):
+    """Re-run a rejection that was held for amendments, from its target stage, with its (possibly updated)
+    comments."""
+    run = _held(db, run_id)
+    pending = dict(run.pending_rerun)
+    gate = get_runner().pending_gate(run_id)
+    if body.target_stage:
+        if gate is None or body.target_stage not in gate["reviews"]:
+            raise HTTPException(422, f"target_stage must be one of {gate['reviews'] if gate else []}")
+        pending["target_stage"] = body.target_stage
+    if body.comments is not None:
+        if not body.comments.strip():
+            raise HTTPException(422, "Comments are required when rejecting")
+        pending["comments"] = body.comments
+    latest = db.scalar(select(Approval).where(Approval.run_id == run_id, Approval.gate == pending["gate"])
+                       .order_by(Approval.id.desc()).limit(1))
+    if latest is not None and latest.decision == "reject":
+        latest.comments, latest.target_stage = pending["comments"], pending["target_stage"]
+    run.status, run.pending_rerun = "running", None
+    db.commit()
+    emit(run_id, "approval", f"Amendments done: re-running from {_stage_title(run, pending['target_stage'])}",
+         pending["gate"])
+    try:
+        get_runner().resume(run_id, {"decision": "reject", "target_stage": pending["target_stage"],
+                                     "comments": pending["comments"]})
+    except RunBusyError as e:
+        raise HTTPException(409, str(e))
+    return run
+
+
+@router.post("/runs/{run_id}/back-to-review", response_model=RunOut)
+def back_to_review(run_id: str, db: Session = Depends(get_db)):
+    """Withdraw a rejection held for amendments: the gate is open for a decision again."""
+    run = _held(db, run_id)
+    gate = run.pending_rerun["gate"]
+    latest = db.scalar(select(Approval).where(Approval.run_id == run_id, Approval.gate == gate)
+                       .order_by(Approval.id.desc()).limit(1))
+    if latest is not None and latest.decision == "reject":
+        db.delete(latest)  # it never took effect
+    run.status, run.pending_rerun = "awaiting_approval", None
+    db.commit()
+    emit(run_id, "approval", "Rejection withdrawn; waiting for a decision again", gate)
+    return run
+
+
+@router.put("/runs/{run_id}/inputs", response_model=RunDetail)
+def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db)):
+    """Change the run's own paths and notes. Stages started afterwards (re-runs and retries) get the new ones."""
+    run = _run_or_404(db, run_id)
+    if run.status not in ("awaiting_approval", "changes_requested", "failed"):
+        raise HTTPException(409, "Inputs can be changed while the run waits for approval or amendments, or failed")
+    inputs = normalize_inputs(body.model_dump())
+    run.inputs = inputs if inputs["paths"] or inputs["notes"] else None
+    db.commit()
+    emit(run_id, "status", "Run inputs updated")
+    return get_run(run_id, db)
 
 
 @router.post("/runs/{run_id}/retry", response_model=RunOut)
@@ -155,8 +264,8 @@ def edit_artifact(artifact_id: int, body: ArtifactUpdate, db: Session = Depends(
     if artifact is None:
         raise HTTPException(404, "Artifact not found")
     run = db.get(Run, artifact.run_id)
-    if run.status != "awaiting_approval":
-        raise HTTPException(409, "Artifacts can only be edited while the run is waiting for approval")
+    if run.status not in ("awaiting_approval", "changes_requested"):
+        raise HTTPException(409, "Artifacts can only be edited while the run is waiting for approval or amendments")
     ws = Path(run.workspace)
     (ws / artifact.path).write_text(body.content)
     git_ops.commit_all(ws, f"[manual edit] {artifact.path}")

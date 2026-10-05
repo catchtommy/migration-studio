@@ -3,6 +3,7 @@ const STYLES: Record<string, string> = {
   running: "bg-accent/15 text-accent",
   awaiting_input: "bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-300",
   awaiting_approval: "bg-warn/15 text-warn",
+  changes_requested: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
   completed: "bg-ok/15 text-ok",
   approved: "bg-ok/15 text-ok",
   failed: "bg-bad/15 text-bad",
@@ -11,6 +12,7 @@ const STYLES: Record<string, string> = {
 
 const LABELS: Record<string, string> = {
   awaiting_approval: "Awaiting approval",
+  changes_requested: "Changes requested",
   awaiting_input: "Needs input",
 };
 

@@ -1,5 +1,6 @@
 """The agent library, persisted in `agents` and edited from the Agents page. Workflows use agents as stages."""
 
+import hashlib
 import json
 from typing import Any
 
@@ -8,13 +9,27 @@ from sqlalchemy import inspect, select, text
 from app.agents.defaults import AUTO, CLAUDE_MODELS, DOCS, default_config
 from app.db.models import Agent, Setting
 from app.db.session import engine, session_scope
-from app.orchestrator.stages import STANDARD
+from app.orchestrator.stages import BUILTIN_STAGES
 
 FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instructions", "tools", "outputs", "max_turns",
           "checks")
 # Built-in agents added after the first release, keyed by the settings marker that records they were added once.
-LATER_BUILTINS = {"_added_integration_design": ["integration_design"]}
-BUILTIN = tuple(STANDARD.agent_keys)
+LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
+                  "_added_discovery_agents": ["bounded_contexts", "domain_features"]}
+
+# SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
+# so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
+PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
+    "boundary_design": {"54005c5822e8c7380780ed9bd94127f80e83e35d8733616754436a17334070b5"},
+    "deep_dive": {"9a50019f34790f8b4de82b88a85d7d0b5c7d877100d052ad2886fd66252dc4a3"},
+    "independent_tests": {"d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
+    "microservice_scaffold": {"869be47dce9dcbb7f70c95cf4c4ab19d00772b4b0c5851c71c9e23c481319145"},
+    "modernise": {"a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457"},
+    "modular_monolith": {"07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee"},
+    "monolith_integration": {"08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
+}
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v2"
+BUILTIN = tuple(BUILTIN_STAGES)
 
 
 def _as_dict(row: Agent) -> dict[str, Any]:
@@ -24,7 +39,7 @@ def _as_dict(row: Agent) -> dict[str, Any]:
 
 
 def builtin_default(key: str) -> dict[str, Any]:
-    stage = STANDARD.by_key[key]
+    stage = BUILTIN_STAGES[key]
     return {"title": stage.title, "description": stage.description, **default_config(key)}
 
 
@@ -51,8 +66,9 @@ def seed() -> None:
         if s.scalar(select(Agent).limit(1)) is not None:
             _models_to_auto(s)
             _add_later_builtins(s)
+            _upgrade_untouched_builtins(s)
             return
-        for marker in LATER_BUILTINS:  # a fresh database gets every built-in below
+        for marker in [*LATER_BUILTINS, UPGRADE_MARKER]:  # a fresh database gets the current built-ins below
             s.add(Setting(key=marker, value=True))
         legacy = _legacy_configs()
         old_settings = {row.key: row.value for row in s.query(Setting).filter(
@@ -84,6 +100,20 @@ def _add_later_builtins(s) -> None:
             if s.get(Agent, key) is None:
                 s.add(Agent(key=key, **builtin_default(key)))
         s.add(Setting(key=marker, value=True))
+
+
+def _upgrade_untouched_builtins(s) -> None:
+    """Once: built-ins never edited since an earlier release get the current defaults. Mode, model, effort, JDK and
+    max turns are kept; edited agents are left alone."""
+    if s.get(Setting, UPGRADE_MARKER) is not None:
+        return
+    for key, hashes in PREVIOUS_DEFAULT_HASHES.items():
+        row = s.get(Agent, key)
+        if row is not None and hashlib.sha256(row.instructions.encode()).hexdigest() in hashes:
+            current = default_config(key)
+            row.instructions, row.outputs = current["instructions"], current["outputs"]
+            row.tools, row.checks = current["tools"], current["checks"]
+    s.add(Setting(key=UPGRADE_MARKER, value=True))
 
 
 def _models_to_auto(s) -> None:

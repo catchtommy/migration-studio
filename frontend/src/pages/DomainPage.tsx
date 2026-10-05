@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Agent, type AgentInputs, type Dependency, type Domain } from "../lib/api";
+import { api, FEATURES_OP, type Agent, type AgentInputs, type Dependency, type Domain } from "../lib/api";
 import { PatternChip } from "../components/Chips";
 import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
 import { ArtifactViewer } from "../components/ArtifactViewer";
@@ -9,9 +9,11 @@ import { Field, inputClass } from "../components/Field";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
+import { DomainFeatures } from "./DomainFeatures";
 
-type Tab = "docs" | "inputs" | "boundary" | "dependencies" | "details";
+type Tab = "features" | "docs" | "inputs" | "boundary" | "dependencies" | "details";
 const TABS: { key: Tab; label: string }[] = [
+  { key: "features", label: "Features" },
   { key: "docs", label: "Documentation" },
   { key: "inputs", label: "Agent inputs" },
   { key: "boundary", label: "Boundary" },
@@ -19,6 +21,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "details", label: "Details" },
 ];
 
+const opLabel = (operation: string) => (operation === FEATURES_OP ? "Feature list" : operation);
 const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
 
 /** Tables and Java packages this domain owns: given to agents and enforced by the boundary check. */
@@ -151,11 +154,7 @@ function Documentation({ domain }: { domain: Domain }) {
   if (docs.length === 0)
     return (
       <p className="text-sm text-subtle">
-        No operations migrated yet. Start one from the{" "}
-        <Link to="/" className="text-accent hover:underline">
-          Migrations
-        </Link>{" "}
-        page; its documents will appear here.
+        No documents yet. List the domain's features on the Features tab, then migrate them; the documents of every run appear here.
       </p>
     );
 
@@ -168,7 +167,7 @@ function Documentation({ domain }: { domain: Domain }) {
             onClick={() => setParams({ tab: "docs", op: run.id }, { replace: true })}
             className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted ${run.id === runId ? "bg-muted font-medium" : ""}`}
           >
-            <span className="truncate">{run.operation}</span>
+            <span className="truncate">{opLabel(run.operation)}</span>
             <StatusBadge status={run.status} />
           </button>
         ))}
@@ -177,9 +176,9 @@ function Documentation({ domain }: { domain: Domain }) {
         {selected && (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-lg font-semibold">{selected.run.operation}</h2>
+              <h2 className="text-lg font-semibold">{opLabel(selected.run.operation)}</h2>
               <Link to={`/runs/${selected.run.id}`} className="text-sm text-accent hover:underline">
-                Open migration run →
+                Open run →
               </Link>
             </div>
             {withDocs.length === 0 ? (
@@ -315,11 +314,13 @@ function Details({ domain }: { domain: Domain }) {
         <Field label="Default workflow" hint="Preselected when starting a run in this domain.">
           <select className={inputClass} value={defaultWorkflow} onChange={(e) => setDefaultWorkflow(e.target.value)}>
             <option value="">Standard (no domain default)</option>
-            {workflows.map((w) => (
-              <option key={w.key} value={w.key}>
-                {w.name}
-              </option>
-            ))}
+            {workflows
+              .filter((w) => w.scope === "operation")
+              .map((w) => (
+                <option key={w.key} value={w.key}>
+                  {w.name}
+                </option>
+              ))}
           </select>
         </Field>
         <div className="flex items-center gap-3">
@@ -351,7 +352,7 @@ function Details({ domain }: { domain: Domain }) {
 export function DomainPage() {
   const { domainKey = "" } = useParams();
   const [params, setParams] = useSearchParams();
-  const tab = (params.get("tab") as Tab) || "docs";
+  const tab = (params.get("tab") as Tab) || "features";
   const { data: agents } = useAgents();
   const { data: domain, error } = useQuery({ queryKey: ["domain", domainKey], queryFn: () => api.domain(domainKey) });
 
@@ -386,6 +387,7 @@ export function DomainPage() {
           </button>
         ))}
       </nav>
+      {tab === "features" && <DomainFeatures domain={domain} />}
       {tab === "docs" && <Documentation domain={domain} />}
       {tab === "inputs" && <AgentInputsForm domain={domain} agents={agents} />}
       {tab === "boundary" && <Boundary key={domain.key} domain={domain} />}

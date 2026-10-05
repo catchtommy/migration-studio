@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import agent_store, workflow_store
-from app import settings_store
+from app import agent_files, agent_store, settings_store, workflow_store
 from app.agents.defaults import AUTO, CLAUDE_MODELS, EFFORTS, TOOLS
 from app.copilot_service import get_service
 from app.api.schemas import AgentCatalog, AgentCreate, AgentIn, AgentOut
@@ -24,6 +25,55 @@ def create_agent(body: AgentCreate):
         return agent_store.create(body.key, body.title, body.description)
     except ValueError as e:
         raise HTTPException(409, str(e))
+
+
+class AgentFile(BaseModel):
+    content: str = Field(min_length=1, max_length=200_000)
+
+
+@router.post("/parse-agent-md")
+def parse_agent_md(body: AgentFile):
+    """Read a Copilot custom agent file (*.agent.md) into agent fields, without saving anything."""
+    try:
+        return agent_files.parse(body.content)
+    except agent_files.InvalidAgentFile as e:
+        raise HTTPException(422, str(e))
+
+
+@router.post("/render-agent-md")
+def render_agent_md(body: AgentIn):
+    """The (possibly unsaved) agent fields as agent.md text, for the agent.md editor."""
+    return {"content": agent_files.render(body.model_dump())}
+
+
+@router.put("/{key}/agent-md")
+def save_agent_md(key: str, body: AgentFile):
+    """Save an agent from agent.md text. Settings the text leaves out keep their current values."""
+    try:
+        current = agent_store.get(key)
+    except KeyError:
+        raise HTTPException(404, "Agent not found")
+    try:
+        parsed = agent_files.parse(body.content)
+    except agent_files.InvalidAgentFile as e:
+        raise HTTPException(422, str(e))
+    warnings = parsed.pop("warnings")
+    try:
+        fields = AgentIn.model_validate({**{f: current[f] for f in AgentIn.model_fields}, **parsed})
+    except ValidationError as e:
+        raise HTTPException(422, "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()))
+    return {"agent": agent_store.update(key, fields.model_dump()), "warnings": warnings}
+
+
+@router.get("/{key}/agent.md", response_class=PlainTextResponse)
+def export_agent_md(key: str):
+    try:
+        agent = agent_store.get(key)
+    except KeyError:
+        raise HTTPException(404, "Agent not found")
+    filename = f"{key.replace('_', '-')}.agent.md"
+    return PlainTextResponse(agent_files.render(agent), media_type="text/markdown",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/catalog", response_model=AgentCatalog)

@@ -34,6 +34,7 @@ class AgentInputs:
     stage_notes: str = ""
     run_paths: list[str] = field(default_factory=list)
     run_notes: str = ""
+    run_label: str = "this operation"  # what the run's own paths and notes are for, in headings
 
     def as_markdown(self) -> str:
         sections = []
@@ -45,10 +46,10 @@ class AgentInputs:
         if self.stage_notes:
             sections.append("## Notes for this stage (domain)\n" + self.stage_notes)
         if self.run_paths:
-            sections.append("## Entry points and files for this operation\n" +
+            sections.append(f"## Entry points and files for {self.run_label}\n" +
                             "\n".join(f"- {p}" for p in self.run_paths))
         if self.run_notes:
-            sections.append("## Notes for this operation\n" + self.run_notes)
+            sections.append(f"## Notes for {self.run_label}\n" + self.run_notes)
         return "\n\n".join(sections)
 
 

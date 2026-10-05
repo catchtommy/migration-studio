@@ -12,7 +12,7 @@ from app.agents.defaults import default_config
 from app.agents.tools import ToolError, Toolbox
 from app.config import settings
 from app.tools import git_ops
-from tests.conftest import wait_for
+from tests.conftest import start_run, wait_for
 
 _ids = itertools.count()
 
@@ -20,8 +20,8 @@ _ids = itertools.count()
 def test_builtin_agents_are_editable_and_resettable(client):
     agents = client.get("/api/agents").json()
     assert [a["key"] for a in agents if a["builtin"]] == [
-        "as_is_doc", "deep_dive", "boundary_design", "integration_design", "modular_monolith",
-        "microservice_scaffold", "independent_tests", "modernise", "monolith_integration"]
+        "bounded_contexts", "domain_features", "as_is_doc", "deep_dive", "boundary_design", "integration_design",
+        "modular_monolith", "microservice_scaffold", "independent_tests", "modernise", "monolith_integration"]
 
     body = {**builtin_default("deep_dive"), "instructions": "Focus on the batch jobs.", "outputs": ["notes.md"]}
     r = client.put("/api/agents/deep_dive", json=body)
@@ -51,7 +51,7 @@ def test_domain_crud_and_run_validation(client):
         "as_is_doc": {"paths": [" src/a ", ""], "notes": " look here "}}})
     assert r.json()["agent_inputs"]["as_is_doc"] == {"paths": ["src/a"], "notes": "look here"}
 
-    assert client.post("/api/runs", json={"domain": "nope", "operation": "x"}).status_code == 422
+    assert start_run(client, {"domain": "nope", "operation": "x"}).status_code == 422
     assert client.delete(f"/api/domains/{key}").status_code == 204
     assert client.get(f"/api/domains/{key}").status_code == 404
 
@@ -61,7 +61,7 @@ def test_domain_and_operation_inputs_reach_the_agent_and_docs(client):
     client.post("/api/domains", json={"key": key, "name": "Lending", "description": "Loans and repayments"})
     client.put(f"/api/domains/{key}", json={"context": "Oracle schema LND", "agent_inputs": {
         "as_is_doc": {"paths": ["src/main/java/com/acme/loan/**"], "notes": "Start at LoanController"}}})
-    r = client.post("/api/runs", json={"domain": key, "operation": "approveLoan",
+    r = start_run(client, {"domain": key, "operation": "approveLoan",
                                        "inputs": {"paths": ["LoanController.approve"], "notes": "Batch too"}})
     run_id = r.json()["id"]
     wait_for(client, run_id, {"awaiting_approval"})
@@ -83,7 +83,7 @@ def test_domain_and_operation_inputs_reach_the_agent_and_docs(client):
 
 def test_agent_question_pauses_the_run_until_answered(client, monkeypatch):
     monkeypatch.setattr(settings, "stub_questions", True)
-    r = client.post("/api/runs", json={"domain": "loan", "operation": f"q{next(_ids)}"})
+    r = start_run(client, {"domain": "loan", "operation": f"q{next(_ids)}"})
     run_id = r.json()["id"]
 
     run = wait_for(client, run_id, {"awaiting_input"})
@@ -231,3 +231,79 @@ def test_claude_agent_brief_includes_earlier_documents(ctx, monkeypatch):
     assert "- `a/deep-dive.md` (too large to include here; read it with read_file)" in brief
     assert "- `a/scenarios.md`" in brief
     assert brief.index("### AS-IS documentation") < brief.index("### Deep dive")
+
+
+AGENT_MD = """---
+name: as-is-documenter
+description: Documents legacy flows from JSP to SQL
+tools: ['read', 'search', 'web']
+model: claude-sonnet-4.5
+mcp-servers: {}
+---
+
+You document how one operation works today.
+"""
+
+
+def test_agent_md_is_parsed_into_agent_fields(client):
+    r = client.post("/api/agents/parse-agent-md", json={"content": AGENT_MD})
+    assert r.status_code == 200, r.text
+    parsed = r.json()
+    assert parsed["title"] == "As is documenter" and parsed["description"] == "Documents legacy flows from JSP to SQL"
+    assert parsed["instructions"] == "You document how one operation works today."
+    assert parsed["tools"] == ["ask_user", "read_file", "list_files", "search_code"]
+    assert parsed["model"] == "claude-sonnet-4.5"
+    assert any("web" in w for w in parsed["warnings"]) and any("mcp-servers" in w for w in parsed["warnings"])
+
+    no_tools = client.post("/api/agents/parse-agent-md", json={"content": "---\ndescription: x\n---\nDo it.\n"}).json()
+    assert "tools" not in no_tools and "model" not in no_tools  # the agent keeps its current tools and model
+    shell = client.post("/api/agents/parse-agent-md", json={"content": "---\ntools: read, shell, edit\n---\nGo\n"})
+    assert {"run_command", "edit_file", "check_boundaries"} <= set(shell.json()["tools"])
+
+    for bad in ("No frontmatter", "---\n: [\n---\nx", "---\nname: x\n---\n"):
+        assert client.post("/api/agents/parse-agent-md", json={"content": bad}).status_code == 422
+
+
+def test_every_agent_round_trips_through_agent_md_text(client):
+    fields = ("title", "description", "mode", "model", "effort", "jdk", "instructions", "tools", "outputs",
+              "max_turns", "checks")
+    for agent in client.get("/api/agents").json():
+        text = client.get(f"/api/agents/{agent['key']}/agent.md").text
+        parsed = client.post("/api/agents/parse-agent-md", json={"content": text}).json()
+        same = {f: parsed[f] for f in fields if f != "tools"}
+        assert same == {f: (agent[f].strip() if f == "instructions" else agent[f])
+                        for f in fields if f != "tools"}, agent["key"]
+        assert set(parsed["tools"]) == set(agent["tools"]), agent["key"]  # order doesn't matter
+        assert parsed["warnings"] == []
+        rendered = client.post("/api/agents/render-agent-md", json={f: agent[f] for f in fields}).json()["content"]
+        assert rendered == text
+
+    r = client.get("/api/agents/deep_dive/agent.md")
+    assert 'filename="deep-dive.agent.md"' in r.headers["content-disposition"]
+    assert r.text.startswith("---\nname: Deep dive\n")
+
+
+def test_agent_is_saved_from_agent_md_text(client):
+    before = client.get("/api/agents/modernise").json()
+    text = client.get("/api/agents/modernise/agent.md").text
+    edited = (text.replace("effort: high", "effort: low")
+                  .replace("- run_command\n", "")
+                  .replace(before["instructions"].strip(), "Modernise carefully."))
+    r = client.put("/api/agents/modernise/agent-md", json={"content": edited})
+    assert r.status_code == 200, r.text
+    saved = r.json()["agent"]
+    assert saved["effort"] == "low" and "run_command" not in saved["tools"]
+    assert saved["instructions"] == "Modernise carefully."
+    assert saved["checks"] == before["checks"] and saved["outputs"] == before["outputs"]
+
+    # A plain Copilot agent.md (no metadata) keeps the app-only settings.
+    plain = "---\nname: Modernisation\ndescription: Java 25\ntools: [read, edit]\n---\nUpgrade it.\n"
+    saved = client.put("/api/agents/modernise/agent-md", json={"content": plain}).json()["agent"]
+    assert saved["effort"] == "low" and saved["jdk"] == before["jdk"] and saved["max_turns"] == before["max_turns"]
+    assert "ask_user" in saved["tools"] and "run_command" not in saved["tools"]
+
+    for bad, reason in [("metadata:\n  effort: extreme", "effort"), ("metadata:\n  max-turns: 0", "max-turns"),
+                        ("metadata:\n  checks: spelling", "checks"), ("tools: [\n", "line")]:
+        r = client.put("/api/agents/modernise/agent-md", json={"content": f"---\n{bad}\n---\nGo\n"})
+        assert r.status_code == 422 and reason in r.json()["detail"], (bad, r.json())
+    assert client.post("/api/agents/modernise/reset").status_code == 200

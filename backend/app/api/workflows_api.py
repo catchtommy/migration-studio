@@ -22,15 +22,17 @@ def list_workflows(db: Session = Depends(get_db)):
 
 @router.post("", response_model=WorkflowOut, status_code=201)
 def create_workflow(body: WorkflowCreate, db: Session = Depends(get_db)):
+    scope = body.scope
     if body.copy_from:
         try:
-            steps = workflow_store.get(body.copy_from)["steps"]
+            source = workflow_store.get(body.copy_from)
         except KeyError:
             raise HTTPException(404, f"Workflow {body.copy_from} not found")
+        steps, scope = source["steps"], source["scope"]  # a copy covers what the original covers
     else:
         steps = [s.model_dump() for s in body.steps or []]
     try:
-        return _with_runs(db, workflow_store.create(body.key, body.name, body.description, steps))
+        return _with_runs(db, workflow_store.create(body.key, body.name, body.description, steps, scope))
     except WorkflowInvalid as e:
         raise HTTPException(422, str(e))
 

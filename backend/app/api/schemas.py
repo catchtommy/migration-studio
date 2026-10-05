@@ -66,6 +66,7 @@ class RunOut(ORM):
     id: str
     domain: str
     operation: str
+    scope: str = "operation"  # operation (a migration) | domain | monolith (discovery runs)
     workflow: str | None
     workflow_stages: list[StageDefOut] = Field(validation_alias="stage_defs")
     status: str
@@ -75,10 +76,16 @@ class RunOut(ORM):
     created_at: datetime
     updated_at: datetime
 
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _default_scope(cls, scope: str | None) -> str:
+        return scope or "operation"
+
 
 class RunDetail(RunOut):
     workspace: str | None
     inputs: dict | None
+    pending_rerun: dict | None  # a rejection waiting for amendments: {"gate", "target_stage", "comments"}
     stages: list[StageExecutionOut]
     approvals: list[ApprovalOut]
     pending_gate: dict | None = None
@@ -108,6 +115,14 @@ class Decision(BaseModel):
     comments: str | None = None
     target_stage: str | None = None
     reviewer: str = Field(min_length=1, max_length=128)
+    # Rejections only: "now" re-runs straight away; "later" holds the run so agents, inputs and documents can be
+    # amended first, and it re-runs on POST /runs/{id}/rerun.
+    rerun: Literal["now", "later"] = "now"
+
+
+class Rerun(BaseModel):
+    comments: str | None = None  # replaces the rejection's comments when given
+    target_stage: str | None = None
 
 
 class EventOut(ORM):
@@ -210,8 +225,9 @@ class DomainOut(ORM):
 
 
 class DomainSummary(DomainOut):
-    runs: int = 0
+    runs: int = 0  # migration runs
     completed: int = 0
+    features: int = 0
 
 
 class OperationDocs(BaseModel):
@@ -235,10 +251,14 @@ class WorkflowIn(BaseModel):
     steps: list[WorkflowStep] | None = None
 
 
+Scope = Literal["operation", "domain", "monolith"]
+
+
 class WorkflowCreate(BaseModel):
     key: str = Field(pattern=DOMAIN_KEY, max_length=64)
     name: str = Field(min_length=1, max_length=128)
     description: str = ""
+    scope: Scope = "operation"  # what one run covers: a feature, a whole domain or the whole monolith
     steps: list[WorkflowStep] | None = None
     copy_from: str | None = None  # start from another workflow's steps
 
@@ -247,6 +267,7 @@ class WorkflowOut(BaseModel):
     key: str
     name: str
     description: str
+    scope: Scope
     steps: list[WorkflowStep]
     stages: list[StageDefOut]  # steps resolved with agent titles
     runs: int = 0
@@ -306,3 +327,70 @@ class DependencyMap(BaseModel):
     domains: list[str]
     edges: list[DependencyEdge]
     order: list[MigrationStep]
+
+
+FEATURE_KEY = r"^[A-Za-z][A-Za-z0-9_-]*$"
+
+
+class FeatureIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    entry_points: list[str] | None = None
+    tables: list[str] | None = None
+    calls: list[str] | None = None
+
+    @field_validator("entry_points", "tables", "calls")
+    @classmethod
+    def _clean(cls, values: list[str] | None) -> list[str] | None:
+        return None if values is None else list(dict.fromkeys(v.strip() for v in values if v.strip()))
+
+
+class FeatureCreate(FeatureIn):
+    key: str = Field(pattern=FEATURE_KEY, max_length=128)
+    name: str = Field(min_length=1, max_length=255)
+
+
+class RunBrief(BaseModel):
+    id: str
+    status: str
+    current_stage: str | None
+    created_at: datetime
+
+
+class FeatureOut(BaseModel):
+    key: str
+    domain: str
+    name: str
+    description: str
+    entry_points: list[str]
+    tables: list[str]
+    calls: list[str]
+    run_id: str | None  # discovery run that listed it; None when added by hand
+    missing_from_latest: bool
+    migration: RunBrief | None  # latest migration run of this feature
+    created_at: datetime
+    updated_at: datetime
+
+
+class DomainDiscovery(BaseModel):
+    key: str
+    name: str
+    features: int
+    run: RunBrief | None  # latest feature-listing run
+
+
+class DiscoveryOverview(BaseModel):
+    bounded_contexts: RunBrief | None  # latest bounded-contexts run
+    contexts_inputs: AgentInputsIn | None  # paths and notes the latest bounded-contexts run was given
+    contexts_approved: bool
+    domains: list[DomainDiscovery]
+    not_found: list[str]  # domains the latest approved bounded contexts didn't include
+
+
+class DiscoveryStart(BaseModel):
+    workflow: str | None = None  # defaults to the built-in discovery workflow
+    inputs: AgentInputsIn | None = None  # where to look (e.g. existing documentation) and notes, for this run
+
+
+class FeaturesStart(DiscoveryStart):
+    only_missing: bool = True  # skip domains that already have a feature list

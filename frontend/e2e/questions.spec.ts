@@ -1,11 +1,10 @@
 import { expect, test } from "@playwright/test";
+import { newMigration } from "./helpers";
 
 test.skip(!process.env.E2E_STUB_QUESTIONS, "needs a backend started with STUDIO_STUB_QUESTIONS=1");
 
 test("the run pauses for an agent's question and continues once it is answered", async ({ page }) => {
-  await page.goto("/");
-  await page.getByLabel("Domain").selectOption("loan");
-  await page.getByLabel("Operation").fill(`askOp${Date.now()}`);
+  await newMigration(page, "loan", `askOp${Date.now()}`);
   await page.getByRole("button", { name: "Start migration" }).click();
 
   const panel = page.getByRole("region", { name: "Agent question" });

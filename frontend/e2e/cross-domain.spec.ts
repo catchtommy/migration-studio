@@ -1,13 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { newMigration } from "./helpers";
 
 test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this mode");
 
 test("an approved integration design fills the contracts catalogue and the dependency views", async ({ page }) => {
   const operation = `xdOp${Date.now()}`;
-  await page.goto("/");
-  await page.getByLabel("Domain").selectOption("loan");
+  await newMigration(page, "loan", operation);
   await page.getByLabel("Workflow").selectOption({ label: "Standard migration" });
-  await page.getByLabel("Operation").fill(operation);
   await page.getByRole("button", { name: "Start migration" }).click();
 
   const approve = page.getByRole("button", { name: "Approve", exact: true });

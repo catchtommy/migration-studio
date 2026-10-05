@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type Agent, type Workflow, type WorkflowStep } from "../lib/api";
+import { api, SCOPE_LABELS, type Agent, type Scope, type Workflow, type WorkflowStep } from "../lib/api";
 import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
 import { slug } from "../lib/slug";
 import { normalizeSteps, type EditableStep } from "../lib/workflowSteps";
@@ -16,12 +16,16 @@ const toSteps = (steps: EditableStep[]): WorkflowStep[] =>
     s.kind === "agent" ? { kind: "agent", key: s.key, uses: s.uses ?? null, include_content: s.include_content ?? false } : { kind: "gate", key: s.key, title: s.title ?? "", description: s.description ?? "", reviews: s.reviews ?? [] },
   );
 
+/** The agent a new single-step workflow starts with, by what each run covers. */
+const FIRST_AGENT: Record<Scope, string> = { operation: "as_is_doc", domain: "domain_features", monolith: "bounded_contexts" };
+
 function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[]; agents: Agent[]; onCancel: () => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [from, setFrom] = useState(workflows.find((w) => w.key === "standard")?.key ?? workflows[0]?.key ?? "");
+  const [scope, setScope] = useState<Scope>("operation");
   const key = slug(name, "-");
   const create = useMutation({
     mutationFn: () =>
@@ -29,7 +33,7 @@ function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[
         key,
         name: name.trim(),
         description,
-        ...(from ? { copy_from: from } : { steps: [{ kind: "agent", key: agents[0]?.key ?? "" }] }),
+        ...(from ? { copy_from: from } : { scope, steps: [{ kind: "agent", key: (agents.find((a) => a.key === FIRST_AGENT[scope]) ?? agents[0])?.key ?? "" }] }),
       }),
     onSuccess: (w) => {
       queryClient.invalidateQueries({ queryKey: ["workflows"] });
@@ -61,6 +65,17 @@ function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[
           </select>
         </Field>
       </div>
+      {!from && (
+        <Field label="Each run covers" hint="A copy covers what the original covers.">
+          <select className={inputClass} value={scope} onChange={(e) => setScope(e.target.value as Scope)}>
+            {(Object.keys(SCOPE_LABELS) as Scope[]).map((s) => (
+              <option key={s} value={s}>
+                {SCOPE_LABELS[s]}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
       <Field label="Description">
         <textarea rows={2} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
@@ -279,7 +294,12 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
     save.reset();
     setSteps(normalizeSteps(next));
   };
-  const unusedAgent = () => agents.find((a) => !steps.some((s) => s.kind === "agent" && s.key === a.key));
+  // A migration workflow suggests migration agents before the discovery ones.
+  const unusedAgent = () => {
+    const unused = agents.filter((a) => !steps.some((s) => s.kind === "agent" && s.key === a.key));
+    const discovery = Object.values(FIRST_AGENT).filter((k) => k !== FIRST_AGENT.operation);
+    return (workflow.scope === "operation" && unused.find((a) => !discovery.includes(a.key))) || unused[0];
+  };
   const newStep = (kind: "agent" | "gate", at: number): EditableStep | null => {
     if (kind === "agent") {
       const agent = unusedAgent();
@@ -324,7 +344,7 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         </Field>
       </div>
       <p className="text-sm text-subtle">
-        <code className="text-xs">{workflow.key}</code> · {workflow.runs} run{workflow.runs === 1 ? "" : "s"}
+        <code className="text-xs">{workflow.key}</code> · {SCOPE_LABELS[workflow.scope]} · {workflow.runs} run{workflow.runs === 1 ? "" : "s"}
         {defaultFor.length > 0 && <> · default for {defaultFor.map((d) => d.name).join(", ")}</>}. Changes apply to runs started afterwards; runs in progress keep the
         workflow they started with.
       </p>
@@ -432,6 +452,7 @@ export function WorkflowsPage() {
               >
                 <span className="block">{w.name}</span>
                 <span className="block text-xs font-normal text-subtle">
+                  {w.scope !== "operation" && <span className="text-accent">{w.scope === "monolith" ? "Discovery" : "Features"} · </span>}
                   {w.stages.length - gates} agent{w.stages.length - gates === 1 ? "" : "s"} · {gates} approval{gates === 1 ? "" : "s"}
                 </span>
               </NavLink>

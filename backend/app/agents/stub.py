@@ -48,6 +48,7 @@ class StubAgent(StageAgent):
         out.write_text("\n".join(lines) + "\n")
         artifacts = [ArtifactOut(name=out.name, path=ctx.rel(out), kind="markdown")]
         artifacts += _sample_cross_domain_files(ctx)
+        artifacts += _sample_discovery_files(ctx)
         time.sleep(STUB_DELAY)
         ctx.log(f"[stub] wrote {', '.join(a.path for a in artifacts)}")
         return artifacts
@@ -133,6 +134,47 @@ channels:
     for name, content in files.items():
         f = ctx.output_dir / name
         f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+        written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
+    return written
+
+
+SAMPLE_CONTEXT = "documents"  # a bounded context the sample discovery "finds" in addition to the known domains
+
+
+def _sample_discovery_files(ctx: AgentContext) -> list[ArtifactOut]:
+    """Small, valid discovery files, so discovery works end to end without AI: the known domains plus one new bounded
+    context, and three features for a domain."""
+    outputs = ctx.config.get("outputs") or []
+    domains = sorted(ctx.ownership)
+    files: dict[str, str] = {}
+    if "bounded-contexts.yaml" in outputs:
+        keys = [*domains, SAMPLE_CONTEXT] if SAMPLE_CONTEXT not in domains else domains
+        lines = ["# [stub] sample bounded contexts", "contexts:"]
+        for i, key in enumerate(keys):
+            ident = key.replace("-", "_")
+            depends = f"[{keys[i - 1]}]" if i else "[]"
+            lines += [f"  - key: {key}", f"    name: {key.replace('-', ' ').replace('_', ' ').capitalize()}",
+                      f"    description: Everything about {key} (sample)",
+                      f"    packages: [com.acme.{ident}]", f"    tables: [{ident.upper()}]",
+                      f"    entry_points: [src/main/java/com/acme/web/{key.capitalize()}Controller.java]",
+                      f"    depends_on: {depends}"]
+        files["bounded-contexts.yaml"] = "\n".join(lines) + "\n"
+    if "features.yaml" in outputs:
+        other = next((d for d in domains if d != ctx.domain), None)
+        table = ctx.domain.upper().replace("-", "_")
+        lines = ["# [stub] sample features", "features:"]
+        controller = f"{ctx.domain.capitalize()}Controller"
+        for key, name, calls in ((f"view-{ctx.domain}", f"View {ctx.domain}", []),
+                                 (f"create-{ctx.domain}", f"Create {ctx.domain}", [other] if other else []),
+                                 (f"close-{ctx.domain}", f"Close {ctx.domain}", [])):
+            lines += [f"  - key: {key}", f"    name: {name}", f"    description: {name} (sample)",
+                      f"    entry_points: [{controller}.{key.split('-')[0]}, /{ctx.domain}/{key}.do]",
+                      f"    tables: [{table}]", f"    calls: [{', '.join(calls)}]"]
+        files["features.yaml"] = "\n".join(lines) + "\n"
+    written = []
+    for name, content in files.items():
+        f = ctx.output_dir / name
         f.write_text(content)
         written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
     return written

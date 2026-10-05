@@ -32,3 +32,9 @@ def wait_for(client, run_id, statuses, timeout=15.0):
             return run
         time.sleep(0.05)
     raise AssertionError(f"run stuck in {run['status']} (wanted {statuses}); error={run.get('error')}")
+
+
+def start_run(client, body: dict):
+    """POST /api/runs for a feature, adding the feature to the domain first (migrations need a listed feature)."""
+    client.post(f"/api/domains/{body['domain']}/features", json={"key": body["operation"], "name": body["operation"]})
+    return client.post("/api/runs", json=body)
