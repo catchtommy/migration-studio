@@ -86,6 +86,35 @@ features:
     calls: [customer]               # other domains it reaches into
 ```"""
 
+# Machine-readable result of the dependency finder: for one feature, exactly which other domains it is related to.
+# Validated before the agent finishes; the Modulith design agents (domain, wrapper, orchestrator) build on it.
+DOMAIN_DEPENDENCIES_SCHEMA = """```yaml
+# domain-dependencies.yaml: the other domains this one feature is related to, one entry per domain
+feature: create-loan                # the feature (operation) analysed
+domain: loan                        # the domain it belongs to
+decision:                           # the Modulith scope decision; it decides which design steps run
+  scope: cross-domain               # domain-only | cross-domain
+  reason: Calls customer for the KYC status and reads CUST_KYC
+dependencies:                       # empty when scope is domain-only
+  - domain: customer                # key of the OTHER domain
+    relation: calls                 # calls | reads-data | writes-data | called-by | shares-transaction
+    direction: outbound             # outbound: this feature needs the other domain; inbound: the other needs this feature
+    strength: hard                  # hard: the feature fails without it | soft: degrades gracefully | side-effect
+    interactions: [X1]              # ids from the deep dive's cross-domain.yaml, if any
+    touchpoints:                    # the exact places the two domains meet
+      - kind: service               # service | dao | table | view | config | event
+        ref: com.acme.customer.CustomerService#getKycStatus
+        owner: customer             # domain that owns the referenced code or table
+        used_for: Reads the KYC status before approval
+        code_refs: ["src/main/java/com/acme/loan/LoanService.java:120"]
+        tables: [CUST_KYC]          # tables behind it, if any
+    notes: Same transaction as the loan insert
+considered_unrelated:               # domains you checked and ruled out, with the reason
+  - domain: payment
+    reason: Only appears in a comment
+shared_code: [com.acme.common.DateUtils]   # utilities used by several domains (not a domain dependency)
+```"""
+
 _INTEGRATION_RULES = """Decision rules, in order:
 - side-effect (no answer needed) → event: publish a domain event through a transactional outbox to the provider's \
 Service Bus topic; consumers subscribe.
@@ -135,6 +164,123 @@ package ownership you are given to tell domains apart; ask the user when ownersh
 
 Ask the user when a rule's intent is unclear, for example whether an odd branch is a bug or deliberate.""",
 
+    "domain_dependencies": f"""You find, for ONE feature of a legacy monolith, exactly which other domains it is related \
+to. Later steps design the new domain, the wrappers and the orchestration from your result, so be specific and \
+complete. {_LEGACY}
+
+Start from the AS-IS document and the deep dive (including its `cross-domain.yaml`), then verify against the code; \
+they may have missed something. Use the domain ownership you are given (packages and tables per domain) to decide \
+which domain owns each class and table. Follow calls through shared utilities to see whether they reach another \
+domain. For every other domain the feature is related to, find:
+- Outbound: the services, DAOs, iBatis statements and tables of that domain which this feature calls, reads or \
+writes. Name them exactly: `package.Class#method`, the SQL statement id, the table.
+- Inbound: code of other domains that calls this feature's classes or reads or writes its tables (search for usages).
+- Shared transactions, shared tables, JSP includes and Spring XML wiring that cross the domain line.
+- How strongly the feature depends on it: `hard` (fails without it), `soft` (degrades) or `side-effect` (nothing \
+needs the answer).
+
+Be specific: name domains by key, never "other modules"; give a file and line for every touchpoint; put code that \
+belongs to no single domain under `shared_code`, not as a dependency. List the domains you checked and ruled out \
+under `considered_unrelated`, so nobody has to check them again.
+
+Then record the scope decision under `decision`:
+- `domain-only`: the feature has no outbound dependency on another domain. It uses only its own domain's code and \
+tables (shared utilities don't count, and neither do callers from other domains, which use the domain's public \
+API). `dependencies` is then empty or lists only inbound callers. Migration Studio skips the Wrapper and \
+Orchestrator design steps for this feature, because there is nothing to wrap or orchestrate.
+- `cross-domain`: the feature has at least one outbound dependency. The Wrapper and Orchestrator design steps run.
+Give the `reason` in a sentence. Choose `domain-only` only when you have checked the code and are sure; when in \
+doubt, choose `cross-domain`. The decision is validated against `dependencies`, and the reviewer sees it at the \
+design gate.
+
+Write `domain-dependencies.md` (the decision and its reason first; then a table of domain, relation, direction, \
+strength and touchpoints; then a short section per domain, and a note on anything uncertain) and \
+`domain-dependencies.yaml` in this format:
+
+{DOMAIN_DEPENDENCIES_SCHEMA}
+
+Ask the user when it is unclear which domain owns a class or table.""",
+
+    "domain_design": f"""You design the domain that will own this feature, inside the monolith. This is design only: \
+the domain stays in the monolith, on the same technical stack, with the same database and the same UI. {_LEGACY}
+
+Using the AS-IS document, the deep dive and the dependency finder's `domain-dependencies.yaml`, write \
+`domain-design.md` covering:
+- The domain: its key, what it is responsible for and what it is not, and the feature's place in it. If the domain \
+already has features, show how this one fits next to them.
+- The package structure, e.g. `com.acme.<domain>.web`, `.service`, `.dao`, `.model`, `.integration.port`, and which \
+existing classes, iBatis mappings and Spring XML move or are re-homed into it. Say what stays where it is.
+- The public API of the domain: Java interfaces and DTOs, with the behaviour and errors of each method. Callers \
+outside the domain use only this API.
+- Data: the tables the domain owns, unchanged, in the same schema, with the same iBatis statements. No DDL, no \
+column changes, no new tables. A table owned by another domain is never accessed directly; the domain reaches it \
+through a port.
+- Ports: one interface per outbound dependency in `domain-dependencies.yaml`, named after what it does (for \
+example CustomerDirectory), with the methods this feature needs. Only the interfaces are designed here. The wrapper \
+and orchestrator designs decide what stands behind them. When the decision scope is `domain-only` there are no \
+ports, and those two steps are skipped.
+- UI: controllers, URLs, parameters and JSPs stay exactly as they are; show how each controller delegates to the \
+public API.
+- Stack: Java 8, Spring MVC 3, iBatis. No new frameworks or libraries.
+- Risks and open decisions for the reviewer.
+
+Also write `openapi.yaml`: the REST contract of this feature's public API as an OpenAPI 3.1 document (paths, \
+schemas, error responses), faithful to current behaviour. The microservice stage implements it later.
+
+Ask the user about ownership decisions you cannot settle from the code.""",
+
+    "wrapper_design": f"""You design REST wrappers over existing services that belong to other domains, so that \
+this feature can reach them without depending on their classes. A wrapper is a thin REST interface in front of an \
+existing service; it does not move or change that service. {_LEGACY}
+
+Read `domain-dependencies.yaml` from the dependency finder, the domain design (the ports the domain needs) and the \
+contracts catalogue you are given. For every touchpoint of kind service, dao or table with another domain as owner, \
+design one wrapper operation:
+- Path under `/internal/api/v1/<owner domain>/...`, HTTP method, request and response schemas derived from the \
+method signature and the SQL result, error responses.
+- The exact existing `package.Class#method` it delegates to. For a table that another domain owns and no service \
+exposes, name the DAO or SQL statement the owner would wrap, and say that it is a new read operation.
+- Timeouts, idempotency, transaction behaviour and what happens when the owner's code throws.
+- Which port of the domain design it serves.
+Group the operations by owning domain. Expose only what this feature needs. Reuse wrapper operations that already \
+exist in the catalogue instead of designing new ones.
+
+Write `wrapper-design.md` (the operations per owning domain, the delegation, the port each serves, and anything the \
+owning domain's team must know) and `wrapper-api.yaml` (the wrappers as one OpenAPI 3.1 document). When the feature \
+has no dependencies on other domains, say so in `wrapper-design.md` and write a minimal `wrapper-api.yaml`.
+
+If `domain-dependencies.yaml` has `decision.scope: domain-only`, Migration Studio skips this step. If you are run \
+anyway, write `wrapper-design.md` as a short note saying there is nothing to wrap, and stop.
+
+Ask the user when a service's behaviour cannot be exposed as it is, for example when it depends on the HTTP session.""",
+
+    "orchestrator_design": f"""You design how this feature keeps working exactly as it does today while the other \
+domains it depends on are not ready, and how it moves to their wrappers later. The result is an orchestrator inside \
+the monolith. {_LEGACY}
+
+Read the dependency finder's `domain-dependencies.yaml`, the domain design and the wrapper design. For each \
+dependency decide:
+- `local` mode: the port's adapter calls the existing in-monolith service directly. This is the default and keeps \
+today's behaviour, including its transactions.
+- `wrapper` mode: the port's adapter calls the wrapper operation over REST.
+- The configuration property or feature flag that selects the mode for each dependency, per domain, and its default.
+
+Write `orchestrator-design.md` covering:
+- The orchestrator: its classes, the ports it uses, and the order of calls for the feature in each mode (sequence \
+diagrams as text).
+- Transactions: in local mode the feature keeps its single transaction; in wrapper mode a call crosses a \
+transaction boundary. Say what changes for each shared transaction, and how failures are handled (retry, \
+compensation, or an explicit follow-up).
+- Error mapping, timeouts and fallbacks, so that the caller sees the same result in both modes.
+- A readiness table: for each dependent domain, its state (still in the monolith, wrapper available, migrated), \
+the mode used in that state, and what triggers the switch.
+- How the deep dive's test scenarios are run in each mode to show the behaviour is unchanged.
+
+If `domain-dependencies.yaml` has `decision.scope: domain-only`, Migration Studio skips this step. If you are run \
+anyway, write `orchestrator-design.md` as a short note saying there is nothing to orchestrate, and stop.
+
+Ask the user when a shared transaction cannot be kept consistent in wrapper mode and the business must decide.""",
+
     "boundary_design": """You design the boundary of the future microservice that will own this operation, using the \
 AS-IS documentation and deep dive.
 
@@ -153,8 +299,10 @@ Ask the user about ownership decisions you cannot settle from the code.""",
 operation moves into its own microservice. The service must contain only its own domain's features; everything \
 it needs from other domains goes through an agreed contract.
 
-Read the deep dive's cross-domain.yaml, the boundary design, and the contracts catalogue you are given. For every \
-interaction choose one pattern.
+Read the deep dive's cross-domain.yaml, the dependency finder's domain-dependencies.yaml, the domain, wrapper and \
+orchestrator designs, and the contracts catalogue you are given. The wrapper operations are what the monolith \
+offers while other domains are still in it: reuse them as the sync-api contracts instead of designing parallel \
+ones. For every interaction choose one pattern.
 
 {_INTEGRATION_RULES}
 
@@ -177,13 +325,19 @@ Ask the user when a decision depends on business tolerance for stale data or on 
     "modular_monolith": f"""You extract one operation into a module inside the monolith, shaped like the future \
 microservice. {_LEGACY}
 
-Using the approved boundary and integration design:
-- Create the module's package structure with a clear public API (service interface + DTOs) matching the REST contract.
+Using the approved domain, wrapper, orchestrator and integration designs:
+- Create the module's package structure as the domain design describes, with a clear public API (service \
+interface + DTOs) matching the REST contract.
 - Move or copy the operation's controller, service, DAO and iBatis mappings into the module. Callers outside the \
 module must go through its public API only.
 - The module contains only this domain's features. Every dependency on another domain becomes a port: an interface \
 in `<domain>.integration.port`, named after what it does (e.g. CustomerDirectory), with an in-monolith adapter for \
 now. Never copy another domain's classes or query its tables from the module.
+- Implement the orchestrator from the orchestrator design: `local` adapters that call the existing services, \
+`wrapper` adapters that call the wrapper REST operations, and the configuration that selects the mode per \
+dependency, defaulting to `local`.
+- Add the wrapper endpoints from the wrapper design in front of the existing services of the other domains. They \
+only delegate; do not change those services' logic or tables.
 - Keep the code Java 8 / Spring 3 / iBatis compatible. Do not change behaviour.
 - Build with the project's build tool and fix compilation errors before finishing.
 
@@ -285,6 +439,10 @@ Ask the user when you can't tell whether code belongs to this domain, or whether
 OUTPUTS = {
     "as_is_doc": ["as-is.md"],
     "deep_dive": ["deep-dive.md", "test-scenarios.md", "cross-domain.yaml"],
+    "domain_dependencies": ["domain-dependencies.md", "domain-dependencies.yaml"],
+    "domain_design": ["domain-design.md", "openapi.yaml"],
+    "wrapper_design": ["wrapper-design.md", "wrapper-api.yaml"],
+    "orchestrator_design": ["orchestrator-design.md"],
     "boundary_design": ["boundary-design.md", "openapi.yaml"],
     "integration_design": ["integration-design.md", "integration-decisions.yaml"],
     "modular_monolith": ["modular-monolith.md"],
@@ -297,8 +455,8 @@ OUTPUTS = {
 }
 
 _MODERN_JDK = {"modernise", "monolith_integration"}
-_ANALYSIS = {"as_is_doc", "deep_dive", "boundary_design", "integration_design", "bounded_contexts",
-             "domain_features"}
+_ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "domain_design", "wrapper_design",
+             "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts", "domain_features"}
 _BOUNDARY_CHECKED = {"microservice_scaffold", "modernise"}
 
 

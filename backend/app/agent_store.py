@@ -15,20 +15,28 @@ FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instruction
           "checks")
 # Built-in agents added after the first release, keyed by the settings marker that records they were added once.
 LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
-                  "_added_discovery_agents": ["bounded_contexts", "domain_features"]}
+                  "_added_discovery_agents": ["bounded_contexts", "domain_features"],
+                  "_added_modulith_design_agents": ["domain_dependencies", "domain_design", "wrapper_design",
+                                                    "orchestrator_design"]}
 
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
 PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "boundary_design": {"54005c5822e8c7380780ed9bd94127f80e83e35d8733616754436a17334070b5"},
     "deep_dive": {"9a50019f34790f8b4de82b88a85d7d0b5c7d877100d052ad2886fd66252dc4a3"},
+    "domain_dependencies": {"e414b29584fc2df4dfd5d5a4bf1b67f2202e015b1bdbc9e992f937e41a7d51cd"},
+    "domain_design": {"183bbce289171e4d9b20d7d1506417c2aaf10d85c76f278ae91f80e1cadb6405"},
+    "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a"},
+    "orchestrator_design": {"8ee1b3ec61e2994c53791f681523bed3f44c8861ae4576a7cd6c01a9b509bfe7"},
+    "integration_design": {"22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7"},
     "independent_tests": {"d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
     "microservice_scaffold": {"869be47dce9dcbb7f70c95cf4c4ab19d00772b4b0c5851c71c9e23c481319145"},
     "modernise": {"a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457"},
-    "modular_monolith": {"07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee"},
+    "modular_monolith": {"07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee",
+                         "a2faa355ff82f2ded46ea8c43c9f551c16ff2e09a9f5ae0af29931bfac559025"},
     "monolith_integration": {"08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
 }
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v2"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v4"
 BUILTIN = tuple(BUILTIN_STAGES)
 
 

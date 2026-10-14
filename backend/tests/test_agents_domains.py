@@ -20,8 +20,9 @@ _ids = itertools.count()
 def test_builtin_agents_are_editable_and_resettable(client):
     agents = client.get("/api/agents").json()
     assert [a["key"] for a in agents if a["builtin"]] == [
-        "bounded_contexts", "domain_features", "as_is_doc", "deep_dive", "boundary_design", "integration_design",
-        "modular_monolith", "microservice_scaffold", "independent_tests", "modernise", "monolith_integration"]
+        "bounded_contexts", "domain_features", "as_is_doc", "deep_dive", "domain_dependencies", "domain_design",
+        "wrapper_design", "orchestrator_design", "integration_design", "modular_monolith", "microservice_scaffold",
+        "independent_tests", "modernise", "monolith_integration", "boundary_design"]
 
     body = {**builtin_default("deep_dive"), "instructions": "Focus on the batch jobs.", "outputs": ["notes.md"]}
     r = client.put("/api/agents/deep_dive", json=body)

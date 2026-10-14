@@ -23,6 +23,11 @@ DECISION_STATUSES = ("planned", "deferred", "done")
 DECISIONS_FILE = "integration-decisions.yaml"
 CATALOGUE_DIR = ".migration/contracts"  # catalogue specs copied into each run's workspace for its agents
 CROSS_DOMAIN_FILE = "cross-domain.yaml"
+DOMAIN_DEPENDENCIES_FILE = "domain-dependencies.yaml"  # written by the dependency finder
+DEPENDENCY_RELATIONS = ("calls", "reads-data", "writes-data", "called-by", "shares-transaction")
+DEPENDENCY_STRENGTHS = ("hard", "soft", "side-effect")
+TOUCHPOINT_KINDS = ("service", "dao", "table", "view", "config", "event")
+MODULITH_SCOPES = ("domain-only", "cross-domain")
 # Statuses that record real progress; re-approving a design must not move a contract back from these.
 _LIVE = ("provided-by-monolith", "provided-by-service", "deprecated")
 
@@ -71,6 +76,57 @@ def parse_cross_domain(text: str) -> list[dict]:
     return items
 
 
+def parse_domain_dependencies(text: str) -> list[dict]:
+    """The other domains one feature is related to, from the dependency finder's file."""
+    return load_domain_dependencies(text)["dependencies"]
+
+
+def load_domain_dependencies(text: str) -> dict:
+    """The dependency finder's whole file, validated: its Modulith scope decision and the dependencies."""
+    data = _load(text, DOMAIN_DEPENDENCIES_FILE)
+    items = data.get("dependencies")
+    if not isinstance(items, list):
+        raise InvalidDocument(f"{DOMAIN_DEPENDENCIES_FILE}: 'dependencies' must be a list (it can be empty)")
+    seen = set()
+    for i, item in enumerate(items, 1):
+        where = f"{DOMAIN_DEPENDENCIES_FILE} dependency {i}"
+        if not isinstance(item, dict):
+            raise InvalidDocument(f"{where} must be a mapping")
+        _require(item, ("domain", "relation"), where)
+        _one_of(item["relation"], DEPENDENCY_RELATIONS, where)
+        _one_of(item.get("direction", "outbound"), ("outbound", "inbound"), where)
+        if item.get("strength") is not None:
+            _one_of(item["strength"], DEPENDENCY_STRENGTHS, where)
+        if not isinstance(item.get("touchpoints"), list) or not item["touchpoints"]:
+            raise InvalidDocument(f"{where}: list the touchpoints (the services, DAOs or tables where "
+                                  f"{item['domain']} and this feature meet)")
+        for j, t in enumerate(item["touchpoints"], 1):
+            t_where = f"{where} touchpoint {j}"
+            if not isinstance(t, dict):
+                raise InvalidDocument(f"{t_where} must be a mapping")
+            _require(t, ("kind", "ref"), t_where)
+            _one_of(t["kind"], TOUCHPOINT_KINDS, t_where)
+        key = (item["domain"], item["relation"], item.get("direction", "outbound"))
+        if key in seen:
+            raise InvalidDocument(f"{where}: {item['domain']} is listed twice with the same relation and direction; "
+                                  "merge the touchpoints")
+        seen.add(key)
+    decision = data.get("decision")
+    where = f"{DOMAIN_DEPENDENCIES_FILE} decision"
+    if not isinstance(decision, dict):
+        raise InvalidDocument(f"{where}: add a decision with a scope (domain-only or cross-domain) and a reason")
+    _require(decision, ("scope", "reason"), where)
+    _one_of(decision["scope"], MODULITH_SCOPES, where)
+    outbound = [i["domain"] for i in items if i.get("direction", "outbound") == "outbound"]
+    if decision["scope"] == "domain-only" and outbound:
+        raise InvalidDocument(f"{where}: scope domain-only, but the feature has outbound dependencies on "
+                              f"{', '.join(dict.fromkeys(outbound))}; choose cross-domain or correct the list")
+    if decision["scope"] == "cross-domain" and not outbound:
+        raise InvalidDocument(f"{where}: scope cross-domain, but no outbound dependency is listed; "
+                              "choose domain-only or list the dependency")
+    return {"decision": decision, "dependencies": items}
+
+
 def parse_decisions(text: str) -> dict:
     data = _load(text, DECISIONS_FILE)
     decisions, contracts = data.get("decisions"), data.get("contracts") or []
@@ -111,7 +167,8 @@ def _exists(key: str) -> bool:
 def validate_outputs(output_dir: Path) -> list[str]:
     """Problems with the structured cross-domain files an agent wrote (none when the files are absent)."""
     problems = []
-    for name, parse in ((CROSS_DOMAIN_FILE, parse_cross_domain), (DECISIONS_FILE, parse_decisions)):
+    for name, parse in ((CROSS_DOMAIN_FILE, parse_cross_domain), (DOMAIN_DEPENDENCIES_FILE, parse_domain_dependencies),
+                        (DECISIONS_FILE, parse_decisions)):
         f = output_dir / name
         if not f.is_file():
             continue

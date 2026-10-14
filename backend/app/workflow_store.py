@@ -34,17 +34,28 @@ def steps_of(workflow: Workflow) -> list[dict]:
              "reviews": list(s.reviews)} for s in workflow.stages]
 
 
-STANDARD_DESCRIPTION = ("AS-IS → deep dive → design → cross-domain integration → module → microservice → "
-                        "tests → modernisation → integration, with four approval gates.")
+STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → Modulith design (domain, wrapper, orchestrator) → "
+                        "cross-domain integration → module → microservice → tests → modernisation → integration, "
+                        "with four approval gates.")
 
 
 def _shape(steps: list[dict]) -> list[tuple]:
     return [(st["kind"], st["key"], tuple(st.get("reviews") or ())) for st in steps]
 
 
-# The standard workflow as first released, before the cross-domain integration design step.
-_STANDARD_V1 = [(k, key, ("boundary_design",) if key == "gate_design" else r)
-                for k, key, r in _shape(steps_of(STANDARD)) if key != "integration_design"]
+# Earlier releases of the standard workflow, as (kind, key, reviews). A stored workflow equal to one of these has not
+# been customised, so seed() brings it up to the current STANDARD. These are literal on purpose: STANDARD changes.
+_TAIL = [("agent", "modular_monolith", ()), ("agent", "microservice_scaffold", ()),
+         ("agent", "independent_tests", ()),
+         ("gate", "gate_tests", ("modular_monolith", "microservice_scaffold", "independent_tests")),
+         ("agent", "modernise", ()), ("agent", "monolith_integration", ()),
+         ("gate", "gate_release", ("modernise", "monolith_integration"))]
+_HEAD = [("agent", "as_is_doc", ()), ("agent", "deep_dive", ()), ("gate", "gate_analysis", ("as_is_doc", "deep_dive"))]
+# First release: no cross-domain integration design step.
+_STANDARD_V1 = [*_HEAD, ("agent", "boundary_design", ()), ("gate", "gate_design", ("boundary_design",)), *_TAIL]
+# Second release: boundary design and cross-domain integration design.
+_STANDARD_V2 = [*_HEAD, ("agent", "boundary_design", ()), ("agent", "integration_design", ()),
+                ("gate", "gate_design", ("boundary_design", "integration_design")), *_TAIL]
 
 
 def seed() -> None:
@@ -53,12 +64,15 @@ def seed() -> None:
             s.add(WorkflowDef(key=STANDARD_KEY, name="Standard migration", steps=steps_of(STANDARD),
                               description=STANDARD_DESCRIPTION))
             s.add(Setting(key="_standard_workflow_v2", value=True))
-        elif s.get(Setting, "_standard_workflow_v2") is None:
+            s.add(Setting(key="_standard_workflow_v3", value=True))
+        else:
             # Upgrade the standard workflow only if nobody has changed it; customised ones are left alone.
-            standard = s.get(WorkflowDef, STANDARD_KEY)
-            if standard is not None and _shape(standard.steps) == _STANDARD_V1:
-                standard.steps, standard.description = steps_of(STANDARD), STANDARD_DESCRIPTION
-            s.add(Setting(key="_standard_workflow_v2", value=True))
+            for marker, previous in (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2)):
+                if s.get(Setting, marker) is None:
+                    standard = s.get(WorkflowDef, STANDARD_KEY)
+                    if standard is not None and _shape(standard.steps) == previous:
+                        standard.steps, standard.description = steps_of(STANDARD), STANDARD_DESCRIPTION
+                    s.add(Setting(key=marker, value=True))
         if s.get(Setting, "_added_discovery_workflows") is None:
             for scope, (key, name, description, workflow) in DISCOVERY.items():
                 if s.get(WorkflowDef, key) is None:

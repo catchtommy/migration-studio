@@ -80,6 +80,28 @@ interactions:
     code_refs: []
     consistency: eventual
 """
+    if "domain-dependencies.yaml" in outputs:
+        files["domain-dependencies.yaml"] = f"""# [stub] sample domain dependencies
+feature: {ctx.operation}
+domain: {ctx.domain}
+decision:
+  scope: cross-domain
+  reason: "[stub] Reads a {other} summary while handling {ctx.operation}"
+dependencies:
+  - domain: {other}
+    relation: calls
+    direction: outbound
+    strength: hard
+    interactions: [X1]
+    touchpoints:
+      - kind: service
+        ref: com.acme.{other}.{other.capitalize()}Service#get{other.capitalize()}Summary
+        owner: {other}
+        used_for: Reads a {other} summary while handling {ctx.operation}
+        code_refs: []
+considered_unrelated: []
+shared_code: []
+"""
     if "integration-decisions.yaml" in outputs:
         files["integration-decisions.yaml"] = f"""# [stub] sample integration decisions
 decisions:

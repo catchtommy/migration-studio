@@ -4,7 +4,33 @@ A web UI that drives the migration of the Java 8 / Spring MVC 3 / iBatis monolit
 one domain operation at a time. Each operation goes through a workflow of agent stages and human approval gates.
 Workflows are editable (Workflows page); the built-in *Standard migration* workflow is:
 
-AS-IS docs → Deep dive → 👤 → Boundary design → Cross-domain integration design → 👤 → Module in monolith → Spring Boot microservice → Independent tests → 👤 → Modernisation → Monolith integration → 👤
+AS-IS docs → Deep dive → 👤 → **Cross-domain dependency finder → Modulith design (Domain → Wrapper → Orchestrator)** → Cross-domain integration design → 👤 → Module in monolith → Spring Boot microservice → Independent tests → 👤 → Modernisation → Monolith integration → 👤
+
+### Modulith design
+
+After the analysis is approved, four focused agents prepare the feature for the monolith. Each reads only the earlier
+documents it builds on (the step's *uses*), and one gate (*Approve design*) reviews all of them with the cross-domain
+integration design.
+
+| Agent | Does | Writes |
+| --- | --- | --- |
+| **Cross-domain dependency finder** | For this one feature, finds exactly which other domains it is related to: which service, DAO or table of each, in which direction, how strongly, with code references. Also lists the domains it ruled out. | `domain-dependencies.md`, `domain-dependencies.yaml` |
+| **Modulith design: Domain** | Designs the feature's domain inside the monolith: packages, public API, owned tables, the ports it needs. Same technical stack, no database change, no UI change. | `domain-design.md`, `openapi.yaml` |
+| **Modulith design: Wrapper** | Designs a REST wrapper (`/internal/api/v1/<domain>/…`) over each existing service of another domain that the feature depends on, from the dependency finder's touchpoints. | `wrapper-design.md`, `wrapper-api.yaml` |
+| **Modulith design: Orchestrator** | Looks up the dependencies, the domain design and the wrapper design, and designs how the feature works as is while other domains are not ready (`local` mode: the existing service) and how it switches to the wrapper (`wrapper` mode), per dependency, by configuration. | `orchestrator-design.md` |
+
+**Scope decision.** The dependency finder also records a decision in `domain-dependencies.yaml`: `domain-only` (the
+feature has no outbound dependency on another domain) or `cross-domain`, with a reason. For a `domain-only` feature
+the **Wrapper** and **Orchestrator** steps are skipped: no agent runs, and each leaves a short "skipped" note that
+quotes the decision, so the timeline and later steps still see it. The decision is checked against the dependency
+list (`domain-only` with an outbound dependency, or `cross-domain` with none, is refused), and the reviewer sees it
+at the design gate. To bring the steps back, change the decision to `cross-domain` and reject the gate so they
+re-run.
+
+`domain-dependencies.yaml` is validated before the dependency finder may finish (the decision, relations, directions,
+strengths and touchpoints). The *Module in monolith* agent implements the designs: the module, the orchestrator and wrapper
+adapters, and the wrapper endpoints. The earlier *Modular monolith design* (`boundary_design`) agent stays in the
+library for custom workflows but is no longer part of the Standard migration workflow.
 
 ## Run it
 
@@ -162,6 +188,8 @@ beyond that.
 - The **Domains** page shows the dependency matrix and a **suggested migration order**: domains others depend on
   synchronously the least go first (typically event consumers such as notification and auditing).
 - Upgrading adds the new agent and step to the built-in *Standard migration* workflow, unless you customised it.
+- The Modulith design steps are added to an existing *Standard migration* workflow the same way: only if it still has
+  the previous release's steps. A customised workflow keeps its steps; add the new agents to it on the Workflows page.
 
 ## How it works
 

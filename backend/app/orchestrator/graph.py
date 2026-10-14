@@ -11,9 +11,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from sqlalchemy import func, select
 
-from app import agent_store, contracts_store, discovery_store
+from app import agent_store, contracts_store, discovery_store, modulith_scope
 from app.agents import get_agent
-from app.agents.base_agent import AgentContext, AgentInputs, PriorDocument
+from app.agents.base_agent import AgentContext, AgentInputs, ArtifactOut, PriorDocument
 from app.db.models import Artifact, Domain, Run, StageExecution, utcnow
 from app.db.session import emit, session_scope
 from app.domain_store import normalize_inputs
@@ -76,6 +76,14 @@ def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef, ws: Pa
     return out
 
 
+def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
+    """Skip a Modulith design step the scope decision makes unnecessary: no agent runs, a short note is the document."""
+    ctx.log(f"Skipped {stage.title}: {reason}")
+    note = ctx.output_dir / f"{stage.key}.md"
+    note.write_text(modulith_scope.skip_note(stage.key, stage.title, reason))
+    return [ArtifactOut(name=note.name, path=ctx.rel(note), kind="markdown")]
+
+
 def make_agent_node(workflow: Workflow, stage: StageDef):
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
@@ -121,7 +129,11 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         try:
             if config is None:
                 raise RuntimeError(f"Agent {stage.key!r} no longer exists in the agent library")
-            outputs = get_agent(stage.key, config, settings["ai_provider"]).run(ctx)
+            skipped = modulith_scope.skip_reason(stage.key, ctx.output_dir)
+            if skipped:
+                outputs = _skip(ctx, stage, skipped)
+            else:
+                outputs = get_agent(stage.key, config, settings["ai_provider"]).run(ctx)
         except Exception as e:
             git_ops.reset_hard(ws, start_sha)  # leave a clean tree for the retry
             with session_scope() as s:

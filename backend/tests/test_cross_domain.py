@@ -28,7 +28,8 @@ def _to_design_gate(client, run_id):
     assert run["pending_gate"]["gate"] == "gate_analysis"
     assert _approve(client, run_id).status_code == 200
     run = wait_for(client, run_id, {"awaiting_approval"})
-    assert run["pending_gate"] == {"gate": "gate_design", "reviews": ["boundary_design", "integration_design"]}
+    assert run["pending_gate"] == {"gate": "gate_design", "reviews": [
+        "domain_dependencies", "domain_design", "wrapper_design", "orchestrator_design", "integration_design"]}
     return run
 
 
@@ -175,10 +176,14 @@ def test_agent_with_boundary_check_is_sent_back_until_clean(ctx, monkeypatch):  
 
 # --- upgrades ------------------------------------------------------------------------------------------------------
 
+def _steps_of_shape(shape):
+    return [{"kind": k, "key": key, "uses": None, "include_content": False} if k == "agent" else
+            {"kind": k, "key": key, "title": key, "description": "", "reviews": list(reviews)}
+            for k, key, reviews in shape]
+
+
 def test_standard_workflow_upgrade_only_touches_an_unmodified_workflow(client):
-    v1 = [st for st in workflow_store.steps_of(workflow_store.resolve(
-        client.get("/api/workflows/standard").json()["steps"])) if st["key"] != "integration_design"]
-    v1 = [{**st, "reviews": ["boundary_design"]} if st["key"] == "gate_design" else st for st in v1]
+    v1 = _steps_of_shape(workflow_store._STANDARD_V1)
 
     def reset(steps):
         with session_scope() as s:

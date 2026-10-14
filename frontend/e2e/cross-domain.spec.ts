@@ -14,7 +14,7 @@ test("an approved integration design fills the contracts catalogue and the depen
   await page.getByLabel("Reviewer").fill("e2e-reviewer");
   await approve.click();
   await expect(page.getByRole("heading", { name: /👤 Approve design/ })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Review the output of Modular monolith design, Cross-domain integration design")).toBeVisible();
+  await expect(page.getByText("Review the output of Cross-domain dependency finder, Modulith design: Domain, Modulith design: Wrapper, Modulith design: Orchestrator, Cross-domain integration design")).toBeVisible();
   await approve.click();
   await expect(page.getByRole("heading", { name: /👤 Approve tests/ })).toBeVisible({ timeout: 30_000 });
 

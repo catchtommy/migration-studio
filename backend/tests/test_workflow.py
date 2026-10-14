@@ -33,14 +33,14 @@ def test_happy_path_runs_every_stage_and_gate(client):
     run = wait_for(client, run_id, {"completed"})
 
     assert {s["stage"] for s in run["stages"]} == {
-        "as_is_doc", "deep_dive", "gate_analysis", "boundary_design", "integration_design", "gate_design",
-        "modular_monolith",
+        "as_is_doc", "deep_dive", "gate_analysis", "domain_dependencies", "domain_design", "wrapper_design",
+        "orchestrator_design", "integration_design", "gate_design", "modular_monolith",
         "microservice_scaffold", "independent_tests", "gate_tests", "modernise", "monolith_integration",
         "gate_release"}
     assert all(s["status"] in ("completed", "approved") for s in run["stages"])
     names = [a["name"] for a in client.get(f"/api/runs/{run_id}/artifacts").json()]
-    assert len([n for n in names if n.endswith(".md")]) == 9  # one document per agent stage
-    assert {"cross-domain.yaml", "integration-decisions.yaml"} <= set(names)
+    assert len([n for n in names if n.endswith(".md")]) == 12  # one document per agent stage
+    assert {"cross-domain.yaml", "domain-dependencies.yaml", "integration-decisions.yaml"} <= set(names)
     ws = Path(run["workspace"])
     assert git_ops.git(ws, "rev-parse", "--abbrev-ref", "HEAD") == run["branch"]
 
@@ -51,17 +51,18 @@ def test_reject_rolls_back_and_reruns_target_with_feedback(client):
     decide(client, run_id, decision="approve")
     run = wait_for(client, run_id, {"awaiting_approval"})
     assert run["pending_gate"]["gate"] == "gate_design"
-    design_start = executions(run, "boundary_design")[0]["start_sha"]
+    design_start = executions(run, "domain_dependencies")[0]["start_sha"]  # the gate's first reviewed stage
 
     decide(client, run_id, decision="reject", comments="Split payments tables out")
     run = wait_for(client, run_id, {"awaiting_approval"})
     assert run["pending_gate"]["gate"] == "gate_design"
 
-    attempts = executions(run, "boundary_design")
+    attempts = executions(run, "domain_dependencies")
     assert [a["attempt"] for a in attempts] == [1, 2]
+    assert [a["attempt"] for a in executions(run, "orchestrator_design")] == [1, 2]  # later steps re-run too
     assert attempts[1]["start_sha"] == design_start  # workspace was rolled back before the re-run
     assert attempts[1]["feedback"] == "Split payments tables out"
-    content = (Path(run["workspace"]) / ".migration/customer" / run["operation"] / "boundary_design.md").read_text()
+    content = (Path(run["workspace"]) / ".migration/customer" / run["operation"] / "domain_dependencies.md").read_text()
     assert "Split payments tables out" in content
     assert [g["status"] for g in executions(run, "gate_design")] == ["rejected", "awaiting_approval"]
 

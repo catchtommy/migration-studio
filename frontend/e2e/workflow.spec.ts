@@ -33,6 +33,6 @@ test("a migration run goes through every stage and gate from the UI", async ({ p
   await expect(page.getByText("Completed").first()).toBeVisible({ timeout: 30_000 });
 
   // The re-run design artifact reflects the reviewer's feedback.
-  await page.getByRole("button", { name: /Modular monolith design/ }).click();
+  await page.getByRole("button", { name: /Cross-domain dependency finder/ }).click();  // a rejection re-runs from the gate's first reviewed step
   await expect(page.getByText("Move the address tables into the customer boundary").first()).toBeVisible();
 });

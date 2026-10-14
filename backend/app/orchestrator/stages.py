@@ -71,13 +71,26 @@ STANDARD = Workflow((
              "Business rules, edge cases, exception paths, cross-domain calls and a test scenario catalogue."),
     StageDef("gate_analysis", "Approve analysis", "gate",
              "Review the AS-IS documentation and deep dive.", ("as_is_doc", "deep_dive")),
-    StageDef("boundary_design", "Modular monolith design", "agent",
-             "Bounded context, table ownership, cross-domain dependencies and the proposed REST contract."),
+    # Modulith design: find what this feature depends on, then three focused designs that build on it.
+    StageDef("domain_dependencies", "Cross-domain dependency finder", "agent",
+             "For this feature, find exactly which other domains it calls, reads, writes or is called by, down to "
+             "the service, DAO and table.", uses=("as_is_doc", "deep_dive")),
+    StageDef("domain_design", "Modulith design: Domain", "agent",
+             "Design the feature's domain inside the monolith on the same stack, without changing the database or "
+             "the UI.", uses=("as_is_doc", "deep_dive", "domain_dependencies")),
+    StageDef("wrapper_design", "Modulith design: Wrapper", "agent",
+             "Design REST wrappers over the existing services of the other domains this feature depends on.",
+             uses=("deep_dive", "domain_dependencies", "domain_design")),
+    StageDef("orchestrator_design", "Modulith design: Orchestrator", "agent",
+             "Design how the feature keeps working as is while other domains are not ready, using their existing "
+             "services or the wrappers.", uses=("domain_dependencies", "domain_design", "wrapper_design")),
     StageDef("integration_design", "Cross-domain integration design", "agent",
              "Decide how each cross-domain interaction is handled: API, event, saga, read model or deferred."),
     StageDef("gate_design", "Approve design", "gate",
-             "Review the proposed boundaries, cross-domain integration decisions and contracts.",
-             ("boundary_design", "integration_design")),
+             "Review the dependencies, the domain, wrapper and orchestrator designs and the cross-domain "
+             "integration decisions and contracts.",
+             ("domain_dependencies", "domain_design", "wrapper_design", "orchestrator_design",
+              "integration_design")),
     StageDef("modular_monolith", "Module in monolith", "agent",
              "Extract a Java 8 / Spring 3 / iBatis module shaped like the future microservice."),
     StageDef("microservice_scaffold", "Spring Boot microservice", "agent",
@@ -112,6 +125,14 @@ DOMAIN_FEATURES = Workflow((
              "Review the feature list. Approving makes these features available to migrate.", ("domain_features",)),
 ))
 
+# Built-in agents that no built-in workflow uses any more. They stay in the agent library for custom workflows.
+SUPERSEDED = (
+    StageDef("boundary_design", "Modular monolith design", "agent",
+             "Bounded context, table ownership, cross-domain dependencies and the proposed REST contract. "
+             "Replaced in the Standard migration workflow by the dependency finder and the Modulith design "
+             "domain, wrapper and orchestrator agents."),
+)
+
 # Agent stages of every built-in workflow: the built-in agents.
-BUILTIN_STAGES = {s.key: s for w in (BOUNDED_CONTEXTS, DOMAIN_FEATURES, STANDARD) for s in w.stages
-                  if s.kind == "agent"}
+BUILTIN_STAGES = {s.key: s for s in (*(s for w in (BOUNDED_CONTEXTS, DOMAIN_FEATURES, STANDARD) for s in w.stages),
+                                     *SUPERSEDED) if s.kind == "agent"}

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="bbcfea33-b798-42b5-bb9f-3aaabfad3bd4" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/agent_store.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agent_store.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/agents/defaults.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agents/defaults.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/agents/stub.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agents/stub.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/contracts_store.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/contracts_store.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/orchestrator/graph.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/orchestrator/graph.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/orchestrator/stages.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/orchestrator/stages.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/workflow_store.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/workflow_store.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/tests/test_agents_domains.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/tests/test_agents_domains.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/tests/test_cross_domain.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/tests/test_cross_domain.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/tests/test_workflow.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/tests/test_workflow.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/e2e/cross-domain.spec.ts" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/e2e/cross-domain.spec.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/e2e/workflow.spec.ts" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/e2e/workflow.spec.ts" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_BRANCH_BY_REPOSITORY">
+      <map>
+        <entry key="$PROJECT_DIR$" value="feature/with-cross-domain-v2" />
+      </map>
+    </option>
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;RishiChopra1230&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/catchtommy/migration-studio.git&quot;,
+    &quot;accountId&quot;: &quot;453aabab-604d-4f1d-822b-09132eeea198&quot;
+  }
+}</component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 4
+}</component>
+  <component name="ProjectId" id="3KDI0c9TmkKAlWJbIK68bp3IRZP" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "feature/modular-design-changes-rc",
+    "last_opened_file_path": "/Users/rishichopra/Learning-Rishi/migration_studio/migration-studio",
+    "settings.editor.selected.configurable": "preferences.pluginManager"
+  }
+}]]></component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="bbcfea33-b798-42b5-bb9f-3aaabfad3bd4" name="Changes" comment="" />
+      <created>1791085489865</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1791085489865</updated>
+    </task>
+    <servers />
+  </component>
+</project>
