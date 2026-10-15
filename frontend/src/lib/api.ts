@@ -72,6 +72,20 @@ export interface RunDetail extends Run {
   approvals: Approval[];
   pending_gate: { gate: string; reviews: string[] } | null;
   pending_rerun: { gate: string; target_stage: string; comments: string | null } | null; // rejection held for amendments
+  base_sha: string | null; // the monolith commit the run started from
+  monolith_behind: number | null; // commits the project's base branch has gained since (as last fetched)
+}
+
+/** The server's copy of a project's monolith repository, shared by its runs. */
+export interface RepositoryStatus {
+  url: string;
+  branch: string;
+  cloned: boolean;
+  fetching: boolean;
+  fetched_at: string | null;
+  default_branch: string | null;
+  head: { sha: string; subject: string; author: string; date: string } | null;
+  error: string | null;
 }
 
 export interface ArtifactSummary {
@@ -539,6 +553,8 @@ export const api = {
   updateProject: (key: string, body: { name?: string; description?: string }) => request<ProjectDetail>(`/projects/${key}`, json("PUT", body)),
   deleteProject: (key: string) => request<void>(`/projects/${key}`, { method: "DELETE" }),
   updateProjectSettings: (key: string, values: ProjectSettings) => request<ProjectSettings>(`/projects/${key}/settings`, json("PUT", values)),
+  repository: (key: string) => request<RepositoryStatus>(`/projects/${key}/repository`),
+  fetchRepository: (key: string) => request<RepositoryStatus>(`/projects/${key}/repository/fetch`, { method: "POST" }),
   members: (key: string) => request<Member[]>(`/projects/${key}/members`),
   candidates: (key: string) => request<{ id: number; username: string; display_name: string }[]>(`/projects/${key}/candidates`),
   setMember: (key: string, userId: number, role: string) => request<Member[]>(`/projects/${key}/members/${userId}`, json("PUT", { role })),

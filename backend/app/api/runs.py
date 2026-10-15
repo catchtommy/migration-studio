@@ -14,7 +14,7 @@ from app.api.schemas import (
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import contracts_store, discovery_store, projects, workflow_store, workspace
+from app import contracts_store, discovery_store, projects, repos, workflow_store, workspace
 from app.auth import CurrentUser, require
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
@@ -91,6 +91,8 @@ def create_run(body: RunCreate, db: Session = Depends(get_db)):
 def get_run(run_id: str, db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id)
     detail = RunDetail.model_validate(run)
+    if run.scope == "operation":
+        detail.monolith_behind = repos.behind(run.project, run.base_sha)
     if run.status in ("awaiting_approval", "changes_requested"):
         detail.pending_gate = get_runner().pending_gate(run_id)
     return detail

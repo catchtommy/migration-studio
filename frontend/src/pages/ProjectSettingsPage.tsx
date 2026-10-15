@@ -120,6 +120,53 @@ export function Members({ project, manage }: { project: string; manage?: boolean
   );
 }
 
+/** A one-line note under the repository setting: the server's copy, which each new run fetches first. */
+function RepositoryNote({ project }: { project: string }) {
+  const queryClient = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ["repository", project],
+    queryFn: () => api.repository(project),
+    refetchInterval: (q) => (q.state.data?.fetching ? 1500 : false),
+  });
+  const fetchLatest = useMutation({
+    mutationFn: () => api.fetchRepository(project),
+    onSuccess: (status) => queryClient.setQueryData(["repository", project], status),
+  });
+  if (!data?.url) return null;
+  const error = data.error ?? (fetchLatest.error as Error | null)?.message;
+  return (
+    <p className="-mt-2 text-xs text-subtle">
+      {data.fetching ? (
+        data.cloned ? "Fetching the latest changes…" : "Cloning to the server…"
+      ) : data.cloned ? (
+        <>
+          On the server{data.fetched_at && <>, fetched {new Date(data.fetched_at).toLocaleString()}</>}
+          {data.head && (
+            <>
+              {" "}
+              · latest <code>{data.head.sha.slice(0, 8)}</code> {data.head.subject}
+            </>
+          )}
+          . Each new run fetches the latest first.{" "}
+          <button type="button" onClick={() => fetchLatest.mutate()} className="text-accent hover:underline">
+            Fetch now
+          </button>
+        </>
+      ) : (
+        "Not on the server yet; it's cloned when saved or by the first run."
+      )}
+      {error && !data.fetching && (
+        <span className="block text-bad">
+          {error}{" "}
+          <button type="button" onClick={() => fetchLatest.mutate()} className="text-accent hover:underline">
+            Try again
+          </button>
+        </span>
+      )}
+    </p>
+  );
+}
+
 function General({ project }: { project: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -142,6 +189,7 @@ function General({ project }: { project: string }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["project", project] });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.invalidateQueries({ queryKey: ["repository", project] }); // the repository or branch may have changed
     },
   });
   const remove = useMutation({
@@ -205,7 +253,7 @@ function General({ project }: { project: string }) {
         <section className="space-y-4">
           <h2 className="font-semibold">Source and toolchains</h2>
           <div className="grid gap-4 sm:grid-cols-[1fr_16rem]">
-            <Field label="Monolith repository" hint="Git URL or local path. Each run clones it into its own workspace. Leave empty for a blank workspace.">
+            <Field label="Monolith repository" hint="Git URL or local path, kept once on the server for all runs. Empty: a blank workspace.">
               <input className={input} value={form.monolith_repo as string} onChange={(e) => set("monolith_repo", e.target.value)} />
             </Field>
             <Field label="Base branch" hint="Runs start from this branch or tag. Empty: the repository's default branch.">
@@ -218,6 +266,7 @@ function General({ project }: { project: string }) {
               />
             </Field>
           </div>
+          <RepositoryNote project={project} />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={`Legacy ${lang.toolchain} home`} hint="The monolith's toolchain, for agents set to Legacy">
               <input className={input} value={form.jdk_legacy_home as string} onChange={(e) => set("jdk_legacy_home", e.target.value)} />
@@ -297,7 +346,11 @@ export function ProjectSettingsPage() {
           Members{data ? ` (${data.members})` : ""}
         </button>
       </div>
-      {tab === "general" ? <General key={project} project={project} /> : <Members key={project} project={project} />}
+      {tab === "general" ? (
+        <General key={project} project={project} />
+      ) : (
+        <Members key={project} project={project} />
+      )}
     </div>
   );
 }

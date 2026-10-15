@@ -11,10 +11,10 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from app import projects, repos
 from app.agents.base_agent import docs_dir
 from app.db.models import Artifact, Run, StageExecution
 from app.db.session import emit, session_scope
-from app.settings_store import get as get_setting
 from app.tools import git_ops
 
 
@@ -56,7 +56,7 @@ def rebuild(run_id: str, before_stage: str | None = None) -> str:
             documents.update({a.path: a.content for a in artifacts if a.stage == stage and a.attempt == attempt})
 
     shutil.rmtree(ws, ignore_errors=True)
-    git_ops.init_workspace(ws, get_setting("monolith_repo") or None, branch, base_sha)
+    git_ops.init_workspace(ws, repos.ensure(projects.current()), branch, base_sha)
     missing = []
     for stage, attempt, diff in chain:
         if diff is None:

@@ -11,7 +11,7 @@ from langgraph.types import Command
 
 from app.db.models import Run
 from app.db.session import emit, session_scope
-from app import projects
+from app import projects, repos
 from app.orchestrator import questions
 from app.orchestrator.checkpointer import SqlAlchemySaver
 from app.orchestrator.graph import build_graph
@@ -114,8 +114,9 @@ class Runner:
             if initial:
                 source_branch = get_setting("monolith_branch") or None
                 emit(run_id, "status", f"Preparing workspace{f' from branch {source_branch}' if source_branch else ''}")
-                base_sha = git_ops.init_workspace(Path(workspace), get_setting("monolith_repo") or None, branch,
-                                                  source_branch=source_branch)
+                # The project's copy of the monolith, shared by its runs, fetched first so the run starts from the latest.
+                source = repos.latest_for_run(projects.current(), lambda m: emit(run_id, "log", m))
+                base_sha = git_ops.init_workspace(Path(workspace), source, branch, source_branch=source_branch)
                 with session_scope() as s:
                     s.get(Run, run_id).base_sha = base_sha
                 inp = {"run_id": run_id, "domain": domain, "operation": operation, "workspace": workspace,

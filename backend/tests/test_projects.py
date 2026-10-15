@@ -1,4 +1,5 @@
 import itertools
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -206,23 +207,29 @@ def test_project_admins_manage_access_to_projects_they_are_not_in(client):
                                                                                                 "runs.edit"]
 
 
-def test_runs_clone_the_monolith_from_the_projects_base_branch(tmp_path):
+def make_monolith(path):
+    """A small monolith repository: main, and a release/2.4 branch with a different App.java."""
     import subprocess
 
+    path.mkdir()
+    run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=path, check=True,  # noqa: E731
+                                    capture_output=True)
+    run("init", "--quiet", "-b", "main")
+    (path / "App.java").write_text("main")
+    run("add", "-A")
+    run("commit", "--quiet", "-m", "main")
+    run("checkout", "--quiet", "-b", "release/2.4")
+    (path / "App.java").write_text("release")
+    run("commit", "--quiet", "-am", "release")
+    run("checkout", "--quiet", "main")
+    return run
+
+
+def test_runs_clone_the_monolith_from_the_projects_base_branch(tmp_path):
     from app.tools import git_ops
 
     repo = tmp_path / "monolith"
-    repo.mkdir()
-    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)  # noqa: E731
-    run("init", "--quiet", "-b", "main")
-    (repo / "App.java").write_text("main")
-    run("add", "-A")
-    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "main")
-    run("checkout", "--quiet", "-b", "release/2.4")
-    (repo / "App.java").write_text("release")
-    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-am", "release")
-    run("checkout", "--quiet", "main")
-
+    make_monolith(repo)
     ws = tmp_path / "ws"
     sha = git_ops.init_workspace(ws, str(repo), "migration/x/y", source_branch="release/2.4")
     assert (ws / "App.java").read_text() == "release" and git_ops.head(ws) == sha
@@ -242,3 +249,71 @@ def test_the_base_branch_must_be_a_branch_name(client):
     for bad in ("--upload-pack=x", "a..b", "has space", "x.lock"):
         assert client.put(f"/api/projects/{key}/settings", json={"monolith_branch": bad}).status_code == 422, bad
     assert client.put(f"/api/projects/{key}/settings", json={"monolith_branch": ""}).status_code == 200
+
+
+def test_a_project_keeps_one_copy_of_its_monolith_and_fetches_the_latest_on_request(client, tmp_path):
+    import time
+
+    from app import repos
+    from app.tools import git_ops
+
+    upstream = tmp_path / "monolith"
+    commit = make_monolith(upstream)
+    key = new_project(client)
+    proj = as_project(client, key)
+    assert proj.get(f"/api/projects/{key}/repository").json()["cloned"] is False
+    assert proj.put(f"/api/projects/{key}/settings", json={"monolith_repo": str(upstream)}).status_code == 200
+    for _ in range(100):  # saving a new repository clones it to the server in the background
+        status = proj.get(f"/api/projects/{key}/repository").json()
+        if not status["fetching"]:
+            break
+        time.sleep(0.05)
+    assert status["cloned"] and status["error"] is None
+    proj.post("/api/domains", json={"key": "d", "name": "D", "description": ""})
+    for f in ("one", "two"):
+        proj.post("/api/domains/d/features", json={"key": f, "name": f})
+
+    first = proj.post("/api/runs", json={"domain": "d", "operation": "one"}).json()
+    wait_for(proj, first["id"], {"awaiting_approval"})
+    mirror = repos.mirror_dir(key)
+    ws = proj.get(f"/api/runs/{first['id']}").json()["workspace"]
+    assert git_ops.git(Path(ws), "config", "--get", "remote.origin.url") == str(mirror)  # cloned from the copy
+    status = proj.get(f"/api/projects/{key}/repository").json()
+    assert status["cloned"] and status["head"]["subject"] == "main" and status["default_branch"] == "main"
+
+    (upstream / "App.java").write_text("main v2")
+    commit("commit", "--quiet", "-am", "v2")
+    second = proj.post("/api/runs", json={"domain": "d", "operation": "two"}).json()
+    wait_for(proj, second["id"], {"awaiting_approval"})
+    detail = proj.get(f"/api/runs/{second['id']}").json()
+    assert (Path(detail["workspace"]) / "App.java").read_text() == "main v2"  # a new run fetches the latest first
+    assert detail["monolith_behind"] == 0
+    assert proj.get(f"/api/projects/{key}/repository").json()["head"]["subject"] == "v2"
+    assert proj.get(f"/api/runs/{first['id']}").json()["monolith_behind"] == 1  # runs keep their commit
+
+    commit("commit", "--quiet", "--allow-empty", "-m", "v3")
+    assert proj.post(f"/api/projects/{key}/repository/fetch").status_code == 202  # or on request
+    for _ in range(100):
+        status = proj.get(f"/api/projects/{key}/repository").json()
+        if not status["fetching"]:
+            break
+        time.sleep(0.05)
+    assert status["error"] is None and status["head"]["subject"] == "v3"
+
+    # When the repository can't be reached, a new run goes on with the copy on the server and says so.
+    upstream.rename(tmp_path / "gone")
+    proj.post("/api/domains/d/features", json={"key": "three", "name": "three"})
+    third = proj.post("/api/runs", json={"domain": "d", "operation": "three"}).json()
+    wait_for(proj, third["id"], {"awaiting_approval"})
+    assert (Path(proj.get(f"/api/runs/{third['id']}").json()["workspace"]) / "App.java").read_text() == "main v2"
+    from sqlalchemy import select
+
+    from app.db.models import AuditEvent
+    from app.db.session import session_scope
+    with session_scope() as s:
+        log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == third["id"])))
+    assert "Could not fetch the latest monolith changes" in log
+
+    viewer = make_user(client, ["viewer"])
+    client.put(f"/api/projects/{key}/members/{viewer['id']}", json={"role": "viewer"})
+    assert signed_in(viewer["username"], key).post(f"/api/projects/{key}/repository/fetch").status_code == 403

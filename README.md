@@ -294,7 +294,15 @@ beyond that.
   Documents are passed explicitly: each agent step *uses the output of* all earlier agent steps (default) or selected
   ones, and gets their latest documents' paths, or their contents with *Include contents in prompt* (up to 200k
   characters; larger documents are listed for the agent to read).
-- **Workspace**: each run clones the monolith (Project → Monolith repository, at its base branch) into `backend/data/workspaces/<run id>`
+- **Monolith on the server**: each project keeps one copy of its monolith repository, a bare mirror in
+  `backend/data/repos/<project>.git`, cloned in the background when the repository is saved (or by the first run if
+  it's missing). **Each new run fetches the latest changes first**, so it starts from the newest commit on the base
+  branch. If the fetch fails (network, credentials), the run goes on with the copy on the server and says so in its
+  log. Runs already started keep the commit they started from, and their page says how many newer commits there are.
+  **Fetch latest** on the Project page shows what's new without starting a run (needs *Manage project* or *Run
+  migrations*). Like workspaces, the mirror is a cache and is cloned again if it's missing.
+- **Workspace**: each run makes a local clone of the project's mirror (no network; git hard-links the objects, so
+  it costs little more than the checked-out files), at the project's base branch, into `backend/data/workspaces/<run id>`
   on branch `migration/<domain>/<operation>`. Every stage commits its output, so each attempt has a reviewable diff.
   The workspace is only a working copy: each stage's diff and documents are stored in the database, and a missing
   workspace is rebuilt from them (`app/workspace.py`) — re-cloned at the run's starting commit, the stages' code

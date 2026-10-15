@@ -23,5 +23,9 @@ class Settings(BaseSettings):
     def workspaces_dir(self) -> Path:
         return self.data_dir / "workspaces"
 
+    @property
+    def repos_dir(self) -> Path:
+        return self.data_dir / "repos"  # each project's copy of its monolith repository (app/repos.py)
+
 
 settings = Settings()

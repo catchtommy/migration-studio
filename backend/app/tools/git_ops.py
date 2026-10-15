@@ -43,6 +43,41 @@ def init_workspace(path: Path, source_repo: str | None, branch: str, base_sha: s
     return head(path)
 
 
+def clone_mirror(url: str, path: Path) -> None:
+    """A bare mirror of a repository: every branch and tag, updated with fetch_mirror."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".partial")  # a failed or interrupted clone never looks like a mirror
+    subprocess.run(["rm", "-rf", str(tmp)], check=False)
+    proc = subprocess.run(["git", "clone", "--quiet", "--mirror", "--", url, str(tmp)], capture_output=True, text=True)
+    if proc.returncode != 0:
+        subprocess.run(["rm", "-rf", str(tmp)], check=False)
+        raise GitError(f"git clone {url} failed: {proc.stderr.strip()}")
+    git(tmp, "config", "gc.auto", "0")  # never drop commits runs started from, even if upstream rewrites history
+    tmp.rename(path)
+
+
+def fetch_mirror(path: Path, url: str) -> None:
+    """Bring the mirror up to date with the repository (at `url`, which may have changed since it was cloned)."""
+    if git(path, "config", "--get", "remote.origin.url") != url:
+        git(path, "remote", "set-url", "origin", url)
+    git(path, "fetch", "--quiet", "--prune", "--tags", "origin")
+
+
+def commit_info(repo: Path, ref: str) -> dict | None:
+    """The commit `ref` points at: sha, subject, author and date (None when there's no such ref)."""
+    proc = subprocess.run(["git", "log", "-1", "--format=%H%x00%s%x00%an%x00%cI", ref, "--"], cwd=repo,
+                          capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    sha, subject, author, date = proc.stdout.strip().split("\x00")
+    return {"sha": sha, "subject": subject, "author": author, "date": date}
+
+
+def count_commits(repo: Path, since: str, until: str) -> int | None:
+    proc = subprocess.run(["git", "rev-list", "--count", f"{since}..{until}"], cwd=repo, capture_output=True, text=True)
+    return int(proc.stdout.strip()) if proc.returncode == 0 else None
+
+
 def has_commit(repo: Path, sha: str | None) -> bool:
     if not sha or not (repo / ".git").exists():
         return False

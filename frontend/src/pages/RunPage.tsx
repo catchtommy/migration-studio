@@ -64,7 +64,19 @@ export function RunPage() {
         <p className="mt-1 text-xs text-subtle">
           <span className="font-mono">{run.branch}</span>
           {workflowName && <> · {workflowName} workflow</>}
+          {run.base_sha && (
+            <>
+              {" "}
+              · from monolith commit <span className="font-mono">{run.base_sha.slice(0, 10)}</span>
+            </>
+          )}
         </p>
+        {!!run.monolith_behind && (
+          <p className="mt-2 rounded-md bg-warn/10 px-3 py-1.5 text-sm text-warn">
+            The monolith has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"} on the project's base branch since this run started. This run keeps
+            working on the commit it started from; a new run starts from the latest.
+          </p>
+        )}
         {run.inputs && (run.inputs.paths.length > 0 || run.inputs.notes) && (
           <details className="mt-2 text-sm">
             <summary className="cursor-pointer text-subtle hover:text-fg">{run.scope === "operation" ? "Operation inputs" : "Paths and notes"} given to the agents</summary>

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from app import auth, projects, settings_store
+from app import auth, projects, repos, settings_store
 from app.auth import CurrentUser, current_user, require_global
 from app.db.models import Project, ProjectMember, Role, Run, User
 from app.db.session import session_scope
@@ -77,6 +77,8 @@ def create_project(body: ProjectCreate, user: CurrentUser = Depends(require_glob
                 s.query(ProjectMember).filter(ProjectMember.project == key).delete()
                 s.query(Project).filter(Project.key == key).delete()
             raise HTTPException(422, str(e))
+        if body.settings.get("monolith_repo"):
+            repos.fetch_in_background(key)  # cloned to the server now, so the first run doesn't wait for it
     return get_project(key, user)
 
 
@@ -116,6 +118,28 @@ def delete_project(key: str, user: CurrentUser = Depends(require_global("project
         for model in (Feature, Dependency, Contract, Domain, Agent, WorkflowDef, Setting, ProjectMember):
             s.query(model).filter(model.project == key).delete(synchronize_session=False)
         s.query(Project).filter(Project.key == key).delete()
+    repos.remove(key)
+
+
+# --- the monolith repository on the server -------------------------------------------------------------------------
+
+@router.get("/{key}/repository")
+def repository(key: str, user: CurrentUser = Depends(current_user)) -> dict:
+    """The server's copy of the project's monolith: when it was last fetched and its base branch's latest commit."""
+    _access(key, user)
+    return repos.status(key)
+
+
+@router.post("/{key}/repository/fetch", status_code=202)
+def fetch_repository(key: str, user: CurrentUser = Depends(current_user)) -> dict:
+    """Fetch the latest changes in the background; new runs start from them. Needs Manage project or Run migrations."""
+    permissions = _access(key, user)
+    if not permissions & {"project.manage", "runs.start"}:
+        raise HTTPException(403, "Fetching the repository needs Manage project or Run migrations")
+    if not settings_store.get_project(key)["monolith_repo"]:
+        raise HTTPException(422, "Set the project's monolith repository first")
+    repos.fetch_in_background(key)
+    return repos.status(key)
 
 
 @router.get("/{key}/settings")
@@ -127,10 +151,16 @@ def get_settings(key: str, user: CurrentUser = Depends(current_user)) -> dict:
 @router.put("/{key}/settings")
 def update_settings(key: str, values: dict[str, Any], user: CurrentUser = Depends(current_user)) -> dict:
     _access(key, user, "project.manage")
+    before = settings_store.get_project(key)["monolith_repo"]
     try:
-        return settings_store.update_project(key, values)
+        saved = settings_store.update_project(key, values)
     except KeyError as e:
         raise HTTPException(422, str(e))
+    if saved["monolith_repo"] and saved["monolith_repo"] != before:
+        # A new repository: clone it to the server now (in the background), which also shows at once on the Project
+        # page whether the URL and credentials work, and the first run doesn't wait for the clone.
+        repos.fetch_in_background(key)
+    return saved
 
 
 # --- members -------------------------------------------------------------------------------------------------------

@@ -90,6 +90,8 @@ class RunDetail(RunOut):
     stages: list[StageExecutionOut]
     approvals: list[ApprovalOut]
     pending_gate: dict | None = None
+    base_sha: str | None = None  # the monolith commit the run started from
+    monolith_behind: int | None = None  # commits the project's base branch has gained since (as last fetched)
 
 
 class ArtifactSummary(ORM):
