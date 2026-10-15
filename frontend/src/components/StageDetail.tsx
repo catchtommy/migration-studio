@@ -4,6 +4,8 @@ import { api, type AuditEvent, type Question, type RunDetail, type StageDef } fr
 import { stageStatuses } from "../lib/stageStatus";
 import { ActivityLog } from "./ActivityLog";
 import { ArtifactViewer } from "./ArtifactViewer";
+import { RestartPanel } from "./RestartPanel";
+import { chosen, DocumentPicker, type DocumentChoice } from "./DocumentPicker";
 import { DiffView } from "./DiffView";
 import { StatusBadge } from "./StatusBadge";
 import { useCan } from "../lib/hooks";
@@ -32,7 +34,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
   const { status, attempts } = stageStatuses(stages, run).get(stage.key)!;
   const [attemptIdx, setAttemptIdx] = useState(attempts.length - 1);
   const [tab, setTab] = useState<Tab>("output");
-  const { data: artifacts = [] } = useQuery({ queryKey: ["artifacts", run.id], queryFn: () => api.artifacts(run.id) });
+  const { data: artifacts = [], isLoading: loadingArtifacts } = useQuery({ queryKey: ["artifacts", run.id], queryFn: () => api.artifacts(run.id) });
 
   useEffect(() => setAttemptIdx(attempts.length - 1), [stage.key, attempts.length]);
 
@@ -41,6 +43,8 @@ export function StageDetail({ stage, stages, run, events, questions }: {
   const canEdit = useCan("runs.edit");
   const editable = canEdit && isLatest && (run.status === "awaiting_approval" || run.status === "changes_requested") && !!run.pending_gate?.reviews.includes(stage.key);
   const shown = artifacts.filter((a) => a.stage === stage.key && a.attempt === execution?.attempt);
+  const [doc, setDoc] = useState<DocumentChoice>("all");
+  useEffect(() => setDoc("all"), [stage.key, execution?.attempt]);
   const gateApprovals = run.approvals.filter((a) => a.gate === stage.key);
   const title = (key: string) => stages.find((s) => s.key === key)?.title ?? key;
   const answered = questions.filter((q) => q.stage === stage.key && q.attempt === execution?.attempt && q.status === "answered");
@@ -48,9 +52,10 @@ export function StageDetail({ stage, stages, run, events, questions }: {
   return (
     <div className="space-y-4">
       <header>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-lg font-semibold">{stage.title}</h2>
           <StatusBadge status={run.status === "changes_requested" && run.pending_rerun?.gate === stage.key ? "changes_requested" : status} />
+          <RestartPanel run={run} stage={stage} stages={stages} completed={attempts.some((a) => a.status === "completed")} />
         </div>
         <p className="mt-1 text-sm text-subtle">{stage.description}</p>
         {stage.kind === "agent" && <StageInputs stage={stage} stages={stages} />}
@@ -65,6 +70,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
               className={`rounded-md px-2 py-1 text-xs ${i === attemptIdx ? "bg-fg text-bg" : "bg-muted text-subtle hover:text-fg"}`}
             >
               Attempt {a.attempt} · {a.status}
+              {a.rerun ? " · re-run" : ""}
             </button>
           ))}
         </div>
@@ -72,7 +78,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
 
       {execution?.feedback && stage.kind === "agent" && (
         <div className="rounded-md border border-warn/40 bg-warn/5 p-3 text-sm">
-          <span className="font-medium">Reviewer feedback for this attempt:</span> {execution.feedback}
+          <span className="font-medium">{execution.rerun ? "Notes for this re-run:" : "Reviewer feedback for this attempt:"}</span> {execution.feedback}
         </div>
       )}
       {execution?.error && <div className="rounded-md border border-bad/40 bg-bad/5 p-3 text-sm text-bad">{execution.error}</div>}
@@ -135,9 +141,14 @@ export function StageDetail({ stage, stages, run, events, questions }: {
           </nav>
           {tab === "output" &&
             (shown.length === 0 ? (
-              <p className="text-sm text-subtle">No artifacts for this attempt.</p>
+              <p className="text-sm text-subtle">{loadingArtifacts ? "Loading documents…" : "No artifacts for this attempt."}</p>
             ) : (
-              shown.map((a) => <ArtifactViewer key={a.id} artifactId={a.id} editable={editable} />)
+              <>
+                {shown.length > 1 && <DocumentPicker docs={shown} value={doc} onChange={setDoc} />}
+                {chosen(shown, doc).map((a) => (
+                  <ArtifactViewer key={a.id} artifactId={a.id} editable={editable} />
+                ))}
+              </>
             ))}
           {tab === "changes" && <DiffView runId={run.id} executionId={execution.id} />}
           {tab === "activity" && <ActivityLog events={events} stage={stage.key} />}

@@ -1,4 +1,5 @@
 import itertools
+import secrets
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +17,7 @@ def other_client() -> TestClient:
 
 
 def make_user(client, roles, password="password123"):
-    username = f"user{next(_ids)}"
+    username = f"user{next(_ids)}-{secrets.token_hex(3)}"  # unique even if this module is imported twice
     r = client.post("/api/users", json={"username": username, "display_name": username.title(), "password": password,
                                         "roles": roles})
     assert r.status_code == 201, r.text

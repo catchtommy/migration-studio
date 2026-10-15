@@ -20,13 +20,18 @@ from app.tools import git_ops
 
 def _effective(executions: list[StageExecution], stage_defs: list[dict],
                before_stage: str | None) -> list[StageExecution]:
-    """The completed attempts whose changes are in the workspace now. A stage starts from a tree where it and every
-    later stage are undone (rejections and retries reset to its start), so each attempt drops those first."""
+    """The completed attempts whose changes are in the workspace now. A stage normally starts from a tree where it and
+    every later stage are undone (rejections and retries reset to its start), so each attempt drops those first; a
+    restart's re-run (`rerun`) updates the tree as it is, replacing only the stage's own earlier attempt."""
     position = {d["key"]: i for i, d in enumerate(stage_defs)}
     agents = {d["key"] for d in stage_defs if d["kind"] == "agent"}
     chain: list[StageExecution] = []
     for ex in sorted(executions, key=lambda e: e.id):
         if ex.stage not in agents:
+            continue
+        if ex.rerun:  # a restart updates the stage in place: later stages' changes stay until they re-run
+            if ex.status == "completed":  # a failed one was reset to its start, which kept the earlier attempt
+                chain = [c for c in chain if c.stage != ex.stage] + [ex]
             continue
         chain = [c for c in chain if position[c.stage] < position[ex.stage]]
         if ex.status == "completed":
@@ -86,5 +91,27 @@ def roll_back(run_id: str, ws: Path, sha: str, stage: str) -> None:
     rebuilding it from the database without that stage and the ones after it."""
     if git_ops.has_commit(ws, sha):
         git_ops.reset_hard(ws, sha)
+    else:
+        rebuild(run_id, before_stage=stage)
+
+
+def start_fresh(run_id: str, stage: str) -> None:
+    """Roll the workspace back to where `stage` started, undoing it and every later stage (a fresh restart). The git
+    commit of its last ordinary start is used when nothing earlier changed since; otherwise (earlier stages were
+    re-run in place afterwards, or the commit is gone) the workspace is rebuilt from the database without them."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        ws = Path(run.workspace)
+        order = [d["key"] for d in run.stage_defs]
+        executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run_id)
+                               .order_by(StageExecution.id)).all()
+        start = next((ex for ex in reversed(executions) if ex.stage == stage and not ex.rerun), None)
+        earlier_since = start is None or any(
+            ex.id > start.id and ex.status == "completed" and ex.stage in order
+            and order.index(ex.stage) < order.index(stage) for ex in executions)
+        sha = start.start_sha if start else None
+    if not earlier_since and git_ops.has_commit(ws, sha):
+        git_ops.reset_hard(ws, sha)
+        emit(run_id, "log", "Workspace rolled back to where this step last started fresh", stage)
     else:
         rebuild(run_id, before_stage=stage)

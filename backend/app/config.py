@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -13,6 +14,9 @@ class Settings(BaseSettings):
     data_dir: Path = BACKEND_DIR / "data"
     database_url: str = ""  # overrides the database chosen in the UI (data/database.json); see app/db/config.py
     cors_origins: list[str] = ["http://localhost:5173"]
+    # Claude API credentials, when Claude is the AI provider: from the environment or backend/.env.
+    anthropic_api_key: str = Field("", validation_alias="ANTHROPIC_API_KEY")
+    anthropic_auth_token: str = Field("", validation_alias="ANTHROPIC_AUTH_TOKEN")
     stub_questions: bool = False  # stub agents ask a question per stage, to exercise the question UI without Claude
 
     @property

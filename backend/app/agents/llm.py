@@ -4,6 +4,7 @@ from app.agents import common
 from app.agents.base_agent import AgentContext, ArtifactOut, StageAgent
 from app.agents.common import AgentFailed
 from app.agents.tools import Toolbox, definitions
+from app.config import settings
 
 MAX_TOKENS = 64_000
 BETAS = ["server-side-fallback-2026-07-01", "thinking-display-updates-2026-08-18"]
@@ -13,7 +14,12 @@ DEFAULT_MODEL = "claude-opus-5-5"  # used when an agent's model is "auto"
 def make_client():
     import anthropic  # only needed when Claude is the AI provider
 
-    return anthropic.Anthropic()
+    if not (settings.anthropic_api_key or settings.anthropic_auth_token):
+        raise AgentFailed("The AI provider is the Claude API, but the backend has no Anthropic API key. Set "
+                          "ANTHROPIC_API_KEY in backend/.env (or the backend's environment) and restart it, or switch "
+                          "Settings → AI provider to GitHub Copilot. Then retry the run.")
+    return anthropic.Anthropic(api_key=settings.anthropic_api_key or None,
+                               auth_token=settings.anthropic_auth_token or None)
 
 
 class ClaudeAgent(StageAgent):

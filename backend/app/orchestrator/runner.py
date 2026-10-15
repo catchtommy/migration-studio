@@ -6,6 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from langgraph.graph import START
 from langgraph.types import Command
 
 from app.db.models import Run
@@ -17,6 +18,7 @@ from app.orchestrator.stages import Workflow
 from app.settings_store import get as get_setting
 from app.tools import git_ops
 from app.workspace import ensure as ensure_workspace
+from app.workspace import start_fresh
 
 log = logging.getLogger(__name__)
 
@@ -69,18 +71,39 @@ class Runner:
     def resume(self, run_id: str, decision: dict) -> None:
         self._submit(run_id, Command(resume=decision))
 
+    def restart(self, run_id: str, stage: str, notes: str | None = None, fresh: bool = False) -> None:
+        """Run the workflow again from a stage that already ran, whatever the run's state (completed, failed, or
+        waiting at a gate). That stage and every later agent stage re-run with the agents' current settings; gates
+        ask for approval again. By default they update their existing documents in place; `fresh` first rolls the
+        workspace back to where the stage started, so they regenerate everything (earlier attempts stay recorded)."""
+        with session_scope() as s:
+            stages = s.get(Run, run_id).stage_defs
+        keys = [d["key"] for d in stages]
+        at = keys.index(stage)
+        values: dict = {"refresh": [] if fresh else [d["key"] for d in stages[at:] if d["kind"] == "agent"],
+                        "route": stage}
+        if notes:
+            values["feedback"] = {stage: notes}
+        # Continue as if the step before had just finished (START for the first step); a pending gate is dropped.
+        previous = keys[at - 1] if at else START
+        with self._lock:
+            if run_id in self._active:
+                raise RunBusyError(f"Run {run_id} is already executing")
+        self.graph_for(run_id).update_state(self._config(run_id), values, as_node=previous)
+        self._submit(run_id, None, prepare=(lambda: start_fresh(run_id, stage)) if fresh else None)
+
     def retry(self, run_id: str) -> None:
         # Invoking with None continues from the last checkpoint, re-running the node that failed.
         self._submit(run_id, None)
 
-    def _submit(self, run_id: str, inp, initial: bool = False) -> None:
+    def _submit(self, run_id: str, inp, initial: bool = False, prepare=None) -> None:
         with self._lock:
             if run_id in self._active:
                 raise RunBusyError(f"Run {run_id} is already executing")
             self._active.add(run_id)
-        self._pool.submit(self._drive, run_id, inp, initial)
+        self._pool.submit(self._drive, run_id, inp, initial, prepare)
 
-    def _drive(self, run_id: str, inp, initial: bool) -> None:
+    def _drive(self, run_id: str, inp, initial: bool, prepare=None) -> None:
         try:
             with session_scope() as s:
                 run = s.get(Run, run_id)
@@ -95,6 +118,8 @@ class Runner:
                        "feedback": {}, "stage_shas": {}}
             else:
                 ensure_workspace(run_id)
+            if prepare is not None:  # e.g. a fresh restart's rollback, done here as it may clone the monolith
+                prepare()
 
             self.graph_for(run_id).invoke(inp, self._config(run_id))
             gate, error = self.pending_gate(run_id), None

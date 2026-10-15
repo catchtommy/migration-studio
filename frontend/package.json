@@ -11,12 +11,14 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@asyncapi/react-component": "^3.2.1",
     "@tanstack/react-query": "^5.59.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
     "react-router-dom": "^6.27.0",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "swagger-ui-react": "^5.33.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.2",
@@ -26,6 +28,7 @@
     "@types/node": "^20.19.43",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
+    "@types/swagger-ui-react": "^5.18.0",
     "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.4.20",
     "jsdom": "^25.0.1",

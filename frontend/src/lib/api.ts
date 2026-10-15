@@ -45,6 +45,7 @@ export interface StageExecution {
   end_sha: string | null;
   feedback: string | null;
   error: string | null;
+  rerun?: boolean | null; // re-ran a completed step in place ("Re-run from here")
   started_at: string;
   finished_at: string | null;
 }
@@ -417,6 +418,7 @@ export const api = {
   backToReview: (id: string) => request<Run>(`/runs/${id}/back-to-review`, { method: "POST" }),
   updateRunInputs: (id: string, inputs: AgentInputs) => request<RunDetail>(`/runs/${id}/inputs`, json("PUT", inputs)),
   retry: (id: string) => request<Run>(`/runs/${id}/retry`, { method: "POST" }),
+  restart: (id: string, stage: string, notes?: string, fresh = false) => request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh })),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
   updateArtifact: (id: number, content: string) => request<Artifact>(`/artifacts/${id}`, json("PUT", { content })),

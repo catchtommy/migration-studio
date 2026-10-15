@@ -48,6 +48,7 @@ class StageExecutionOut(ORM):
     end_sha: str | None
     feedback: str | None
     error: str | None
+    rerun: bool | None = None  # re-ran a completed stage in place
     started_at: datetime
     finished_at: datetime | None
 
@@ -118,6 +119,12 @@ class Decision(BaseModel):
     # Rejections only: "now" re-runs straight away; "later" holds the run so agents, inputs and documents can be
     # amended first, and it re-runs on POST /runs/{id}/rerun.
     rerun: Literal["now", "later"] = "now"
+
+
+class Restart(BaseModel):
+    stage: str
+    notes: str | None = Field(default=None, max_length=20_000)  # for the first re-run stage
+    fresh: bool = False  # regenerate from scratch instead of updating the existing documents
 
 
 class Rerun(BaseModel):

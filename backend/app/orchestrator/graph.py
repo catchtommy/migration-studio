@@ -75,6 +75,17 @@ def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef) -> lis
             for (source, path), content in sorted(docs.items(), key=lambda d: (sources.index(d[0][0]), d[0][1]))]
 
 
+def _previous_outputs(run_id: str, stage: str) -> list[str]:
+    """The documents of the stage's latest completed attempt, for a re-run that updates them."""
+    with session_scope() as s:
+        latest = s.scalar(select(func.max(StageExecution.attempt)).where(
+            StageExecution.run_id == run_id, StageExecution.stage == stage, StageExecution.status == "completed"))
+        if latest is None:
+            return []
+        return [a.path for a in s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage == stage,
+                                                                 Artifact.attempt == latest).order_by(Artifact.id))]
+
+
 def _documents(ws: Path, outputs: list[ArtifactOut], docs: str, start_sha: str, end_sha: str) -> list[ArtifactOut]:
     """The stage's documents: what the agent returned plus anything else it wrote to the run's documents folder
     (contract specs, notes), so the database has every document."""
@@ -106,6 +117,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         run_id = state["run_id"]
         ws = Path(state["workspace"])
         feedback = state.get("feedback", {}).get(stage.key)
+        refresh = stage.key in (state.get("refresh") or [])
         settings = get_settings()
 
         with session_scope() as s:
@@ -114,12 +126,13 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             )
             start_sha = git_ops.head(ws)
             execution = StageExecution(run_id=run_id, stage=stage.key, attempt=attempt, status="running",
-                                       start_sha=start_sha, feedback=feedback)
+                                       start_sha=start_sha, feedback=feedback, rerun=refresh or None)
             s.add(execution)
             s.flush()
             exec_id = execution.id
         _set_run(run_id, status="running", current_stage=stage.key)
-        emit(run_id, "status", f"{stage.title} started (attempt {attempt})", stage.key)
+        emit(run_id, "status", f"{stage.title} {'re-run, updating its documents' if refresh else 'started'} "
+                               f"(attempt {attempt})", stage.key)
 
         try:
             config = agent_store.get(stage.key)
@@ -142,6 +155,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             ownership=_ownership(),
             service_dir=settings["service_dir_pattern"].format(domain=domain),
             ask=lambda question, options=None: questions.ask(run_id, stage.key, attempt, question, options),
+            refresh=refresh, previous_outputs=_previous_outputs(run_id, stage.key) if refresh else [],
         )
         try:
             if config is None:
@@ -174,6 +188,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         remaining_feedback = {k: v for k, v in state.get("feedback", {}).items() if k != stage.key}
         return {
             "feedback": remaining_feedback,
+            "refresh": [k for k in state.get("refresh") or [] if k != stage.key],
             "stage_shas": {**state.get("stage_shas", {}), stage.key: {"start": start_sha, "end": end_sha}},
         }
 

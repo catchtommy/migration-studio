@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../lib/api";
+import { SpecView } from "./SpecView";
 
 export function ArtifactViewer({ artifactId, editable }: { artifactId: number; editable: boolean }) {
   const queryClient = useQueryClient();
@@ -64,7 +65,7 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content}</ReactMarkdown>
         </article>
       ) : (
-        <pre className="overflow-x-auto p-4 font-mono text-xs">{artifact.content}</pre>
+        <SpecView content={artifact.content} yaml={<pre className="overflow-x-auto p-4 font-mono text-xs">{artifact.content}</pre>} />
       )}
     </div>
   );

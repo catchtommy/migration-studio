@@ -68,6 +68,19 @@ def prior_documents(ctx: AgentContext) -> str:
     return "\n".join(lines)
 
 
+def refresh_brief(ctx: AgentContext) -> str:
+    """For a restart from a completed stage: work from the existing documents rather than starting over."""
+    existing = "\n".join(f"- `{p}`" for p in ctx.previous_outputs) or "- (none recorded; check the documents folder)"
+    return ("## Re-run of a completed step: update, don't start over\n"
+            "This step already ran and its documents are in the workspace. It is being re-run because its "
+            "instructions, settings or inputs may have changed. Read your previous documents first:\n"
+            f"{existing}\n\n"
+            "Keep everything that is still right. Change or add only what the current instructions and the current "
+            "inputs (including earlier steps' documents, which may have been updated too) require, and edit the "
+            "existing files in place rather than rewriting them. If nothing needs to change, leave the files as "
+            "they are and say so.")
+
+
 def brief(ctx: AgentContext) -> str:
     """The agent's opening message: the task, where to write, earlier documents, guidance, answers and feedback."""
     title = ctx.stage_def.title if ctx.stage_def else ctx.config.get("title", ctx.stage)
@@ -81,6 +94,8 @@ def brief(ctx: AgentContext) -> str:
         f"{description}\n\nThis is attempt {ctx.attempt}.",
         where,
     ]
+    if ctx.refresh:
+        parts.append(refresh_brief(ctx))
     if ctx.previous_artifacts:
         parts.append(prior_documents(ctx))
     guidance = ctx.inputs.as_markdown()
@@ -92,7 +107,9 @@ def brief(ctx: AgentContext) -> str:
         parts.append("## Answers you already received\n" +
                      "\n\n".join(f"Q: {q}\nA: {a}" for q, a in ctx.answered))
     if ctx.feedback:
-        parts.append("## Reviewer feedback on the previous attempt (address all of it)\n" + ctx.feedback)
+        heading = ("## Notes for this re-run (what changed, what to update)" if ctx.refresh else
+                   "## Reviewer feedback on the previous attempt (address all of it)")
+        parts.append(f"{heading}\n{ctx.feedback}")
     return "\n\n".join(parts)
 
 

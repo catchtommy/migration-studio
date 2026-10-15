@@ -1,5 +1,6 @@
 """Placeholder agents that exercise the full orchestration (files, commits, artifacts, gates) without an LLM."""
 
+import re
 import time
 
 from app.agents.base_agent import AgentContext, ArtifactOut, StageAgent
@@ -44,10 +45,14 @@ class StubAgent(StageAgent):
         if answer is not None:
             lines += ["", "## Answer received", answer]
         if ctx.feedback:
-            lines += ["", "## Reviewer feedback addressed", ctx.feedback]
+            lines += ["", "## Re-run notes addressed" if ctx.refresh else "## Reviewer feedback addressed", ctx.feedback]
+        if ctx.refresh:
+            lines += ["", "## Re-run", f"Updated in place from the previous attempt ({len(ctx.previous_outputs)} "
+                                         "document(s)) with the agent's current settings."]
         out.write_text("\n".join(lines) + "\n")
         artifacts = [ArtifactOut(name=out.name, path=ctx.rel(out), kind="markdown")]
         artifacts += _sample_cross_domain_files(ctx)
+        artifacts += _sample_api_files(ctx)
         artifacts += _sample_discovery_files(ctx)
         time.sleep(STUB_DELAY)
         ctx.log(f"[stub] wrote {', '.join(a.path for a in artifacts)}")
@@ -139,18 +144,37 @@ contracts:
     consumers: [{other}]
     spec: contracts/{event}.yaml
 """
-        files[f"contracts/{query}.yaml"] = f"""openapi: 3.1.0
-info: {{title: "{other} summary (stub)", version: "1"}}
-paths:
-  /internal/api/v1/{other}/summary/{{id}}:
-    get:
-      responses: {{"200": {{description: Summary}}}}
-"""
+        files[f"contracts/{query}.yaml"] = sample_openapi(
+            f"{other} summary (stub)", f"/internal/api/v1/{other}", f"{other}Summary",
+            f"What {ctx.domain} needs to know about a {other} record, served by {other}.")
         files[f"contracts/{event}.yaml"] = f"""asyncapi: 3.0.0
-info: {{title: "{ctx.operation} completed (stub)", version: "1"}}
+info:
+  title: "{ctx.operation} completed (stub)"
+  version: "1"
+  description: Sample event contract written by the stub agent.
 channels:
   {ctx.domain}-events:
-    messages: {{{op}Completed: {{payload: {{type: object}}}}}}
+    address: {ctx.domain}-events
+    messages:
+      {op}Completed:
+        $ref: '#/components/messages/{op}Completed'
+operations:
+  publish{op}Completed:
+    action: send
+    channel: {{$ref: '#/channels/{ctx.domain}-events'}}
+    messages:
+      - $ref: '#/channels/{ctx.domain}-events/messages/{op}Completed'
+components:
+  messages:
+    {op}Completed:
+      name: {op}Completed
+      title: {ctx.operation} completed
+      payload:
+        type: object
+        required: [id, occurredAt]
+        properties:
+          id: {{type: string, description: Identifier of the {ctx.domain} record}}
+          occurredAt: {{type: string, format: date-time}}
 """
     written = []
     for name, content in files.items():
@@ -158,6 +182,212 @@ channels:
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(content)
         written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
+    return written
+
+
+def _ident(text: str) -> str:
+    """'loan-approval' -> 'LoanApproval', for schema and message names."""
+    return "".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", text) if part)
+
+
+def sample_openapi(title: str, base: str, resource: str, description: str) -> str:
+    """A small but complete OpenAPI 3.1 document: list, get and create a resource, with schemas, errors and examples."""
+    return f"""openapi: 3.1.0
+info:
+  title: "{title}"
+  version: "1.0.0"
+  description: "{description} Sample written by the stub agent."
+servers:
+  - url: http://localhost:8080
+    description: Local service
+tags:
+  - name: {resource}
+paths:
+  {base}:
+    get:
+      tags: [{resource}]
+      operationId: list{resource}
+      summary: List {resource} records
+      parameters:
+        - name: page
+          in: query
+          schema: {{type: integer, minimum: 0, default: 0}}
+        - name: size
+          in: query
+          schema: {{type: integer, minimum: 1, maximum: 100, default: 20}}
+      responses:
+        "200":
+          description: A page of records
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {{$ref: '#/components/schemas/{resource}'}}
+    post:
+      tags: [{resource}]
+      operationId: create{resource}
+      summary: Create a {resource} record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {{$ref: '#/components/schemas/{resource}Request'}}
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/{resource}'}}
+        "400": {{$ref: '#/components/responses/BadRequest'}}
+  {base}/{{id}}:
+    get:
+      tags: [{resource}]
+      operationId: get{resource}
+      summary: Get one {resource} record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {{type: string}}
+      responses:
+        "200":
+          description: The record
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/{resource}'}}
+              example: {{id: "R-1001", status: ACTIVE, createdAt: "2026-01-31T09:30:00Z"}}
+        "404": {{$ref: '#/components/responses/NotFound'}}
+components:
+  schemas:
+    {resource}:
+      type: object
+      required: [id, status, createdAt]
+      properties:
+        id: {{type: string, example: R-1001}}
+        status: {{type: string, enum: [DRAFT, ACTIVE, CLOSED]}}
+        createdAt: {{type: string, format: date-time}}
+    {resource}Request:
+      type: object
+      required: [reference]
+      properties:
+        reference: {{type: string, description: Business reference from the caller}}
+        notes: {{type: string}}
+    Problem:
+      type: object
+      description: RFC 9457 problem details
+      properties:
+        type: {{type: string, format: uri}}
+        title: {{type: string}}
+        status: {{type: integer}}
+        detail: {{type: string}}
+  responses:
+    BadRequest:
+      description: The request is invalid
+      content:
+        application/problem+json:
+          schema: {{$ref: '#/components/schemas/Problem'}}
+    NotFound:
+      description: No such record
+      content:
+        application/problem+json:
+          schema: {{$ref: '#/components/schemas/Problem'}}
+"""
+
+
+def sample_asyncapi(title: str, domain: str, operation: str) -> str:
+    """A small but complete AsyncAPI 3.0 document: two events the domain publishes and a command it consumes."""
+    name = _ident(operation)
+    return f"""asyncapi: 3.0.0
+info:
+  title: "{title}"
+  version: "1.0.0"
+  description: Events {domain} publishes for {operation}, and the command it handles. Sample written by the stub agent.
+defaultContentType: application/json
+servers:
+  azure:
+    host: mycompany-migration.servicebus.windows.net
+    protocol: amqp
+    description: Azure Service Bus namespace
+channels:
+  {domain}Events:
+    address: {domain}-events
+    description: Topic for everything {domain} publishes
+    messages:
+      {name}Started: {{$ref: '#/components/messages/{name}Started'}}
+      {name}Completed: {{$ref: '#/components/messages/{name}Completed'}}
+  {domain}Commands:
+    address: {domain}-commands
+    description: Queue of commands {domain} handles (saga steps)
+    messages:
+      Cancel{name}: {{$ref: '#/components/messages/Cancel{name}'}}
+operations:
+  publish{name}Started:
+    action: send
+    channel: {{$ref: '#/channels/{domain}Events'}}
+    messages: [{{$ref: '#/channels/{domain}Events/messages/{name}Started'}}]
+  publish{name}Completed:
+    action: send
+    channel: {{$ref: '#/channels/{domain}Events'}}
+    messages: [{{$ref: '#/channels/{domain}Events/messages/{name}Completed'}}]
+  handleCancel{name}:
+    action: receive
+    channel: {{$ref: '#/channels/{domain}Commands'}}
+    messages: [{{$ref: '#/channels/{domain}Commands/messages/Cancel{name}'}}]
+components:
+  messages:
+    {name}Started:
+      name: {name}Started
+      title: {operation} started
+      payload: {{$ref: '#/components/schemas/{name}Event'}}
+    {name}Completed:
+      name: {name}Completed
+      title: {operation} completed
+      payload: {{$ref: '#/components/schemas/{name}Event'}}
+      examples:
+        - payload: {{eventId: "6f1c2b0e", recordId: "R-1001", occurredAt: "2026-01-31T09:30:00Z"}}
+    Cancel{name}:
+      name: Cancel{name}
+      title: Cancel {operation}
+      payload:
+        type: object
+        required: [recordId, reason]
+        properties:
+          recordId: {{type: string}}
+          reason: {{type: string}}
+  schemas:
+    {name}Event:
+      type: object
+      required: [eventId, recordId, occurredAt]
+      properties:
+        eventId: {{type: string, description: Unique per event, for idempotent consumers}}
+        recordId: {{type: string, description: The {domain} record concerned}}
+        occurredAt: {{type: string, format: date-time}}
+"""
+
+
+def _sample_api_files(ctx: AgentContext) -> list[ArtifactOut]:
+    """Sample API documents for the design steps, so their contracts can be reviewed (Swagger UI and AsyncAPI views)
+    without AI: the feature's REST API, the wrappers' API, and the domain events of the feature."""
+    outputs = ctx.config.get("outputs") or []
+    resource = _ident(ctx.domain)
+    base = f"/api/v1/{ctx.domain}"
+    files: dict[str, str] = {}
+    if "openapi.yaml" in outputs:
+        files["openapi.yaml"] = sample_openapi(f"{ctx.domain} – {ctx.operation} (stub)", base, resource,
+                                               f"Public REST API of the {ctx.domain} service for {ctx.operation}.")
+    if "wrapper-api.yaml" in outputs:
+        other = next((d for d in sorted(ctx.ownership) if d != ctx.domain), "shared")
+        files["wrapper-api.yaml"] = sample_openapi(
+            f"{other} wrapper for {ctx.domain} (stub)", f"/internal/api/v1/{other}", _ident(other),
+            f"Operations {other} exposes so {ctx.domain} stops reaching into its tables.")
+    if ctx.stage == "domain_design":
+        files["domain-events.yaml"] = sample_asyncapi(f"{ctx.domain} events – {ctx.operation} (stub)", ctx.domain,
+                                                      ctx.operation)
+    written = []
+    for name, content in files.items():
+        f = ctx.output_dir / name
+        f.write_text(content)
+        written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="openapi" if "openapi" in content[:20] else "yaml"))
     return written
 
 

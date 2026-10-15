@@ -14,3 +14,4 @@ class MigrationState(TypedDict, total=False):
     feedback: dict[str, str]  # stage -> reviewer comments awaiting that stage's next attempt
     stage_shas: dict[str, StageShas]  # latest attempt's git range per agent stage
     route: str | None  # set by gates: where to go next
+    refresh: list[str]  # agent stages still to re-run in place (a restart from a completed stage), see Runner.restart

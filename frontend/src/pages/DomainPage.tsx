@@ -5,6 +5,7 @@ import { api, FEATURES_OP, type Agent, type AgentInputs, type Dependency, type D
 import { PatternChip } from "../components/Chips";
 import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
 import { ArtifactViewer } from "../components/ArtifactViewer";
+import { chosen, DocumentPicker, type DocumentChoice } from "../components/DocumentPicker";
 import { Field, inputClass } from "../components/Field";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { StatusBadge } from "../components/StatusBadge";
@@ -152,6 +153,9 @@ function Documentation({ domain }: { domain: Domain }) {
   const [stage, setStage] = useState<string | null>(null);
   useEffect(() => setStage(null), [runId]);
   const shownStage = stage && withDocs.some((s) => s.key === stage) ? stage : withDocs[0]?.key;
+  const stageDocs = (selected?.artifacts ?? []).filter((a) => a.stage === shownStage);
+  const [doc, setDoc] = useState<DocumentChoice>("all");
+  useEffect(() => setDoc("all"), [runId, shownStage]);
 
   if (isLoading || !docs) return <p className="text-sm text-subtle">Loading…</p>;
   if (docs.length === 0)
@@ -199,11 +203,10 @@ function Documentation({ domain }: { domain: Domain }) {
                     </button>
                   ))}
                 </nav>
-                {selected.artifacts
-                  .filter((a) => a.stage === shownStage)
-                  .map((a) => (
-                    <ArtifactViewer key={a.id} artifactId={a.id} editable={false} />
-                  ))}
+                {stageDocs.length > 1 && <DocumentPicker docs={stageDocs} value={doc} onChange={setDoc} />}
+                {chosen(stageDocs, doc).map((a) => (
+                  <ArtifactViewer key={a.id} artifactId={a.id} editable={false} />
+                ))}
               </>
             )}
           </>

@@ -150,7 +150,7 @@ export function SettingsPage() {
               <CopilotAccount githubHost={data!.github_host as string} />
             </>
           ) : (
-            <p className="text-sm text-subtle">The Claude API uses the ANTHROPIC_API_KEY (or other Anthropic credentials) in the backend's environment.</p>
+            <p className="text-sm text-subtle">The Claude API needs ANTHROPIC_API_KEY in backend/.env (or the backend's environment); restart the backend after setting it.</p>
           )}
         </section>
 

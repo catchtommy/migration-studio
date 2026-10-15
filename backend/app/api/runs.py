@@ -9,7 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.api.schemas import (
     AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, Decision, EventOut, QuestionOut,
-    RunCreate, RunDetail, RunOut, Rerun,
+    RunCreate, RunDetail, RunOut, Rerun, Restart,
 )
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
@@ -214,6 +214,46 @@ def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db
     db.commit()
     emit(run_id, "status", "Run inputs updated")
     return get_run(run_id, db)
+
+
+RESTARTABLE = ("completed", "failed", "awaiting_approval", "changes_requested")
+
+
+@router.post("/runs/{run_id}/restart", response_model=RunOut)
+def restart(run_id: str, body: Restart, db: Session = Depends(get_db),
+            user: CurrentUser = Depends(require("runs.start"))):
+    """Re-run the workflow from a stage that already completed, e.g. after its agent's instructions changed. That
+    stage and the ones after it update their existing documents with the agents' current settings, or with `fresh`
+    regenerate them from where the stage started (earlier attempts, approvals and diffs stay recorded)."""
+    run = _run_or_404(db, run_id)
+    if run.status not in RESTARTABLE or get_runner().is_active(run_id):
+        raise HTTPException(409, "The run is working; wait for it to stop or reach a gate, then re-run")
+    step = next((s for s in run.stage_defs if s["key"] == body.stage), None)
+    if step is None or step["kind"] != "agent":
+        raise HTTPException(422, f"{body.stage} is not an agent step of this run's workflow")
+    if not db.scalar(select(StageExecution.id).where(StageExecution.run_id == run_id, StageExecution.stage == body.stage,
+                                                     StageExecution.status == "completed").limit(1)):
+        raise HTTPException(422, f"{step['title']} hasn't completed yet, so there is nothing to re-run")
+    if run.status == "changes_requested" and run.pending_rerun:
+        latest = db.scalar(select(Approval).where(Approval.run_id == run_id, Approval.gate == run.pending_rerun["gate"])
+                           .order_by(Approval.id.desc()).limit(1))
+        if latest is not None and latest.decision == "reject":
+            db.delete(latest)  # the held rejection never took effect; the restart replaces it
+    before = run.status
+    run.status, run.error, run.pending_rerun = "running", None, None
+    db.commit()
+    later = sum(1 for s in run.stage_defs[run.stage_defs.index(step) + 1:] if s["kind"] == "agent")
+    how = ("starting fresh: the workspace is rolled back and the documents regenerated" if body.fresh else
+           "documents are updated with the agents' current settings")
+    emit(run_id, "status", f"{user.display_name} re-ran the workflow from {step['title']}"
+                           + (f" and the {later} step(s) after it" if later else "") + f": {how}", body.stage)
+    try:
+        get_runner().restart(run_id, body.stage, body.notes, fresh=body.fresh)
+    except RunBusyError as e:
+        run.status = before
+        db.commit()
+        raise HTTPException(409, str(e))
+    return run
 
 
 @router.post("/runs/{run_id}/retry", response_model=RunOut, dependencies=[Depends(require("runs.start"))])

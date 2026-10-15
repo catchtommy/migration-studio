@@ -73,6 +73,9 @@ class AgentContext:
     catalogue: str = ""  # cross-domain ownership, conventions and contracts (markdown)
     ownership: dict = field(default_factory=dict)  # domain key -> {"tables": [...], "packages": [...]}
     service_dir: str = ""  # this domain's microservice directory, relative to the workspace
+    # A restart from a completed stage: update this stage's previous documents (paths below) instead of starting over.
+    refresh: bool = False
+    previous_outputs: list[str] = field(default_factory=list)
     # Asks a person a question (with optional suggested answers) and blocks until it is answered.
     ask: Callable[[str, list[str] | None], str] = lambda question, options=None: ""
 

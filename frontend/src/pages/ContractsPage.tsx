@@ -7,6 +7,7 @@ import { ContractStatusChip, KindChip } from "../components/Chips";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { PageTitle } from "../components/PageTitle";
 import { ShareIcon } from "../components/icons";
+import { SpecView } from "../components/SpecView";
 
 const select = "rounded-md border border-border bg-surface px-2 py-1.5 text-sm";
 
@@ -73,7 +74,12 @@ function ContractRow({ contract, names }: { contract: Contract; names: Map<strin
           <td colSpan={5} className="bg-muted/50 px-4 py-3">
             {contract.description && <p className="mb-2 text-sm">{contract.description}</p>}
             {contract.spec ? (
-              <pre className="max-h-96 overflow-auto rounded-lg border border-border bg-surface p-3 font-mono text-xs">{contract.spec}</pre>
+              <div className="rounded-lg border border-border bg-surface">
+                <SpecView
+                  content={contract.spec}
+                  yaml={<pre className="max-h-96 overflow-auto p-3 font-mono text-xs">{contract.spec}</pre>}
+                />
+              </div>
             ) : (
               <p className="text-sm text-subtle">No spec file was attached to this contract.</p>
             )}

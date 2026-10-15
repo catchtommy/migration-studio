@@ -71,6 +71,8 @@ class StageExecution(Base):
     feedback: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     diff: Mapped[str | None] = mapped_column(Text)  # git diff of the attempt, kept so it outlives the workspace
+    # A restart from a completed stage: the attempt updated the previous documents in place instead of starting over.
+    rerun: Mapped[bool | None] = mapped_column(Boolean)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
