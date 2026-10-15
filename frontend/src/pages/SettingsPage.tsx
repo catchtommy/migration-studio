@@ -8,7 +8,6 @@ import { Field, inputClass as input } from "../components/Field";
 import { PageTitle } from "../components/PageTitle";
 import { SlidersIcon } from "../components/icons";
 import { Guarded } from "../components/Guarded";
-import { useCan } from "../lib/hooks";
 
 /** Where Copilot sign-in happens: github.com, or a GitHub Enterprise Cloud host with data residency (*.ghe.com). */
 function GitHubHost({ value }: { value: string }) {
@@ -103,7 +102,6 @@ function DatabaseSection() {
 }
 
 export function SettingsPage() {
-  const canEditAgents = useCan("agents.manage");
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const [form, setForm] = useState<Settings | null>(null);
@@ -134,7 +132,7 @@ export function SettingsPage() {
   return (
     <Guarded permission="settings.manage">
       <div className="max-w-2xl space-y-8">
-        <PageTitle icon={<SlidersIcon />} title="Settings" subtitle="AI provider, source repository, network and database." tone="from-slate-500 to-slate-700" />
+        <PageTitle icon={<SlidersIcon />} title="Settings" subtitle="Global: AI provider, network and database. Each project's repository, stack and conventions are under Project." tone="from-slate-500 to-slate-700" />
 
         <section className="space-y-4">
           <h2 className="font-semibold">AI provider</h2>
@@ -161,61 +159,13 @@ export function SettingsPage() {
             save.mutate(form);
           }}
         >
-          <section className="space-y-4">
-            <h2 className="font-semibold">Source</h2>
-            <Field label="Monolith repository" hint="Git URL or local path. Each run clones it into its own workspace. Leave empty for a blank workspace.">
-              <input className={input} value={form.monolith_repo as string} onChange={(e) => set("monolith_repo", e.target.value)} />
-            </Field>
-            <Field label="Oracle test connection" hint="Read-only JDBC URL used for schema metadata and integration tests.">
-              <input className={input} value={form.oracle_test_url as string} onChange={(e) => set("oracle_test_url", e.target.value)} />
-            </Field>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="JDK 8 home" hint="Used by agents set to the legacy JDK">
-                <input className={input} value={form.jdk_legacy_home as string} onChange={(e) => set("jdk_legacy_home", e.target.value)} />
-              </Field>
-              <Field label="JDK 25 home" hint="Used by agents set to the modern JDK">
-                <input className={input} value={form.jdk_modern_home as string} onChange={(e) => set("jdk_modern_home", e.target.value)} />
-              </Field>
-            </div>
-          </section>
-
-          <section className="space-y-4">
-            <h2 className="font-semibold">Agents</h2>
-            <p className="text-sm text-subtle">
-              Each stage's agent (mode, model, instructions, tools) is configured on the{" "}
-              {canEditAgents ? (
-                <Link to="/agents" className="text-accent hover:underline">
-                  Agents
-                </Link>
-              ) : (
-                "Agents"
-              )}{" "}
-              page.
-            </p>
-            <Field label="Self-check attempts" hint="How many times an agent is sent back when a required document is missing.">
-              <input type="number" min={1} max={10} className={`${input} max-w-32`} value={form.max_attempts as number} onChange={(e) => set("max_attempts", Number(e.target.value))} />
-            </Field>
-          </section>
-
-          <section className="space-y-4">
-            <h2 className="font-semibold">Cross-domain integration</h2>
-            <p className="text-sm text-subtle">Conventions given to the agents when they design and build cross-domain calls. No secrets are stored here.</p>
-            <Field label="Azure Service Bus namespace" hint="e.g. mycompany-migration.servicebus.windows.net">
-              <input className={input} value={form.event_bus_namespace as string} onChange={(e) => set("event_bus_namespace", e.target.value)} />
-            </Field>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Field label="Event topic per domain" hint="{domain} is replaced">
-                <input className={input} value={form.event_topic_pattern as string} onChange={(e) => set("event_topic_pattern", e.target.value)} />
-              </Field>
-              <Field label="Command queue per domain" hint="For saga steps">
-                <input className={input} value={form.command_queue_pattern as string} onChange={(e) => set("command_queue_pattern", e.target.value)} />
-              </Field>
-              <Field label="Service directory" hint="Where each microservice lives in the repository">
-                <input className={input} value={form.service_dir_pattern as string} onChange={(e) => set("service_dir_pattern", e.target.value)} />
-              </Field>
-            </div>
-          </section>
-
+          <p className="rounded-md border border-border bg-surface px-3 py-2 text-sm text-subtle">
+            The monolith repository, language, toolchains, self-check attempts and cross-domain conventions are set per project on the{" "}
+            <Link to="/project" className="text-accent hover:underline">
+              Project
+            </Link>{" "}
+            page.
+          </p>
           <section className="space-y-4">
             <h2 className="font-semibold">Corporate network</h2>
             <p className="text-sm text-subtle">

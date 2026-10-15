@@ -7,10 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import (
-    agents_api, auth_api, contracts_api, copilot_api, database_api, discovery_api, domains_api, runs, settings_api,
-    users_api, workflows_api,
+    agents_api, auth_api, contracts_api, copilot_api, database_api, discovery_api, domains_api, projects_api, runs,
+    settings_api, users_api, workflows_api,
 )
-from app.auth import current_user
+from app.auth import current_user, project_context
 from app.config import settings
 from app.copilot_service import get_service
 from app.db import config as db_config
@@ -46,9 +46,12 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_me
 app.include_router(database_api.router)  # used by the setup screen, before anyone can sign in
 app.include_router(auth_api.router, dependencies=[Depends(require_database)])
 # Everything else needs a signed-in user; routes that change things also check a permission (app/auth.py).
-for router in (runs.router, settings_api.router, agents_api.router, domains_api.router, workflows_api.router,
-               copilot_api.router, contracts_api.router, discovery_api.router, users_api.router):
+for router in (settings_api.router, copilot_api.router, users_api.router, projects_api.router):
     app.include_router(router, dependencies=[Depends(require_database), Depends(current_user)])
+# Project data: the request names its project (X-Project), which the user must be able to open.
+for router in (runs.router, agents_api.router, domains_api.router, workflows_api.router, contracts_api.router,
+               discovery_api.router):
+    app.include_router(router, dependencies=[Depends(require_database), Depends(project_context)])
 
 
 @app.exception_handler(NotConfigured)

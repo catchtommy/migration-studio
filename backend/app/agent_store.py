@@ -1,4 +1,8 @@
-"""The agent library, persisted in `agents` and edited from the Agents page. Workflows use agents as stages."""
+"""The agent library, persisted in `agents` and edited from the Agents page. Workflows use agents as stages.
+
+Agents are shared by every project (project SHARED). A project can customise one: it gets its own copy (same key,
+project = the project's key), which that project uses instead of the shared one until it is reverted.
+"""
 
 import hashlib
 import json
@@ -7,7 +11,8 @@ from typing import Any
 from sqlalchemy import inspect, select, text
 
 from app.agents.defaults import AUTO, CLAUDE_MODELS, DOCS, default_config
-from app.db.models import Agent, Setting
+from app import projects
+from app.db.models import GLOBAL, SHARED, Agent, Setting
 from app.db.session import get_engine, session_scope
 from app.orchestrator.stages import BUILTIN_STAGES
 
@@ -40,10 +45,10 @@ UPGRADE_MARKER = "_upgraded_builtin_defaults_v4"
 BUILTIN = tuple(BUILTIN_STAGES)
 
 
-def _as_dict(row: Agent) -> dict[str, Any]:
+def _as_dict(row: Agent, customised: bool = False) -> dict[str, Any]:
     return {"key": row.key, **{f: getattr(row, f) for f in FIELDS}, "checks": row.checks or [],
-            "builtin": row.key in BUILTIN,
-            "created_at": row.created_at, "updated_at": row.updated_at}
+            "builtin": row.key in BUILTIN, "scope": "shared" if row.project == SHARED else "project",
+            "customised": customised, "created_at": row.created_at, "updated_at": row.updated_at}
 
 
 def builtin_default(key: str) -> dict[str, Any]:
@@ -81,7 +86,7 @@ def seed() -> None:
             s.add(Setting(key=marker, value=True))
         legacy = _legacy_configs()
         old_settings = {row.key: row.value for row in s.query(Setting).filter(
-            Setting.key.in_(["agent_mode", "agent_models", "agent_effort"]))}
+            Setting.project == GLOBAL, Setting.key.in_(["agent_mode", "agent_models", "agent_effort"]))}
         for key in BUILTIN:
             config = builtin_default(key)
             if key in legacy:
@@ -96,28 +101,28 @@ def seed() -> None:
                     config["model"] = old_settings["agent_models"][key]
                 if "agent_effort" in old_settings:
                     config["effort"] = old_settings["agent_effort"]
-            s.add(Agent(key=key, **config))
+            s.add(Agent(project=SHARED, key=key, **config))
 
 
 def _add_later_builtins(s) -> None:
     """Once per release: add built-in agents introduced since the database was created. A built-in the user deleted
     afterwards is not re-added."""
     for marker, keys in LATER_BUILTINS.items():
-        if s.get(Setting, marker) is not None:
+        if s.get(Setting, (GLOBAL, marker)) is not None:
             continue
         for key in keys:
-            if s.get(Agent, key) is None:
-                s.add(Agent(key=key, **builtin_default(key)))
+            if s.get(Agent, (SHARED, key)) is None:
+                s.add(Agent(project=SHARED, key=key, **builtin_default(key)))
         s.add(Setting(key=marker, value=True))
 
 
 def _upgrade_untouched_builtins(s) -> None:
     """Once: built-ins never edited since an earlier release get the current defaults. Mode, model, effort, JDK and
     max turns are kept; edited agents are left alone."""
-    if s.get(Setting, UPGRADE_MARKER) is not None:
+    if s.get(Setting, (GLOBAL, UPGRADE_MARKER)) is not None:
         return
     for key, hashes in PREVIOUS_DEFAULT_HASHES.items():
-        row = s.get(Agent, key)
+        row = s.get(Agent, (SHARED, key))
         if row is not None and hashlib.sha256(row.instructions.encode()).hexdigest() in hashes:
             current = default_config(key)
             row.instructions, row.outputs = current["instructions"], current["outputs"]
@@ -128,68 +133,113 @@ def _upgrade_untouched_builtins(s) -> None:
 def _models_to_auto(s) -> None:
     """Once: agents created with the old Claude-only defaults let the AI provider choose instead, since Copilot
     model ids differ."""
-    if s.get(Setting, "_migrated_models_to_auto") is not None:
+    if s.get(Setting, (GLOBAL, "_migrated_models_to_auto")) is not None:
         return
     for agent in s.scalars(select(Agent).where(Agent.model.in_(CLAUDE_MODELS))):
         agent.model = AUTO
     s.add(Setting(key="_migrated_models_to_auto", value=True))
 
 
-def list_all() -> list[dict[str, Any]]:
+def _project(project: str | None) -> str | None:
+    return project or projects.current_or_none()
+
+
+def _effective(s, key: str, project: str | None) -> Agent | None:
+    """The project's copy of an agent, or the shared one."""
+    return (s.get(Agent, (project, key)) if project else None) or s.get(Agent, (SHARED, key))
+
+
+def list_all(project: str | None = None) -> list[dict[str, Any]]:
+    """The agents a project uses: shared ones, replaced by the project's copies, plus its own."""
+    project = _project(project)
     with session_scope() as s:
-        rows = s.scalars(select(Agent)).all()
+        rows = {r.key: r for r in s.scalars(select(Agent).where(Agent.project == SHARED))}
+        shared = set(rows)
+        if project:
+            for r in s.scalars(select(Agent).where(Agent.project == project)):
+                rows[r.key] = r
         order = {k: i for i, k in enumerate(BUILTIN)}
-        rows = sorted(rows, key=lambda r: (order.get(r.key, len(order)), r.created_at))
-        return [_as_dict(r) for r in rows]
+        ordered = sorted(rows.values(), key=lambda r: (order.get(r.key, len(order)), r.created_at))
+        return [_as_dict(r, customised=r.project != SHARED and r.key in shared) for r in ordered]
 
 
-def get(key: str) -> dict[str, Any]:
+def get(key: str, project: str | None = None) -> dict[str, Any]:
+    project = _project(project)
     with session_scope() as s:
-        row = s.get(Agent, key)
+        row = _effective(s, key, project)
         if row is None:
             raise KeyError(key)
-        return _as_dict(row)
+        return _as_dict(row, customised=row.project != SHARED and s.get(Agent, (SHARED, key)) is not None)
 
 
-def exists(key: str) -> bool:
+def exists(key: str, project: str | None = None) -> bool:
     with session_scope() as s:
-        return s.get(Agent, key) is not None
+        return _effective(s, key, _project(project)) is not None
 
 
-def titles() -> dict[str, tuple[str, str]]:
-    """key -> (title, description) for every agent."""
+def titles(project: str | None = None) -> dict[str, tuple[str, str]]:
+    """key -> (title, description) for every agent the project uses."""
+    return {a["key"]: (a["title"], a["description"]) for a in list_all(project)}
+
+
+def _target(scope: str) -> str:
+    """Where a change goes: the shared library, or the current project's copies."""
+    return SHARED if scope == "shared" else projects.current()
+
+
+def create(key: str, title: str, description: str, scope: str = "shared") -> dict[str, Any]:
+    target = _target(scope)
     with session_scope() as s:
-        return {r.key: (r.title, r.description) for r in s.scalars(select(Agent))}
-
-
-def create(key: str, title: str, description: str) -> dict[str, Any]:
-    with session_scope() as s:
-        if s.get(Agent, key) is not None:
+        if s.get(Agent, (SHARED, key)) is not None or s.get(Agent, (target, key)) is not None:
             raise ValueError(f"An agent with key {key} already exists")
-        s.add(Agent(key=key, **custom_default(key, title, description)))
+        s.add(Agent(project=target, key=key, **custom_default(key, title, description)))
     return get(key)
 
 
-def update(key: str, values: dict[str, Any]) -> dict[str, Any]:
+def update(key: str, values: dict[str, Any], scope: str = "shared") -> dict[str, Any]:
+    """Change the shared agent, or the project's copy of it (made from the shared one when there is none yet)."""
+    target = _target(scope)
     with session_scope() as s:
-        row = s.get(Agent, key)
+        row = s.get(Agent, (target, key))
         if row is None:
-            raise KeyError(key)
+            shared = s.get(Agent, (SHARED, key))
+            if shared is None:
+                raise KeyError(key)
+            row = Agent(project=target, key=key, **{f: getattr(shared, f) for f in FIELDS})
+            s.add(row)
         for field in FIELDS:
             if field in values:
                 setattr(row, field, values[field])
     return get(key)
 
 
+def customise(key: str) -> dict[str, Any]:
+    """Give the current project its own copy of a shared agent."""
+    return update(key, {}, scope="project")
+
+
+def revert(key: str) -> dict[str, Any]:
+    """Drop the current project's copy, going back to the shared agent."""
+    with session_scope() as s:
+        if s.get(Agent, (SHARED, key)) is None:
+            raise ValueError("This agent exists only in this project; delete it instead")
+        row = s.get(Agent, (projects.current(), key))
+        if row is not None:
+            s.delete(row)
+    return get(key)
+
+
 def reset(key: str) -> dict[str, Any]:
     if key not in BUILTIN:
         raise ValueError("Only built-in agents have a default to reset to")
-    return update(key, builtin_default(key))
+    return update(key, builtin_default(key), scope="shared")
 
 
-def delete(key: str) -> None:
+def delete(key: str, scope: str = "shared") -> None:
     with session_scope() as s:
-        row = s.get(Agent, key)
+        row = s.get(Agent, (_target(scope), key))
         if row is None:
             raise KeyError(key)
         s.delete(row)
+        if scope == "shared":  # project copies of a deleted shared agent go too
+            s.query(Agent).filter(Agent.key == key).delete(synchronize_session=False)

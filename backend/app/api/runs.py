@@ -14,7 +14,7 @@ from app.api.schemas import (
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import contracts_store, discovery_store, workflow_store, workspace
+from app import contracts_store, discovery_store, projects, workflow_store, workspace
 from app.auth import CurrentUser, require
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
@@ -26,14 +26,14 @@ router = APIRouter(prefix="/api")
 
 def _run_or_404(db: Session, run_id: str) -> Run:
     run = db.get(Run, run_id)
-    if run is None:
+    if run is None or run.project != projects.current():  # runs of other projects don't exist here
         raise HTTPException(404, "Run not found")
     return run
 
 
 @router.get("/runs", response_model=list[RunOut])
 def list_runs(db: Session = Depends(get_db)):
-    return db.scalars(select(Run).order_by(Run.domain, Run.operation)).all()
+    return db.scalars(select(Run).where(Run.project == projects.current()).order_by(Run.domain, Run.operation)).all()
 
 
 SCOPE_LABELS = {"operation": "migration", "domain": "feature listing", "monolith": "bounded-context discovery"}
@@ -49,13 +49,14 @@ def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key
                                  "There is no workflow for this; add one on the Workflows page")
     if workflow["scope"] != scope:
         raise HTTPException(422, f"{workflow['name']} is not a {SCOPE_LABELS[scope]} workflow")
-    active = db.scalar(select(Run).where(Run.domain == domain, Run.operation == operation,
+    active = db.scalar(select(Run).where(Run.project == projects.current(), Run.domain == domain,
+                                         Run.operation == operation,
                                          Run.status != "completed"))
     if active:
         raise HTTPException(409, f"{discovery_store.subject(domain, operation)} already has an unfinished run")
     branch = (f"migration/{domain}/{operation}" if scope == "operation" else
               "discovery/bounded-contexts" if scope == "monolith" else f"discovery/{domain}/features")
-    run = Run(domain=domain, operation=operation, branch=branch, inputs=inputs, scope=scope,
+    run = Run(project=projects.current(), domain=domain, operation=operation, branch=branch, inputs=inputs, scope=scope,
               workflow=workflow["key"], workflow_stages=workflow["stages"])
     db.add(run)
     db.flush()
@@ -69,7 +70,7 @@ def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key
 @router.post("/runs", response_model=RunOut, status_code=201, dependencies=[Depends(require("runs.start"))])
 def create_run(body: RunCreate, db: Session = Depends(get_db)):
     """A migration of one feature. The domain's features must have been listed first."""
-    domain = db.get(Domain, body.domain)
+    domain = db.get(Domain, (projects.current(), body.domain))
     if domain is None:
         raise HTTPException(422, f"Unknown domain {body.domain}; add it on the Domains page first")
     feature = discovery_store.feature(body.domain, body.operation)
@@ -276,7 +277,13 @@ def list_questions(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/questions/{question_id}/answer", response_model=QuestionOut)
-def answer_question(question_id: int, body: AnswerIn, user: CurrentUser = Depends(require("runs.edit"))):
+def answer_question(question_id: int, body: AnswerIn, db: Session = Depends(get_db),
+                    user: CurrentUser = Depends(require("runs.edit"))):
+    question = db.get(Question, question_id)
+    if question is None:
+        raise HTTPException(404, "Question not found")
+    _run_or_404(db, question.run_id)
+    db.close()
     try:
         return questions.answer(question_id, body.answer, user.display_name)
     except KeyError:
@@ -296,6 +303,7 @@ def get_artifact(artifact_id: int, db: Session = Depends(get_db)):
     artifact = db.get(Artifact, artifact_id)
     if artifact is None:
         raise HTTPException(404, "Artifact not found")
+    _run_or_404(db, artifact.run_id)
     return artifact
 
 
@@ -306,7 +314,7 @@ def edit_artifact(artifact_id: int, body: ArtifactUpdate, db: Session = Depends(
     artifact = db.get(Artifact, artifact_id)
     if artifact is None:
         raise HTTPException(404, "Artifact not found")
-    run = db.get(Run, artifact.run_id)
+    run = _run_or_404(db, artifact.run_id)
     if run.status not in ("awaiting_approval", "changes_requested"):
         raise HTTPException(409, "Artifacts can only be edited while the run is waiting for approval or amendments")
     ws = workspace.ensure(run.id)

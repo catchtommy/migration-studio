@@ -1,12 +1,16 @@
-"""Named workflows: ordered agent steps (referencing the agent library) and human approval gates."""
+"""Named workflows: ordered agent steps (referencing the agent library) and human approval gates.
+
+Like agents, workflows are shared by every project (project SHARED), and a project can have its own copy of one, or
+workflows of its own.
+"""
 
 import re
 from typing import Any
 
 from sqlalchemy import select
 
-from app import agent_store
-from app.db.models import Domain, Setting, WorkflowDef
+from app import agent_store, projects
+from app.db.models import GLOBAL, SHARED, Domain, Setting, WorkflowDef
 from app.db.session import session_scope
 from app.orchestrator.stages import BOUNDED_CONTEXTS, DOMAIN_FEATURES, STANDARD, StageDef, Workflow
 
@@ -61,23 +65,23 @@ _STANDARD_V2 = [*_HEAD, ("agent", "boundary_design", ()), ("agent", "integration
 def seed() -> None:
     with session_scope() as s:
         if s.scalar(select(WorkflowDef).limit(1)) is None:
-            s.add(WorkflowDef(key=STANDARD_KEY, name="Standard migration", steps=steps_of(STANDARD),
+            s.add(WorkflowDef(project=SHARED, key=STANDARD_KEY, name="Standard migration", steps=steps_of(STANDARD),
                               description=STANDARD_DESCRIPTION))
             s.add(Setting(key="_standard_workflow_v2", value=True))
             s.add(Setting(key="_standard_workflow_v3", value=True))
         else:
             # Upgrade the standard workflow only if nobody has changed it; customised ones are left alone.
             for marker, previous in (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2)):
-                if s.get(Setting, marker) is None:
-                    standard = s.get(WorkflowDef, STANDARD_KEY)
+                if s.get(Setting, (GLOBAL, marker)) is None:
+                    standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
                     if standard is not None and _shape(standard.steps) == previous:
                         standard.steps, standard.description = steps_of(STANDARD), STANDARD_DESCRIPTION
                     s.add(Setting(key=marker, value=True))
-        if s.get(Setting, "_added_discovery_workflows") is None:
+        if s.get(Setting, (GLOBAL, "_added_discovery_workflows")) is None:
             for scope, (key, name, description, workflow) in DISCOVERY.items():
-                if s.get(WorkflowDef, key) is None:
-                    s.add(WorkflowDef(key=key, name=name, description=description, steps=steps_of(workflow),
-                                      scope=scope))
+                if s.get(WorkflowDef, (SHARED, key)) is None:
+                    s.add(WorkflowDef(project=SHARED, key=key, name=name, description=description,
+                                      steps=steps_of(workflow), scope=scope))
             s.add(Setting(key="_added_discovery_workflows", value=True))
 
 
@@ -155,40 +159,69 @@ def resolve(steps: list[dict]) -> Workflow:
     return Workflow(stages)
 
 
-def _as_dict(row: WorkflowDef) -> dict[str, Any]:
+def _as_dict(row: WorkflowDef, customised: bool = False) -> dict[str, Any]:
     return {"key": row.key, "name": row.name, "description": row.description, "steps": row.steps,
-            "scope": row.scope or "operation",
-            "stages": resolve(row.steps).to_dicts(), "created_at": row.created_at, "updated_at": row.updated_at}
+            "scope": row.scope or "operation", "library": "shared" if row.project == SHARED else "project",
+            "customised": customised, "stages": resolve(row.steps).to_dicts(), "created_at": row.created_at,
+            "updated_at": row.updated_at}
+
+
+def _effective_rows(s, project: str | None) -> list[tuple[WorkflowDef, bool]]:
+    """(row, customised) for the workflows a project uses: shared ones, replaced by its copies, plus its own."""
+    rows = {r.key: r for r in s.scalars(select(WorkflowDef).where(WorkflowDef.project == SHARED))}
+    shared = set(rows)
+    if project:
+        for r in s.scalars(select(WorkflowDef).where(WorkflowDef.project == project)):
+            rows[r.key] = r
+    return [(r, r.project != SHARED and r.key in shared) for r in sorted(rows.values(), key=lambda r: r.created_at)]
+
+
+def _effective(s, key: str, project: str | None) -> WorkflowDef | None:
+    return (s.get(WorkflowDef, (project, key)) if project else None) or s.get(WorkflowDef, (SHARED, key))
 
 
 def list_all() -> list[dict[str, Any]]:
     with session_scope() as s:
-        return [_as_dict(r) for r in s.scalars(select(WorkflowDef).order_by(WorkflowDef.created_at))]
+        return [_as_dict(r, c) for r, c in _effective_rows(s, projects.current_or_none())]
 
 
 def get(key: str) -> dict[str, Any]:
+    project = projects.current_or_none()
     with session_scope() as s:
-        row = s.get(WorkflowDef, key)
+        row = _effective(s, key, project)
         if row is None:
             raise KeyError(key)
-        return _as_dict(row)
+        return _as_dict(row, row.project != SHARED and s.get(WorkflowDef, (SHARED, key)) is not None)
 
 
-def create(key: str, name: str, description: str, steps: list[dict], scope: str = "operation") -> dict[str, Any]:
+def _target(library: str) -> str:
+    return SHARED if library == "shared" else projects.current()
+
+
+def create(key: str, name: str, description: str, steps: list[dict], scope: str = "operation",
+           library: str = "shared") -> dict[str, Any]:
     steps = validate(steps)
+    target = _target(library)
     with session_scope() as s:
-        if s.get(WorkflowDef, key) is not None:
+        if s.get(WorkflowDef, (SHARED, key)) is not None or s.get(WorkflowDef, (target, key)) is not None:
             raise WorkflowInvalid(f"A workflow with key {key} already exists")
-        s.add(WorkflowDef(key=key, name=name, description=description, steps=steps,
+        s.add(WorkflowDef(project=target, key=key, name=name, description=description, steps=steps,
                           scope=None if scope == "operation" else scope))
     return get(key)
 
 
-def update(key: str, values: dict[str, Any]) -> dict[str, Any]:
+def update(key: str, values: dict[str, Any], library: str = "shared") -> dict[str, Any]:
+    """Change the shared workflow, or the project's copy of it (made from the shared one when there is none yet)."""
+    target = _target(library)
     with session_scope() as s:
-        row = s.get(WorkflowDef, key)
+        row = s.get(WorkflowDef, (target, key))
         if row is None:
-            raise KeyError(key)
+            shared = s.get(WorkflowDef, (SHARED, key))
+            if shared is None:
+                raise KeyError(key)
+            row = WorkflowDef(project=target, key=key, name=shared.name, description=shared.description,
+                              steps=shared.steps, scope=shared.scope)
+            s.add(row)
         if values.get("steps") is not None:
             row.steps = validate(values["steps"])
         for field in ("name", "description"):
@@ -197,30 +230,49 @@ def update(key: str, values: dict[str, Any]) -> dict[str, Any]:
     return get(key)
 
 
-def delete(key: str) -> None:
-    """Runs keep their own snapshot, so deleting only affects new runs. Domains defaulting to it lose the default."""
+def revert(key: str) -> dict[str, Any]:
+    """Drop the current project's copy, going back to the shared workflow."""
     with session_scope() as s:
-        row = s.get(WorkflowDef, key)
+        if s.get(WorkflowDef, (SHARED, key)) is None:
+            raise WorkflowInvalid("This workflow exists only in this project; delete it instead")
+        row = s.get(WorkflowDef, (projects.current(), key))
+        if row is not None:
+            s.delete(row)
+    return get(key)
+
+
+def delete(key: str, library: str = "shared") -> None:
+    """Runs keep their own snapshot, so deleting only affects new runs. Domains defaulting to it lose the default."""
+    target = _target(library)
+    with session_scope() as s:
+        row = s.get(WorkflowDef, (target, key))
         if row is None:
             raise KeyError(key)
         scope = row.scope or "operation"
-        if sum(1 for w in s.scalars(select(WorkflowDef)) if (w.scope or "operation") == scope) == 1:
-            raise WorkflowInvalid("The last migration workflow cannot be deleted" if scope == "operation" else
-                                  "The last discovery workflow of its kind cannot be deleted")
-        s.query(Domain).filter(Domain.default_workflow == key).update({Domain.default_workflow: None})
-        s.delete(row)
+        if library == "shared":
+            if sum(1 for w in s.scalars(select(WorkflowDef).where(WorkflowDef.project == SHARED))
+                   if (w.scope or "operation") == scope) == 1:
+                raise WorkflowInvalid("The last migration workflow cannot be deleted" if scope == "operation" else
+                                      "The last discovery workflow of its kind cannot be deleted")
+            s.query(Domain).filter(Domain.default_workflow == key).update({Domain.default_workflow: None})
+            s.query(WorkflowDef).filter(WorkflowDef.key == key).delete(synchronize_session=False)
+        else:
+            if s.get(WorkflowDef, (SHARED, key)) is None:  # a project-only workflow: its domains lose the default
+                s.query(Domain).filter(Domain.project == target, Domain.default_workflow == key).update(
+                    {Domain.default_workflow: None})
+            s.delete(row)
 
 
 def using_agent(agent_key: str) -> list[str]:
-    """Names of workflows with a step for this agent."""
+    """Names of the workflows (of the current project) with a step for this agent."""
     with session_scope() as s:
-        return [w.name for w in s.scalars(select(WorkflowDef))
+        return [w.name for w, _ in _effective_rows(s, projects.current_or_none())
                 if any(st["kind"] == "agent" and st["key"] == agent_key for st in w.steps)]
 
 
 def scope_of(key: str) -> str | None:
     with session_scope() as s:
-        row = s.get(WorkflowDef, key)
+        row = _effective(s, key, projects.current_or_none())
         return None if row is None else row.scope or "operation"
 
 
@@ -228,9 +280,7 @@ def default_for(domain: Domain | None, scope: str = "operation") -> str | None:
     """The workflow a new run of this scope uses: for migrations the domain's default, otherwise the built-in one,
     otherwise the first one created."""
     with session_scope() as s:
-        rows = [w for w in s.scalars(select(WorkflowDef).order_by(WorkflowDef.created_at))
-                if (w.scope or "operation") == scope]
-        keys = [w.key for w in rows]
+        keys = [w.key for w, _ in _effective_rows(s, projects.current_or_none()) if (w.scope or "operation") == scope]
         if scope == "operation" and domain is not None and domain.default_workflow in keys:
             return domain.default_workflow
         preferred = STANDARD_KEY if scope == "operation" else DISCOVERY[scope][0]

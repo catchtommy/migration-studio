@@ -7,11 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from app import auth
-from app.auth import ADMIN, PERMISSIONS, CurrentUser, require
-from app.db.models import Role, User
+from app.auth import ADMIN, PERMISSIONS, CurrentUser, require_global
+from app.db.models import Project, ProjectMember, Role, User
 from app.db.session import session_scope
 
-router = APIRouter(prefix="/api", dependencies=[Depends(require("users.manage"))])
+router = APIRouter(prefix="/api", dependencies=[Depends(require_global("users.manage"))])
 
 
 class UserOut(BaseModel):
@@ -23,6 +23,7 @@ class UserOut(BaseModel):
     roles: list[str]
     created_at: datetime
     last_login_at: datetime | None
+    projects: list[dict] = []  # [{project, name, role}]: the projects they can open, with their role in each
 
 
 class UserCreate(BaseModel):
@@ -97,7 +98,13 @@ def list_permissions() -> list[dict]:
 @router.get("/users", response_model=list[UserOut])
 def list_users():
     with session_scope() as s:
-        return [UserOut.model_validate(u) for u in s.scalars(select(User).order_by(User.username))]
+        access: dict[int, list[dict]] = {}
+        rows = s.execute(select(ProjectMember, Project.name).join(Project, Project.key == ProjectMember.project)
+                         .order_by(Project.name)).all()
+        for m, name in rows:
+            access.setdefault(m.user_id, []).append({"project": m.project, "name": name, "role": m.role})
+        return [UserOut.model_validate(u).model_copy(update={"projects": access.get(u.id, [])})
+                for u in s.scalars(select(User).order_by(User.username))]
 
 
 @router.post("/users", response_model=UserOut, status_code=201)
@@ -163,6 +170,7 @@ def delete_user(user_id: int, me: CurrentUser = Depends(auth.current_user)):
         user = s.get(User, user_id)
         if user is None:
             raise HTTPException(404, "User not found")
+        s.query(ProjectMember).filter(ProjectMember.user_id == user_id).delete()
         s.delete(user)
         s.flush()
         _admins_remain(s)
@@ -223,6 +231,9 @@ def delete_role(key: str):
         for user in s.scalars(select(User)):
             if key in (user.roles or []):
                 user.roles = [r for r in user.roles if r != key]
+        in_use = s.scalars(select(ProjectMember.project).where(ProjectMember.role == key).limit(1)).first()
+        if in_use:
+            raise HTTPException(409, f"Members of project {in_use} have this role. Give them another role first.")
         s.delete(role)
         s.flush()
         _admins_remain(s)

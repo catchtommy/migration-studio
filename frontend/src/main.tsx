@@ -1,9 +1,13 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter, Link, Navigate, NavLink, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, SIGNED_OUT_EVENT, type Permission } from "./lib/api";
-import { useCopilotStatus, useMe } from "./lib/hooks";
+import { api, getCurrentProject, setCurrentProject, SIGNED_OUT_EVENT, type Me, type Permission, type Project } from "./lib/api";
+import { useCopilotStatus, useMe, useProjects } from "./lib/hooks";
+import { ProjectSwitch, rememberedProject, rememberProject } from "./lib/projectContext";
+import { ProjectSwitcher } from "./components/ProjectSwitcher";
+import { ProjectSettingsPage } from "./pages/ProjectSettingsPage";
+import { ProjectsPage } from "./pages/ProjectsPage";
 import { AccountMenu } from "./components/AccountMenu";
 import { LogoMark } from "./components/icons";
 import { AgentsPage } from "./pages/AgentsPage";
@@ -19,7 +23,17 @@ import { UsersPage } from "./pages/UsersPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import "./index.css";
 
-const queryClient = new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false } } });
+// Cached project data is kept per project: the current project is part of its cache key, so switching projects can
+// never show another project's data. Data that isn't about a project is cached once.
+const GLOBAL_QUERIES = new Set(["me", "projects", "database", "settings", "copilotStatus", "users", "roles", "permissions", "agentCatalog"]);
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      queryKeyHashFn: (key) => JSON.stringify(GLOBAL_QUERIES.has(key[0] as string) ? key : [getCurrentProject(), ...key]),
+    },
+  },
+});
 
 const navLink = ({ isActive }: { isActive: boolean }) =>
   `rounded-full px-3 py-1.5 text-sm transition ${isActive ? "bg-white/20 font-medium text-white shadow-inner" : "text-white/75 hover:bg-white/10 hover:text-white"}`;
@@ -77,9 +91,50 @@ function SignedIn({ sqlite }: { sqlite: boolean }) {
   if (isLoading || !auth) return null;
   if (auth.needs_bootstrap) return <CreateAdminPage />;
   if (!auth.user) return <SignInPage />;
-  const user = auth.user;
-  const can = (p: Permission) => user.permissions.includes(p);
-  const canManageUsers = can("users.manage");
+  return <WithProject user={auth.user} sqlite={sqlite} />;
+}
+
+/** Picks the project to work in (the one used last, else the first) and lets the user switch. */
+function WithProject({ user, sqlite }: { user: Me; sqlite: boolean }) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { data: projects, isLoading } = useProjects();
+  const [selected, setSelected] = useState<string | null>(() => rememberedProject());
+  const switching = useRef(false); // a switch to a project the list may not include yet (just created)
+  if (isLoading || !projects) return null;
+  const open = projects.filter((p) => p.member); // only members can open a project
+  const chosen = open.find((p) => p.key === selected);
+  if (!chosen && switching.current) return null; // switched to a project the list doesn't include yet: wait for it
+  const current = chosen ?? open[0];
+  const switchTo = (key: string) => {
+    rememberProject(key);
+    setCurrentProject(key);
+    switching.current = true;
+    setSelected(key);
+    void queryClient.invalidateQueries({ queryKey: ["projects"] });
+    navigate("/");
+  };
+  if (!current) {
+    setCurrentProject(null);
+    return (
+      <ProjectSwitch.Provider value={switchTo}>
+        <NoProjectShell user={user} sqlite={sqlite} />
+      </ProjectSwitch.Provider>
+    );
+  }
+  setCurrentProject(current.key); // before any child query runs
+  if (chosen) switching.current = false;
+  return (
+    <ProjectSwitch.Provider value={switchTo}>
+      <Shell key={current.key} user={user} project={current} projects={open} sqlite={sqlite} onSwitch={switchTo} />
+    </ProjectSwitch.Provider>
+  );
+}
+
+/** For someone who can't open any project: their account menu, and the global pages they may use (to create a project
+ * or give people access), instead of a dead end. */
+function NoProjectShell({ user, sqlite }: { user: Me; sqlite: boolean }) {
+  const canGlobally = (p: Permission) => user.permissions.includes(p);
   return (
     <div className="min-h-screen">
       <header className="bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 shadow-lg shadow-indigo-500/20 dark:from-indigo-950 dark:via-violet-950 dark:to-fuchsia-950">
@@ -88,6 +143,66 @@ function SignedIn({ sqlite }: { sqlite: boolean }) {
             <LogoMark />
             <span className="text-lg font-semibold tracking-tight">Migration Studio</span>
           </Link>
+          <nav className="flex flex-wrap gap-1">
+            {canGlobally("projects.manage") && (
+              <NavLink to="/" end className={navLink}>
+                Projects
+              </NavLink>
+            )}
+            {canGlobally("users.manage") && (
+              <NavLink to="/users" className={navLink}>
+                Users
+              </NavLink>
+            )}
+            {canGlobally("settings.manage") && (
+              <NavLink to="/settings" className={navLink}>
+                Settings
+              </NavLink>
+            )}
+          </nav>
+          <div className="ml-auto flex items-center gap-2">
+            <AccountMenu user={user} />
+          </div>
+        </div>
+      </header>
+      {sqlite && <SqliteBanner />}
+      <div className="mx-auto max-w-7xl px-4 py-8">
+        <Routes>
+          <Route
+            path="/"
+            element={
+              canGlobally("projects.manage") ? (
+                <ProjectsPage />
+              ) : (
+                <div className="mx-auto max-w-xl py-12 text-center">
+                  <h1 className="text-xl font-semibold">You don't have access to any project yet</h1>
+                  <p className="mt-2 text-sm text-subtle">Ask a project's admin to add you as a member, then reload this page. You can sign out from the menu at the top right.</p>
+                </div>
+              )
+            }
+          />
+          {canGlobally("users.manage") && <Route path="/users" element={<UsersPage />} />}
+          {canGlobally("settings.manage") && <Route path="/settings" element={<SettingsPage />} />}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
+    </div>
+  );
+}
+
+function Shell({ user, project, projects, sqlite, onSwitch }: { user: Me; project: Project; projects: Project[]; sqlite: boolean; onSwitch: (key: string) => void }) {
+  const can = (p: Permission) => project.permissions.includes(p);
+  const canGlobally = (p: Permission) => user.permissions.includes(p);
+  const canManageUsers = canGlobally("users.manage");
+  return (
+    <div className="min-h-screen">
+      <header className="bg-gradient-to-r from-indigo-600 via-violet-600 to-fuchsia-600 shadow-lg shadow-indigo-500/20 dark:from-indigo-950 dark:via-violet-950 dark:to-fuchsia-950">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+          <Link to="/" className="flex items-center gap-2.5 text-white">
+            <LogoMark />
+            <span className="text-lg font-semibold tracking-tight">Migration Studio</span>
+          </Link>
+          <ProjectSwitcher projects={projects} current={project} onSwitch={onSwitch} />
           <nav className="flex flex-wrap gap-1">
             <NavLink to="/" end className={navLink}>
               Migrations
@@ -108,14 +223,19 @@ function SignedIn({ sqlite }: { sqlite: boolean }) {
                 Agents
               </NavLink>
             )}
+            <NavLink to="/project" className={navLink}>
+              Project
+            </NavLink>
             {canManageUsers && (
               <NavLink to="/users" className={navLink}>
                 Users
               </NavLink>
             )}
-            <NavLink to="/settings" className={navLink}>
-              Settings
-            </NavLink>
+            {canGlobally("settings.manage") && (
+              <NavLink to="/settings" className={navLink}>
+                Settings
+              </NavLink>
+            )}
           </nav>
           <div className="ml-auto flex items-center gap-2">
             <CopilotChip />
@@ -135,7 +255,9 @@ function SignedIn({ sqlite }: { sqlite: boolean }) {
           <Route path="/contracts" element={<ContractsPage />} />
           {can("agents.manage") && <Route path="/agents" element={<AgentsPage />} />}
           {can("agents.manage") && <Route path="/agents/:agentKey" element={<AgentsPage />} />}
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/project" element={<ProjectSettingsPage />} />
+          {canGlobally("settings.manage") && <Route path="/settings" element={<SettingsPage />} />}
           {canManageUsers && <Route path="/users" element={<UsersPage />} />}
           {/* Pages the user may not open (or that don't exist) lead back to the start. */}
           <Route path="*" element={<Navigate to="/" replace />} />

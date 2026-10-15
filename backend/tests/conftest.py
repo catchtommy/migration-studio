@@ -12,6 +12,7 @@ os.environ["STUDIO_DATABASE_URL"] = (os.environ.get("STUDIO_TEST_DATABASE_URL") 
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app import projects  # noqa: E402
 from app.agents import stub  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -21,13 +22,20 @@ def fast_stubs(monkeypatch):
     monkeypatch.setattr(stub, "STUB_DELAY", 0)
 
 
+@pytest.fixture(autouse=True)
+def default_project():
+    """Store functions called directly by tests work in the default project, like the API calls do."""
+    with projects.use(projects.DEFAULT):
+        yield
+
+
 ADMIN_PASSWORD = "admin-password"
 
 
 @pytest.fixture(scope="session")
 def client():
     """Signed in as the first admin, created through the bootstrap screen's API."""
-    with TestClient(app) as c:
+    with TestClient(app, headers={"X-Project": "default"}) as c:
         r = c.post("/api/auth/bootstrap", json={"username": "admin", "display_name": "Test Admin",
                                                 "password": ADMIN_PASSWORD})
         assert r.status_code == 200, r.text

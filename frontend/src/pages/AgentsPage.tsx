@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, looksLikeAgentMd, type Agent, type AgentCatalog, type AgentInput, type ParsedAgentFile } from "../lib/api";
-import { useAgents, useWorkflows } from "../lib/hooks";
+import { api, looksLikeAgentMd, type Agent, type AgentCatalog, type AgentInput, type Library, type ParsedAgentFile } from "../lib/api";
+import { useAgents, useCanGlobally, useWorkflows } from "../lib/hooks";
+import { LibraryBadge, SaveTarget } from "../components/LibraryBadge";
 import { slug } from "../lib/slug";
 import { Field, inputClass } from "../components/Field";
 import { PageTitle } from "../components/PageTitle";
 import { ChipIcon } from "../components/icons";
 
 function toInput(agent: Agent): AgentInput {
-  const { key: _key, builtin: _builtin, created_at: _created, updated_at: _updated, ...rest } = agent;
+  const { key: _key, builtin: _builtin, created_at: _created, updated_at: _updated, scope: _scope, customised: _customised, ...rest } = agent;
   return rest;
 }
 
@@ -107,6 +108,9 @@ function NewAgentForm({ onCancel }: { onCancel: () => void }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [imported, setImported] = useState<{ parsed: ParsedAgentFile; fileName: string } | null>(null);
+  const canShared = useCanGlobally("agents.manage");
+  const [libraryChoice, setLibrary] = useState<Library | null>(null);
+  const library: Library = libraryChoice ?? (canShared ? "shared" : "project");
   const create = useMutation({
     mutationFn: async () => {
       // Pasted text (or an imported file) defines the agent; the title box overrides its name if filled in.
@@ -115,11 +119,11 @@ function NewAgentForm({ onCancel }: { onCancel: () => void }) {
       const key = slug(agentTitle);
       if (!key) throw new Error("Give the agent a title, or a name in the agent.md header.");
       const agentDescription = description.trim() || parsed?.description || "";
-      const agent = await api.createAgent({ key, title: agentTitle, description: agentDescription });
+      const agent = await api.createAgent({ key, title: agentTitle, description: agentDescription }, library);
       if (!parsed) return agent;
       const { warnings: _w, ...fields } = parsed;
-      const { key: _k, builtin: _b, created_at: _c, updated_at: _u, ...current } = agent;
-      return api.updateAgent(agent.key, { ...current, ...fields, title: agentTitle, description: agentDescription });
+      const { key: _k, builtin: _b, created_at: _c, updated_at: _u, scope: _s, customised: _cu, ...current } = agent;
+      return api.updateAgent(agent.key, { ...current, ...fields, title: agentTitle, description: agentDescription }, library);
     },
     onSuccess: (agent) => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
@@ -169,6 +173,7 @@ function NewAgentForm({ onCancel }: { onCancel: () => void }) {
         </div>
       </details>
       <div className="flex flex-wrap items-center gap-2">
+        <SaveTarget value={library} onChange={setLibrary} canShared={canShared} noun="new agent" />
         <button type="submit" disabled={!ready || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
           Create agent
         </button>
@@ -201,17 +206,24 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
     setOutputs(config.outputs.join("\n"));
   }, [config]);
 
+  const canShared = useCanGlobally("agents.manage");
+  // Where a save goes: a project's own agent or copy stays in the project; a shared one goes to every project
+  // (if the user may change the library) or becomes this project's copy.
+  const [choice, setChoice] = useState<Library | null>(null); // null: the default below
+  const target: Library = config.scope === "project" ? "project" : (choice ?? (canShared ? "shared" : "project"));
+  const setTarget = setChoice;
   const onSaved = (saved: Agent) => {
     queryClient.setQueryData<Agent[]>(["agents"], (prev) => prev?.map((a) => (a.key === saved.key ? saved : a)));
     queryClient.invalidateQueries({ queryKey: ["workflows"] }); // step titles come from agents
   };
   const save = useMutation({
-    mutationFn: () => api.updateAgent(config.key, { ...form, outputs: outputs.split("\n").map((o) => o.trim()).filter(Boolean) }),
+    mutationFn: () => api.updateAgent(config.key, { ...form, outputs: outputs.split("\n").map((o) => o.trim()).filter(Boolean) }, target),
     onSuccess: onSaved,
   });
   const reset = useMutation({ mutationFn: () => api.resetAgent(config.key), onSuccess: onSaved });
+  const revert = useMutation({ mutationFn: () => api.revertAgent(config.key), onSuccess: (a) => (onSaved(a), setTarget(null)) });
   const remove = useMutation({
-    mutationFn: () => api.deleteAgent(config.key),
+    mutationFn: () => api.deleteAgent(config.key, config.scope),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["agents"] });
       navigate("/agents");
@@ -263,7 +275,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const saveMd = useMutation({
-    mutationFn: () => api.saveAgentMd(config.key, md.text),
+    mutationFn: () => api.saveAgentMd(config.key, md.text, target),
     onSuccess: ({ agent, warnings }) => {
       onSaved(agent);
       setMd((m) => ({ ...m, base: m.text }));
@@ -297,6 +309,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
           <h2 className="text-lg font-semibold">{config.title}</h2>
           <code className="text-xs text-subtle">{config.key}</code>
           {!config.builtin && <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-subtle">Custom</span>}
+          <LibraryBadge library={config.scope} customised={config.customised} />
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <AgentFileButton
               label="Import agent.md"
@@ -534,7 +547,18 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
         >
           Save agent
         </button>
-        {config.builtin && (
+        {config.scope === "shared" && <SaveTarget value={target} onChange={setTarget} canShared={canShared} noun="agent" />}
+        {config.customised && (
+          <button
+            type="button"
+            className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
+            disabled={revert.isPending}
+            onClick={() => window.confirm(`Drop this project's changes to ${config.title} and use the shared agent again?`) && revert.mutate()}
+          >
+            Revert to shared
+          </button>
+        )}
+        {config.builtin && config.scope === "shared" && canShared && (
           <button
             type="button"
             className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
@@ -544,18 +568,22 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
             Reset to default
           </button>
         )}
-        <button
-          type="button"
-          className="ml-auto rounded-md px-3 py-1.5 text-sm text-bad hover:bg-bad/10 disabled:opacity-50"
-          disabled={remove.isPending}
-          onClick={() => window.confirm(`Delete the ${config.title} agent?`) && remove.mutate()}
-        >
-          Delete agent
-        </button>
+        {!config.customised && (config.scope === "project" || canShared) && (
+          <button
+            type="button"
+            className="ml-auto rounded-md px-3 py-1.5 text-sm text-bad hover:bg-bad/10 disabled:opacity-50"
+            disabled={remove.isPending}
+            onClick={() =>
+              window.confirm(config.scope === "shared" ? `Delete the ${config.title} agent from every project?` : `Delete the ${config.title} agent?`) && remove.mutate()
+            }
+          >
+            Delete agent
+          </button>
+        )}
         {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
         {(save.isSuccess || saveMd.isSuccess) && !dirty && <span className="text-sm text-ok">Saved. Applies from the next stage run.</span>}
-        {(save.error || reset.error || remove.error) && (
-          <span className="w-full text-sm text-bad">{((save.error || reset.error || remove.error) as Error).message}</span>
+        {(save.error || reset.error || remove.error || revert.error) && (
+          <span className="w-full text-sm text-bad">{((save.error || reset.error || remove.error || revert.error) as Error).message}</span>
         )}
       </div>
     </form>
@@ -595,6 +623,7 @@ export function AgentsPage() {
               className={({ isActive }) => `flex items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-muted ${isActive ? "bg-muted font-medium" : ""}`}
             >
               <span className="flex-1">{a.title}</span>
+              <LibraryBadge library={a.scope} customised={a.customised} compact />
               <ModeBadge mode={a.mode} />
             </NavLink>
           ))}

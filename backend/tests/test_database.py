@@ -115,7 +115,7 @@ def test_empty_text_reads_back_as_empty(client):
     r = client.post("/api/domains", json={"key": "emptydesc", "name": "Empty", "description": ""})
     assert r.status_code in (200, 201), r.text
     with session.session_scope() as s:
-        assert s.get(Domain, "emptydesc").description == ""
+        assert s.get(Domain, ("default", "emptydesc")).description == ""
 
 
 def test_copy_all_moves_every_table(client, tmp_path):

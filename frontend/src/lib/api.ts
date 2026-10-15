@@ -124,9 +124,13 @@ export interface AgentInput {
   checks: string[]; // e.g. "boundary"
 }
 
+export type Library = "shared" | "project"; // the library every project uses, or this project's own/copy
+
 export interface Agent extends AgentInput {
   key: string;
   builtin: boolean;
+  scope: Library;
+  customised: boolean; // this project's copy of a shared agent
   created_at: string;
   updated_at: string;
 }
@@ -155,6 +159,8 @@ export interface Workflow {
   steps: WorkflowStep[];
   stages: StageDef[];
   runs: number;
+  library: Library;
+  customised: boolean; // this project's copy of a shared workflow
   created_at: string;
   updated_at: string;
 }
@@ -329,6 +335,35 @@ export interface DatabaseStatus {
   copied_rows?: number | null;
 }
 
+export interface Project {
+  key: string;
+  name: string;
+  description: string;
+  runs: number;
+  members: number;
+  my_role: string | null; // null: not a member (global project admins see every project)
+  member: boolean; // only members can open a project and its runs
+  permissions: Permission[]; // what the signed-in user may do in it
+  created_at: string;
+  updated_at: string;
+}
+
+export type ProjectSettings = Record<string, string | number | boolean>;
+
+export interface ProjectDetail extends Project {
+  settings: ProjectSettings;
+  languages: Record<string, string>;
+}
+
+export interface Member {
+  user_id: number;
+  username: string;
+  display_name: string;
+  active: boolean;
+  role: string;
+  created_at: string;
+}
+
 export type Permission =
   | "agents.manage"
   | "workflows.manage"
@@ -336,8 +371,13 @@ export type Permission =
   | "runs.start"
   | "runs.approve"
   | "runs.edit"
+  | "project.manage"
   | "settings.manage"
-  | "users.manage";
+  | "users.manage"
+  | "projects.manage";
+
+/** Permissions that only come from a user's own roles (not a project role): checked globally. */
+export const GLOBAL_PERMISSIONS: Permission[] = ["settings.manage", "users.manage", "projects.manage"];
 
 export interface Me {
   id: number;
@@ -360,6 +400,7 @@ export interface User {
   roles: string[];
   created_at: string;
   last_login_at: string | null;
+  projects: { project: string; name: string; role: string }[]; // the projects they can open, with their role there
 }
 
 export interface Role {
@@ -386,10 +427,26 @@ export class ApiError extends Error {
   }
 }
 
+let currentProject: string | null = null;
+
+/** The project every request is about (sent as X-Project); set by the project switcher. */
+export function setCurrentProject(key: string | null) {
+  currentProject = key;
+}
+
+export function getCurrentProject(): string | null {
+  return currentProject;
+}
+
+/** For URLs the browser fetches itself (EventSource, downloads), which can't carry the header. */
+export function withProject(url: string): string {
+  return currentProject ? `${url}${url.includes("?") ? "&" : "?"}project=${encodeURIComponent(currentProject)}` : url;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { "Content-Type": "application/json", ...(currentProject ? { "X-Project": currentProject } : {}), ...init?.headers },
   });
   if (!res.ok) {
     let detail = res.statusText;
@@ -435,21 +492,24 @@ export const api = {
   updateSettings: (values: Settings) => request<Settings>("/settings", json("PUT", values)),
   agents: () => request<Agent[]>("/agents"),
   agentCatalog: () => request<AgentCatalog>("/agents/catalog"),
-  createAgent: (body: { key: string; title: string; description: string }) => request<Agent>("/agents", json("POST", body)),
-  updateAgent: (key: string, config: AgentInput) => request<Agent>(`/agents/${key}`, json("PUT", config)),
+  createAgent: (body: { key: string; title: string; description: string }, scope: Library = "shared") =>
+    request<Agent>(`/agents?scope=${scope}`, json("POST", body)),
+  updateAgent: (key: string, config: AgentInput, scope: Library = "shared") => request<Agent>(`/agents/${key}?scope=${scope}`, json("PUT", config)),
   resetAgent: (key: string) => request<Agent>(`/agents/${key}/reset`, { method: "POST" }),
-  deleteAgent: (key: string) => request<void>(`/agents/${key}`, { method: "DELETE" }),
+  revertAgent: (key: string) => request<Agent>(`/agents/${key}/revert`, { method: "POST" }),
+  deleteAgent: (key: string, scope: Library = "shared") => request<void>(`/agents/${key}?scope=${scope}`, { method: "DELETE" }),
   parseAgentMd: (content: string) => request<ParsedAgentFile>("/agents/parse-agent-md", json("POST", { content })),
-  agentMdUrl: (key: string) => `/api/agents/${key}/agent.md`,
+  agentMdUrl: (key: string) => withProject(`/api/agents/${key}/agent.md`),
   renderAgentMd: (fields: AgentInput) => request<{ content: string }>("/agents/render-agent-md", json("POST", fields)),
-  saveAgentMd: (key: string, content: string) =>
-    request<{ agent: Agent; warnings: string[] }>(`/agents/${key}/agent-md`, json("PUT", { content })),
+  saveAgentMd: (key: string, content: string, scope: Library = "shared") =>
+    request<{ agent: Agent; warnings: string[] }>(`/agents/${key}/agent-md?scope=${scope}`, json("PUT", { content })),
   workflows: () => request<Workflow[]>("/workflows"),
-  createWorkflow: (body: { key: string; name: string; description: string; scope?: Scope; copy_from?: string; steps?: WorkflowStep[] }) =>
-    request<Workflow>("/workflows", json("POST", body)),
-  updateWorkflow: (key: string, body: { name?: string; description?: string; steps?: WorkflowStep[] }) =>
-    request<Workflow>(`/workflows/${key}`, json("PUT", body)),
-  deleteWorkflow: (key: string) => request<void>(`/workflows/${key}`, { method: "DELETE" }),
+  createWorkflow: (body: { key: string; name: string; description: string; scope?: Scope; copy_from?: string; steps?: WorkflowStep[] }, library: Library = "shared") =>
+    request<Workflow>(`/workflows?library=${library}`, json("POST", body)),
+  updateWorkflow: (key: string, body: { name?: string; description?: string; steps?: WorkflowStep[] }, library: Library = "shared") =>
+    request<Workflow>(`/workflows/${key}?library=${library}`, json("PUT", body)),
+  revertWorkflow: (key: string) => request<Workflow>(`/workflows/${key}/revert`, { method: "POST" }),
+  deleteWorkflow: (key: string, library: Library = "shared") => request<void>(`/workflows/${key}?library=${library}`, { method: "DELETE" }),
   domains: () => request<DomainSummary[]>("/domains"),
   domain: (key: string) => request<Domain>(`/domains/${key}`),
   createDomain: (body: { key: string; name: string; description: string }) => request<Domain>("/domains", json("POST", body)),
@@ -472,6 +532,17 @@ export const api = {
   contracts: (domain?: string) => request<Contract[]>(`/contracts${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`),
   updateContract: (key: string, status: ContractStatus) => request<Contract>(`/contracts/${encodeURIComponent(key)}`, json("PUT", { status })),
   me: () => request<AuthState>("/auth/me"),
+  projects: () => request<Project[]>("/projects"),
+  project: (key: string) => request<ProjectDetail>(`/projects/${key}`),
+  createProject: (body: { key: string; name: string; description: string; settings: ProjectSettings }) =>
+    request<ProjectDetail>("/projects", json("POST", body)),
+  updateProject: (key: string, body: { name?: string; description?: string }) => request<ProjectDetail>(`/projects/${key}`, json("PUT", body)),
+  deleteProject: (key: string) => request<void>(`/projects/${key}`, { method: "DELETE" }),
+  updateProjectSettings: (key: string, values: ProjectSettings) => request<ProjectSettings>(`/projects/${key}/settings`, json("PUT", values)),
+  members: (key: string) => request<Member[]>(`/projects/${key}/members`),
+  candidates: (key: string) => request<{ id: number; username: string; display_name: string }[]>(`/projects/${key}/candidates`),
+  setMember: (key: string, userId: number, role: string) => request<Member[]>(`/projects/${key}/members/${userId}`, json("PUT", { role })),
+  removeMember: (key: string, userId: number) => request<void>(`/projects/${key}/members/${userId}`, { method: "DELETE" }),
   login: (username: string, password: string) => request<{ user: Me }>("/auth/login", json("POST", { username, password })),
   logout: () => request<void>("/auth/logout", { method: "POST" }),
   bootstrap: (body: { username: string; display_name: string; password: string }) => request<{ user: Me }>("/auth/bootstrap", json("POST", body)),

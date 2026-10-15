@@ -15,6 +15,7 @@ from pathlib import Path
 
 from sqlalchemy import func, select
 
+from app import projects
 from app.contracts_store import InvalidDocument, _load, _require
 from app.db.models import Artifact, Domain, Feature, Run, Setting
 from app.db.session import session_scope
@@ -58,7 +59,7 @@ def _strings(item: dict, field: str, where: str) -> list[str]:
 
 def _known_domains() -> set[str]:
     with session_scope() as s:
-        return set(s.scalars(select(Domain.key)))
+        return set(s.scalars(select(Domain.key).where(Domain.project == projects.current())))
 
 
 def parse_bounded_contexts(text: str) -> list[dict]:
@@ -171,11 +172,12 @@ def record_approved(run_id: str, reviews: list[str]) -> str | None:
 
 def _record_contexts(run_id: str, contexts: list[dict]) -> str:
     added, updated = [], []
+    project = projects.current()
     with session_scope() as s:
         for c in contexts:
-            domain = s.get(Domain, c["key"])
+            domain = s.get(Domain, (project, c["key"]))
             if domain is None:
-                domain = Domain(key=c["key"], name=c["name"], description=c["description"], context="",
+                domain = Domain(project=project, key=c["key"], name=c["name"], description=c["description"], context="",
                                 agent_inputs={}, owned_tables=c["tables"], owned_packages=c["packages"])
                 s.add(domain)
                 added.append(c["key"])
@@ -190,7 +192,7 @@ def _record_contexts(run_id: str, contexts: list[dict]) -> str:
             if c["entry_points"] and not current.get("paths"):
                 inputs[FEATURES_AGENT] = {"paths": c["entry_points"], "notes": current.get("notes", "")}
                 domain.agent_inputs = inputs
-        setting = s.get(Setting, CONTEXTS_SETTING) or Setting(key=CONTEXTS_SETTING)
+        setting = s.get(Setting, (project, CONTEXTS_SETTING)) or Setting(project=project, key=CONTEXTS_SETTING)
         setting.value = {"run_id": run_id, "keys": [c["key"] for c in contexts]}
         s.merge(setting)
     return (f"Bounded contexts recorded: {len(added)} new domain(s){' (' + ', '.join(added) + ')' if added else ''}, "
@@ -199,13 +201,16 @@ def _record_contexts(run_id: str, contexts: list[dict]) -> str:
 
 def _record_features(run_id: str, domain: str, features: list[dict]) -> str:
     kept = []
+    project = projects.current()
     with session_scope() as s:
-        migrated = set(s.scalars(select(Run.operation).where(Run.domain == domain, MIGRATION_RUN)))
-        existing = {f.key: f for f in s.scalars(select(Feature).where(Feature.domain == domain))}
+        migrated = set(s.scalars(select(Run.operation).where(Run.project == project, Run.domain == domain,
+                                                             MIGRATION_RUN)))
+        existing = {f.key: f for f in s.scalars(select(Feature).where(Feature.project == project,
+                                                                      Feature.domain == domain))}
         for f in features:
             row = existing.pop(f["key"], None)
             if row is None:
-                row = Feature(domain=domain, key=f["key"])
+                row = Feature(project=project, domain=domain, key=f["key"])
                 s.add(row)
             row.name, row.description = f["name"], f["description"]
             row.entry_points, row.tables, row.calls = f["entry_points"], f["tables"], f["calls"]
@@ -237,11 +242,13 @@ def _feature_dict(f: Feature, run: Run | None) -> dict:
 
 def features_of(domain: str) -> list[dict]:
     """The domain's features in the order they were listed, each with its latest migration run."""
+    project = projects.current()
     with session_scope() as s:
-        runs = {r.operation: r for r in s.scalars(select(Run).where(Run.domain == domain, MIGRATION_RUN)
-                                                   .order_by(Run.created_at))}
+        runs = {r.operation: r for r in s.scalars(select(Run).where(Run.project == project, Run.domain == domain,
+                                                                    MIGRATION_RUN).order_by(Run.created_at))}
         return [_feature_dict(f, runs.get(f.key))
-                for f in s.scalars(select(Feature).where(Feature.domain == domain).order_by(Feature.id))]
+                for f in s.scalars(select(Feature).where(Feature.project == project, Feature.domain == domain)
+                                   .order_by(Feature.id))]
 
 
 def feature(domain: str, key: str) -> dict | None:
@@ -249,14 +256,15 @@ def feature(domain: str, key: str) -> dict | None:
 
 
 def save_feature(domain: str, key: str, values: dict, create: bool) -> dict:
+    project = projects.current()
     with session_scope() as s:
-        row = s.scalar(select(Feature).where(Feature.domain == domain, Feature.key == key))
+        row = s.scalar(select(Feature).where(Feature.project == project, Feature.domain == domain, Feature.key == key))
         if create and row is not None:
             raise DiscoveryError(f"{domain} already has a feature {key}")
         if not create and row is None:
             raise KeyError(key)
         if row is None:
-            row = Feature(domain=domain, key=key, run_id=None)
+            row = Feature(project=project, domain=domain, key=key, run_id=None)
             s.add(row)
         for field in ("name", "description", "entry_points", "tables", "calls"):
             if values.get(field) is not None:
@@ -265,11 +273,13 @@ def save_feature(domain: str, key: str, values: dict, create: bool) -> dict:
 
 
 def delete_feature(domain: str, key: str) -> None:
+    project = projects.current()
     with session_scope() as s:
-        row = s.scalar(select(Feature).where(Feature.domain == domain, Feature.key == key))
+        row = s.scalar(select(Feature).where(Feature.project == project, Feature.domain == domain, Feature.key == key))
         if row is None:
             raise KeyError(key)
-        if s.scalar(select(func.count()).where(Run.domain == domain, Run.operation == key, MIGRATION_RUN)):
+        if s.scalar(select(func.count()).where(Run.project == project, Run.domain == domain, Run.operation == key,
+                                               MIGRATION_RUN)):
             raise DiscoveryError(f"{key} has migration runs, so it can't be deleted")
         s.delete(row)
 
@@ -277,14 +287,19 @@ def delete_feature(domain: str, key: str) -> None:
 def overview() -> dict:
     """Where discovery stands: the latest bounded-contexts run, each domain's feature list and its latest feature
     run, and the domains the latest approved bounded contexts didn't include."""
+    project = projects.current()
     with session_scope() as s:
-        contexts_run = s.scalar(select(Run).where(Run.domain == MONOLITH).order_by(Run.created_at.desc()).limit(1))
-        setting = s.get(Setting, CONTEXTS_SETTING)
+        contexts_run = s.scalar(select(Run).where(Run.project == project, Run.domain == MONOLITH)
+                                .order_by(Run.created_at.desc()).limit(1))
+        setting = s.get(Setting, (project, CONTEXTS_SETTING))
         found = set(setting.value["keys"]) if setting and setting.value else None
-        counts = dict(s.execute(select(Feature.domain, func.count()).group_by(Feature.domain)).all())
-        feature_runs = {r.domain: r for r in s.scalars(select(Run).where(Run.operation == FEATURES_OP)
+        counts = dict(s.execute(select(Feature.domain, func.count()).where(Feature.project == project)
+                                .group_by(Feature.domain)).all())
+        feature_runs = {r.domain: r for r in s.scalars(select(Run).where(Run.project == project,
+                                                                         Run.operation == FEATURES_OP)
                                                         .order_by(Run.created_at))}
-        domains = s.scalars(select(Domain).order_by(Domain.created_at, Domain.key)).all()
+        domains = s.scalars(select(Domain).where(Domain.project == project)
+                            .order_by(Domain.created_at, Domain.key)).all()
         return {
             "bounded_contexts": _run_brief(contexts_run),
             "contexts_inputs": contexts_run.inputs if contexts_run else None,
@@ -298,7 +313,7 @@ def overview() -> dict:
 def domains_brief(domain: str) -> str:
     """The domains known so far, for discovery agents (instead of the migration catalogue)."""
     with session_scope() as s:
-        domains = s.scalars(select(Domain).order_by(Domain.key)).all()
+        domains = s.scalars(select(Domain).where(Domain.project == projects.current()).order_by(Domain.key)).all()
         lines = ["## Known domains"]
         if not domains:
             return "## Known domains\nNone yet."

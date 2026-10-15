@@ -50,14 +50,16 @@ SCHEMAS: dict[str, dict] = {
         "input_schema": _obj({"path": _STR, "old_text": _STR, "new_text": _STR}, ["path", "old_text", "new_text"]),
     },
     "run_command": {
-        "description": "Run a shell command from the workspace root, e.g. a Maven or Gradle build or test run. "
-                       "JAVA_HOME is set to the JDK configured for this stage. Returns the exit code and the "
-                       "last 20,000 characters of combined output.",
+        "description": "Run a shell command from the workspace root, e.g. a build or test run (Maven, Gradle, dotnet, "
+                       "npm, pytest, go test, ...). The toolchain configured for this stage comes first on PATH "
+                       "(and JAVA_HOME / DOTNET_ROOT are set for Java / .NET projects). Returns the exit code and "
+                       "the last 20,000 characters of combined output.",
         "input_schema": _obj({"command": _STR, "timeout_seconds": _INT}, ["command"]),
     },
     "check_boundaries": {
         "description": "Check that this domain's microservice only uses its own domain: reports every reference to "
-                       "another domain's Java packages or tables, with file and line. Run it before finishing.",
+                       "another domain's code packages (namespaces, modules) or tables, with file and line. Run it "
+                       "before finishing.",
         "input_schema": _obj({}, []),
     },
     "ask_user": {
@@ -94,11 +96,25 @@ def validate(name: str, args: object) -> dict:
     return args
 
 
+# Environment variables a language's tools look for, pointed at the configured toolchain.
+TOOLCHAIN_VARS = {"java": ["JAVA_HOME"], "csharp": ["DOTNET_ROOT"]}
+
+
+def toolchain_env(env: dict[str, str], home: str | None, language: str) -> dict[str, str]:
+    """The environment for run_command: the toolchain's bin directory (and the home itself, for toolchains that keep
+    their executables at the top, like .NET or a Go root) first on PATH."""
+    if home:
+        for var in TOOLCHAIN_VARS.get(language, []):
+            env[var] = home
+        env["PATH"] = os.pathsep.join([f"{home}/bin", home, env.get("PATH", "")])
+    return env
+
+
 class Toolbox:
-    def __init__(self, ctx: AgentContext, java_home: str | None):
+    def __init__(self, ctx: AgentContext, toolchain_home: str | None):
         self.ctx = ctx
         self.root = ctx.workspace.resolve()
-        self.java_home = java_home
+        self.toolchain_home = toolchain_home
         self.written: set[str] = set()  # workspace-relative paths written by this agent
 
     def run(self, name: str, args: dict) -> str:
@@ -176,10 +192,7 @@ class Toolbox:
         return f"Edited {self._rel(p)}"
 
     def run_command(self, command: str, timeout_seconds: int = 600) -> str:
-        env = dict(os.environ)
-        if self.java_home:
-            env["JAVA_HOME"] = self.java_home
-            env["PATH"] = f"{self.java_home}/bin{os.pathsep}{env.get('PATH', '')}"
+        env = toolchain_env(dict(os.environ), self.toolchain_home, self.ctx.settings.get("language") or "java")
         self.ctx.log(f"$ {command}")
         try:
             proc = subprocess.run(command, shell=True, cwd=self.root, env=env, capture_output=True, text=True,

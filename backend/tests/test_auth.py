@@ -13,7 +13,7 @@ _ids = itertools.count()
 
 def other_client() -> TestClient:
     """A second browser: its own cookies, same app (no lifespan, the session client already started it)."""
-    return TestClient(app)
+    return TestClient(app, headers={"X-Project": "default"})
 
 
 def make_user(client, roles, password="password123"):
@@ -21,7 +21,11 @@ def make_user(client, roles, password="password123"):
     r = client.post("/api/users", json={"username": username, "display_name": username.title(), "password": password,
                                         "roles": roles})
     assert r.status_code == 201, r.text
-    return r.json()
+    user = r.json()
+    # Project data needs membership; the member role matches, so the global roles stay what's tested.
+    assert client.put(f"/api/projects/default/members/{user['id']}",
+                      json={"role": roles[0] if roles else "viewer"}).status_code == 200
+    return user
 
 
 def signed_in(username, password="password123") -> TestClient:

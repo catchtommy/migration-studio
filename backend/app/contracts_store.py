@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from sqlalchemy import select
 
+from app import projects
 from app.db.models import Artifact, Contract, Dependency, Domain, Run
 from app.db.session import session_scope
 
@@ -161,7 +162,7 @@ def parse_decisions(text: str) -> dict:
 
 def _exists(key: str) -> bool:
     with session_scope() as s:
-        return s.get(Contract, key) is not None
+        return s.get(Contract, (projects.current(), key)) is not None
 
 
 def validate_outputs(output_dir: Path) -> list[str]:
@@ -198,6 +199,7 @@ def record_approved_design(run_id: str, reviewed_stages: list[str]) -> int:
     reviewers' manual edits. Returns the number of decisions recorded (0 when the gate reviews none)."""
     with session_scope() as s:
         run = s.get(Run, run_id)
+        project = run.project
         artifact = _latest_decisions(s, run_id, reviewed_stages)
         if artifact is None:
             return 0
@@ -209,9 +211,9 @@ def record_approved_design(run_id: str, reviewed_stages: list[str]) -> int:
             spec_doc = spec_path and s.scalar(select(Artifact).where(Artifact.run_id == run_id, Artifact.path == spec_path)
                                               .order_by(Artifact.id.desc()).limit(1))
             spec = spec_doc.content if spec_doc else None
-            row = s.get(Contract, c["key"])
+            row = s.get(Contract, (project, c["key"]))
             if row is None:
-                row = Contract(key=c["key"], consumers=[], status="approved")
+                row = Contract(project=project, key=c["key"], consumers=[], status="approved")
                 s.add(row)
             elif row.status not in _LIVE:
                 row.status = "approved"
@@ -225,7 +227,7 @@ def record_approved_design(run_id: str, reviewed_stages: list[str]) -> int:
         for d in parsed["decisions"]:
             outbound = d.get("direction", "outbound") == "outbound"
             s.add(Dependency(
-                run_id=run_id, interaction=str(d["interaction"]),
+                project=project, run_id=run_id, interaction=str(d["interaction"]),
                 source=run.domain if outbound else d["target"], target=d["target"] if outbound else run.domain,
                 kind=d["kind"], pattern=d["pattern"], contract=d.get("contract"),
                 status=d.get("status", "planned"), summary=d.get("summary", ""),
@@ -237,7 +239,8 @@ def record_approved_design(run_id: str, reviewed_stages: list[str]) -> int:
 def export_specs(workspace: Path) -> int:
     """Copy the catalogue's contract specs into the workspace so agents can read them. Returns how many changed."""
     with session_scope() as s:
-        specs = [(c.key, c.spec) for c in s.scalars(select(Contract)) if c.spec]
+        specs = [(c.key, c.spec) for c in s.scalars(select(Contract).where(Contract.project == projects.current()))
+                 if c.spec]
     changed = 0
     for key, spec in specs:
         f = workspace / CATALOGUE_DIR / f"{key}.yaml"
@@ -256,20 +259,23 @@ def as_dict(c: Contract) -> dict[str, Any]:
 
 def list_contracts(domain: str | None = None) -> list[dict[str, Any]]:
     with session_scope() as s:
-        rows = s.scalars(select(Contract).order_by(Contract.provider, Contract.key)).all()
+        rows = s.scalars(select(Contract).where(Contract.project == projects.current())
+                         .order_by(Contract.provider, Contract.key)).all()
         return [as_dict(c) for c in rows if domain is None or c.provider == domain or domain in (c.consumers or [])]
 
 
 def catalogue_brief(domain: str, settings: dict) -> str:
     """What every agent should know about cross-domain integration: ownership, conventions and contracts."""
     lines = ["## Cross-domain integration"]
+    project = projects.current()
     with session_scope() as s:
-        domains = s.scalars(select(Domain).order_by(Domain.key)).all()
+        domains = s.scalars(select(Domain).where(Domain.project == project).order_by(Domain.key)).all()
         owned = [(d.key, d.owned_tables or [], d.owned_packages or []) for d in domains
                  if d.owned_tables or d.owned_packages]
-        contracts = s.scalars(select(Contract).order_by(Contract.provider, Contract.key)).all()
+        contracts = s.scalars(select(Contract).where(Contract.project == project)
+                              .order_by(Contract.provider, Contract.key)).all()
         if owned:
-            lines.append("Ownership (tables, Java packages):")
+            lines.append("Ownership (tables; code packages, namespaces or modules):")
             lines += [f"- {key}{' (this domain)' if key == domain else ''}: tables {', '.join(t) or '–'}; "
                       f"packages {', '.join(p) or '–'}" for key, t, p in owned]
         else:
@@ -300,9 +306,11 @@ BLOCKING = ("sync-api", "saga", "deferred")
 def dependency_map() -> dict[str, Any]:
     """Domain-to-domain edges (caller/consumer → provider) from approved designs, and a suggested migration order:
     domains that others depend on synchronously the least go first; domains not analysed yet go last."""
+    project = projects.current()
     with session_scope() as s:
-        domains = [d.key for d in s.scalars(select(Domain).order_by(Domain.created_at, Domain.key))]
-        deps = s.scalars(select(Dependency)).all()
+        domains = [d.key for d in s.scalars(select(Domain).where(Domain.project == project)
+                                            .order_by(Domain.created_at, Domain.key))]
+        deps = s.scalars(select(Dependency).where(Dependency.project == project)).all()
         analysed = {r.domain for r in s.scalars(select(Run).where(Run.id.in_({d.run_id for d in deps})))}
         edges: dict[tuple[str, str], dict[str, int]] = {}
         for d in deps:

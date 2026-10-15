@@ -23,6 +23,8 @@ test("an approved integration design fills the contracts catalogue and the depen
   await expect(row).toBeVisible();
   await expect(row.getByText("event", { exact: true })).toBeVisible();
   await row.getByRole("button", { name: new RegExp(`${operation} completed`) }).click();
+  await expect(page.getByRole("tab", { name: "AsyncAPI view" })).toBeVisible(); // event specs open in the AsyncAPI viewer
+  await page.getByRole("tab", { name: "YAML" }).click();
   await expect(page.getByText("asyncapi: 3.0.0")).toBeVisible();
 
   // Loan's dependencies and the migration overview.

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import discovery_store, workflow_store
+from app import discovery_store, projects, workflow_store
 from app.api.runs import start_run
 from app.api.schemas import DiscoveryOverview, DiscoveryStart, FeaturesStart, RunOut
 from app.auth import require
@@ -32,7 +32,7 @@ def _inputs(body: DiscoveryStart) -> dict | None:
 
 
 def start_features(db: Session, domain: str, body: DiscoveryStart) -> Run:
-    if db.get(Domain, domain) is None:
+    if db.get(Domain, (projects.current(), domain)) is None:
         raise HTTPException(404, "Domain not found")
     return start_run(db, domain, discovery_store.FEATURES_OP, "domain",
                      body.workflow or workflow_store.default_for(None, "domain"), _inputs(body))
@@ -43,11 +43,13 @@ def discover_all_features(body: FeaturesStart | None = None, db: Session = Depen
     """Start listing features for every domain that has no unfinished listing run (and, by default, no feature list
     yet)."""
     body = body or FeaturesStart()
-    busy = set(db.scalars(select(Run.domain).where(Run.operation == discovery_store.FEATURES_OP,
+    project = projects.current()
+    busy = set(db.scalars(select(Run.domain).where(Run.project == project, Run.operation == discovery_store.FEATURES_OP,
                                                    Run.status != "completed")))
     listed = {d["key"] for d in discovery_store.overview()["domains"] if d["features"]}
     runs = []
-    for key in db.scalars(select(Domain.key).order_by(Domain.created_at, Domain.key)).all():
+    for key in db.scalars(select(Domain.key).where(Domain.project == project)
+                          .order_by(Domain.created_at, Domain.key)).all():
         if key in busy or (body.only_missing and key in listed):
             continue
         runs.append(start_features(db, key, body))

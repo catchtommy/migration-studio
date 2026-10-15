@@ -52,7 +52,7 @@ class CopilotAgent(StageAgent):
             raise AgentFailed("Not signed in to GitHub Copilot. Sign in on the Settings page, then retry.")
 
         config = ctx.config
-        toolbox = Toolbox(ctx, common.java_home(ctx))
+        toolbox = Toolbox(ctx, common.toolchain_home(ctx))
         tools, names = _tools(ctx, toolbox)
         allowed = ToolSet()
         for name in names:

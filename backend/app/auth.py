@@ -16,7 +16,8 @@ from datetime import timedelta
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import delete, select
 
-from app.db.models import Role, User, UserSession, utcnow
+from app import projects
+from app.db.models import Project, Role, User, UserSession, utcnow
 from app.db.session import session_scope
 
 PERMISSIONS: dict[str, tuple[str, str]] = {
@@ -26,9 +27,13 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "runs.start": ("Run migrations", "Start migration runs and retry failed ones"),
     "runs.approve": ("Approve workflow runs", "Approve or reject runs at their gates"),
     "runs.edit": ("Edit documents & answer agents", "Edit run documents and inputs, answer agents' questions"),
-    "settings.manage": ("Manage settings & database", "AI provider, repository, network, Copilot sign-in, database"),
+    "project.manage": ("Manage project", "The project's settings (repository, stack, toolchains) and its members"),
+    "settings.manage": ("Manage global settings & database", "AI provider, network, Copilot sign-in, database"),
     "users.manage": ("Manage users & roles", "Add users, reset passwords, assign roles, edit roles"),
+    "projects.manage": ("Manage projects", "Create and delete projects, and give people access to any project"),
 }
+# Permissions that only mean something globally: given by a user's own roles, never by a project role.
+GLOBAL_ONLY = {"settings.manage", "users.manage", "projects.manage"}
 ADMIN = "admin"
 DEFAULT_ROLES = [
     (ADMIN, "Admin", "Everything, including users and settings.", list(PERMISSIONS)),
@@ -191,13 +196,75 @@ def current_user(request: Request) -> CurrentUser:
     return user
 
 
+def sees_all_projects(user: CurrentUser) -> bool:
+    """Global project admins see every project, to manage its settings and members; its data still needs membership."""
+    return user.can("projects.manage")
+
+
+def project_permissions(user: CurrentUser, project: str) -> frozenset[str] | None:
+    """What the user may do in a project: exactly what their role there gives. None: they aren't a member, so they
+    can't open the project or its runs (their own roles never reach into a project)."""
+    role = projects.role_of(user.id, project)
+    if role is None:
+        return None
+    with session_scope() as s:
+        return frozenset(permissions_of(s, [role]) - GLOBAL_ONLY)
+
+
+def administers(user: CurrentUser, project: str) -> bool:
+    """May change the project's settings and members: Manage project there, or Manage projects globally."""
+    return sees_all_projects(user) or "project.manage" in (project_permissions(user, project) or ())
+
+
+@dataclass(frozen=True)
+class ProjectAccess:
+    user: CurrentUser
+    project: str
+    permissions: frozenset[str]
+
+    def can(self, permission: str) -> bool:
+        return permission in self.permissions
+
+
+async def project_context(request: Request, user: CurrentUser = Depends(current_user)) -> ProjectAccess:
+    """The project a request is about (X-Project header or `project` query parameter), checked and made current.
+    Async on purpose: it then runs in the request's own context, so the current project it sets reaches the endpoint
+    (sync dependencies run in a copy of the context)."""
+    key = request.headers.get("x-project") or request.query_params.get("project")
+    if not key:
+        raise HTTPException(400, "Choose a project first")
+    with session_scope() as s:
+        if s.get(Project, key) is None:
+            raise HTTPException(404, f"There is no project {key}")
+    permissions = project_permissions(user, key)
+    if permissions is None:
+        raise HTTPException(403, "You don't have access to this project. Ask its admin to add you.")
+    projects.set_current(key)  # for this request (each request runs in its own context)
+    return ProjectAccess(user=user, project=key, permissions=permissions)
+
+
+def _refuse(permission: str) -> HTTPException:
+    return HTTPException(403, f"You don't have permission to do this ({PERMISSIONS[permission][0]}). Ask an admin "
+                              "for a role that includes it.")
+
+
 def require(permission: str):
-    label = PERMISSIONS[permission][0]
+    """A permission in the request's project, from the user's role in it."""
+
+    def dependency(access: ProjectAccess = Depends(project_context)) -> CurrentUser:
+        if not access.can(permission):
+            raise _refuse(permission)
+        return access.user
+
+    return dependency
+
+
+def require_global(permission: str):
+    """A permission from the user's own roles, for things outside any project (users, global settings)."""
 
     def dependency(user: CurrentUser = Depends(current_user)) -> CurrentUser:
         if not user.can(permission):
-            raise HTTPException(403, f"You don't have permission to do this ({label}). Ask an admin for a role "
-                                     "that includes it.")
+            raise _refuse(permission)
         return user
 
     return dependency

@@ -74,7 +74,7 @@ def setup_or_settings(request: Request) -> None:
     """In setup mode (no database, or no users yet) anyone may choose the database; afterwards it is a setting."""
     if not session.is_configured() or auth.needs_bootstrap():
         return
-    auth.require("settings.manage")(auth.current_user(request))
+    auth.require_global("settings.manage")(auth.current_user(request))
 
 
 @router.post("/test", dependencies=[Depends(setup_or_settings)])

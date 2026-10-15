@@ -11,6 +11,7 @@ from langgraph.types import Command
 
 from app.db.models import Run
 from app.db.session import emit, session_scope
+from app import projects
 from app.orchestrator import questions
 from app.orchestrator.checkpointer import SqlAlchemySaver
 from app.orchestrator.graph import build_graph
@@ -109,6 +110,7 @@ class Runner:
                 run = s.get(Run, run_id)
                 run.status, run.error = "running", None
                 domain, operation, workspace, branch = run.domain, run.operation, run.workspace, run.branch
+                projects.set_current(run.project)  # this worker thread now works for the run's project
             if initial:
                 emit(run_id, "status", "Preparing workspace")
                 base_sha = git_ops.init_workspace(Path(workspace), get_setting("monolith_repo") or None, branch)

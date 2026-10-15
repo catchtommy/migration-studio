@@ -125,3 +125,9 @@ export const UsersIcon = (p: IconProps) => (
     <path d="M16 3.13a4 4 0 0 1 0 7.75" />
   </Svg>
 );
+
+export const FolderIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+  </Svg>
+);

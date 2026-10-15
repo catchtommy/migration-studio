@@ -11,10 +11,12 @@ from app.agents.tools import ToolError, Toolbox
 INLINE_LIMIT = 200_000  # characters of earlier documents put in the prompt; larger ones are left to read_file
 LOG_LIMIT = 2_000
 
-PREAMBLE = """You are one stage agent in Migration Studio, which migrates a legacy Java monolith to Spring Boot \
-microservices one operation at a time. You work in a git checkout of the monolith (the workspace) using the tools \
-provided; all paths are relative to the workspace root. Earlier stages' documents are in the workspace, and a \
-person reviews your output before the migration moves on.
+PREAMBLE = """You are one stage agent in Migration Studio, which migrates a legacy monolith to microservices one \
+operation at a time. The project's language and stacks are given at the start of your task; where the stage \
+instructions assume another language (for example Java), apply them to the project's language instead. You work in \
+a git checkout of the monolith (the workspace) using the tools provided; all paths are relative to the workspace \
+root. Earlier stages' documents are in the workspace, and a person reviews your output before the migration moves \
+on.
 
 When you are done, reply with a short summary of what you produced and anything the reviewer should check, \
 without calling a tool.
@@ -30,8 +32,21 @@ def system_prompt(ctx: AgentContext) -> str:
     return f"{PREAMBLE}\n\n{ctx.config['instructions']}"
 
 
-def java_home(ctx: AgentContext) -> str | None:
-    return ctx.settings["jdk_modern_home" if ctx.config["jdk"] == "modern" else "jdk_legacy_home"] or None
+def toolchain_home(ctx: AgentContext) -> str | None:
+    """The toolchain this stage builds and tests with: the monolith's (legacy) or the target's (modern)."""
+    return ctx.settings.get("jdk_modern_home" if ctx.config["jdk"] == "modern" else "jdk_legacy_home") or None
+
+
+def project_brief(ctx: AgentContext) -> str:
+    """The project's language and stacks, so agents work in it whatever their instructions assume."""
+    from app.settings_store import LANGUAGES
+
+    language = ctx.settings.get("language") or "java"
+    toolchain = "target" if ctx.config.get("jdk") == "modern" else "legacy (the monolith's)"
+    return (f"## Project\nLanguage: {LANGUAGES.get(language, language)}. Monolith: "
+            f"{ctx.settings.get('source_stack') or 'not described'}. Target: "
+            f"{ctx.settings.get('target_stack') or 'not described'}. Commands you run use the {toolchain} "
+            "toolchain.")
 
 
 def kind(path: str) -> str:
@@ -92,6 +107,7 @@ def brief(ctx: AgentContext) -> str:
     parts = [
         f"# {title}: {discovery_store.subject(ctx.domain, ctx.operation)}",
         f"{description}\n\nThis is attempt {ctx.attempt}.",
+        project_brief(ctx),
         where,
     ]
     if ctx.refresh:

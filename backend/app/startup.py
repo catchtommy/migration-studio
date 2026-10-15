@@ -4,7 +4,7 @@ import logging
 
 from sqlalchemy import URL
 
-from app import agent_store, auth, domain_store, workflow_store
+from app import agent_store, auth, domain_store, projects, workflow_store
 from app.db import session, transfer
 from app.orchestrator.runner import get_runner
 
@@ -16,6 +16,7 @@ def open_database(url: URL) -> None:
     session.init_db()
     transfer.import_legacy_checkpoints(session.get_engine())
     auth.seed()
+    projects.seed()
     agent_store.seed()
     domain_store.seed()
     workflow_store.seed()

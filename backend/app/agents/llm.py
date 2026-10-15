@@ -29,7 +29,7 @@ class ClaudeAgent(StageAgent):
     def run(self, ctx: AgentContext) -> list[ArtifactOut]:
         config = ctx.config
         model = DEFAULT_MODEL if config["model"] in ("", "auto") else config["model"]
-        toolbox = Toolbox(ctx, common.java_home(ctx))
+        toolbox = Toolbox(ctx, common.toolchain_home(ctx))
         client = make_client()
         tools = definitions(config["tools"])
         system = common.system_prompt(ctx)

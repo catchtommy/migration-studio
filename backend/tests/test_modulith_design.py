@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app import agent_store, contracts_store, modulith_scope, workflow_store
 from app.agents import stub
 from app.agents.defaults import INSTRUCTIONS, default_config
-from app.db.models import Agent, AuditEvent, Setting, WorkflowDef
+from app.db.models import SHARED, Agent, AuditEvent, Setting, WorkflowDef
 from app.db.session import session_scope
 from tests.conftest import start_run, wait_for
 from tests.test_cross_domain import _approve, _steps_of_shape
@@ -165,7 +165,7 @@ def test_standard_workflow_upgrade_from_the_previous_release(client):
 
     def reset(steps):
         with session_scope() as s:
-            s.get(WorkflowDef, "standard").steps = steps
+            s.get(WorkflowDef, (SHARED, "standard")).steps = steps
             s.query(Setting).filter(Setting.key == "_standard_workflow_v3").delete()
 
     reset(previous)
@@ -185,11 +185,11 @@ def test_modulith_agents_are_added_to_an_existing_library_once(client):
     with session_scope() as s:
         s.query(Setting).filter(Setting.key == marker).delete()
         for key in MODULITH:
-            s.delete(s.get(Agent, key))
+            s.delete(s.get(Agent, (SHARED, key)))
     agent_store.seed()
     assert all(agent_store.exists(k) for k in MODULITH)
     with session_scope() as s:
-        s.delete(s.get(Agent, "wrapper_design"))
+        s.delete(s.get(Agent, (SHARED, "wrapper_design")))
     agent_store.seed()  # marker present: a deliberately deleted built-in stays deleted
     assert not agent_store.exists("wrapper_design")
     with session_scope() as s:

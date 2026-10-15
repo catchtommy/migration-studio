@@ -186,6 +186,8 @@ class AgentOut(AgentIn):
     instructions: str  # empty for users who can't manage agents
     key: str
     builtin: bool
+    scope: str = "shared"  # shared (the library every project uses) | project (this project's own or copy)
+    customised: bool = False  # a project copy of a shared agent
     created_at: datetime
     updated_at: datetime
 
@@ -279,6 +281,8 @@ class WorkflowOut(BaseModel):
     steps: list[WorkflowStep]
     stages: list[StageDefOut]  # steps resolved with agent titles
     runs: int = 0
+    library: str = "shared"  # shared (every project) | project (this project's own or copy)
+    customised: bool = False  # a project copy of a shared workflow
     created_at: datetime
     updated_at: datetime
 

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, SCOPE_LABELS, type Agent, type Scope, type Workflow, type WorkflowStep } from "../lib/api";
-import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
+import { api, SCOPE_LABELS, type Agent, type Library, type Scope, type Workflow, type WorkflowStep } from "../lib/api";
+import { useAgents, useCanGlobally, useDomains, useWorkflows } from "../lib/hooks";
+import { LibraryBadge, SaveTarget } from "../components/LibraryBadge";
 import { slug } from "../lib/slug";
 import { normalizeSteps, type EditableStep } from "../lib/workflowSteps";
 import { Field, inputClass } from "../components/Field";
@@ -26,15 +27,21 @@ function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[
   const [description, setDescription] = useState("");
   const [from, setFrom] = useState(workflows.find((w) => w.key === "standard")?.key ?? workflows[0]?.key ?? "");
   const [scope, setScope] = useState<Scope>("operation");
+  const canShared = useCanGlobally("workflows.manage");
+  const [libraryChoice, setLibrary] = useState<Library | null>(null);
+  const library: Library = libraryChoice ?? (canShared ? "shared" : "project");
   const key = slug(name, "-");
   const create = useMutation({
     mutationFn: () =>
-      api.createWorkflow({
-        key,
-        name: name.trim(),
-        description,
-        ...(from ? { copy_from: from } : { scope, steps: [{ kind: "agent", key: (agents.find((a) => a.key === FIRST_AGENT[scope]) ?? agents[0])?.key ?? "" }] }),
-      }),
+      api.createWorkflow(
+        {
+          key,
+          name: name.trim(),
+          description,
+          ...(from ? { copy_from: from } : { scope, steps: [{ kind: "agent", key: (agents.find((a) => a.key === FIRST_AGENT[scope]) ?? agents[0])?.key ?? "" }] }),
+        },
+        library,
+      ),
     onSuccess: (w) => {
       queryClient.invalidateQueries({ queryKey: ["workflows"] });
       navigate(`/workflows/${w.key}`);
@@ -80,6 +87,7 @@ function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[
         <textarea rows={2} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
       <div className="flex items-center gap-2">
+        <SaveTarget value={library} onChange={setLibrary} canShared={canShared} noun="new workflow" />
         <button type="submit" disabled={!key || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
           Create workflow
         </button>
@@ -277,12 +285,18 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
 
   const dirty =
     name !== workflow.name || description !== workflow.description || JSON.stringify(toSteps(steps)) !== JSON.stringify(toSteps(editable(workflow.steps)));
+  const canShared = useCanGlobally("workflows.manage");
+  const [choice, setChoice] = useState<Library | null>(null); // null: the default below
+  const target: Library = workflow.library === "project" ? "project" : (choice ?? (canShared ? "shared" : "project"));
+  const setTarget = setChoice;
+  const onSaved = (saved: Workflow) => queryClient.setQueryData<Workflow[]>(["workflows"], (prev) => prev?.map((w) => (w.key === saved.key ? saved : w)));
   const save = useMutation({
-    mutationFn: () => api.updateWorkflow(workflow.key, { name: name.trim(), description, steps: toSteps(steps) }),
-    onSuccess: (saved) => queryClient.setQueryData<Workflow[]>(["workflows"], (prev) => prev?.map((w) => (w.key === saved.key ? saved : w))),
+    mutationFn: () => api.updateWorkflow(workflow.key, { name: name.trim(), description, steps: toSteps(steps) }, target),
+    onSuccess: onSaved,
   });
+  const revert = useMutation({ mutationFn: () => api.revertWorkflow(workflow.key), onSuccess: (w) => (onSaved(w), setTarget(null)) });
   const remove = useMutation({
-    mutationFn: () => api.deleteWorkflow(workflow.key),
+    mutationFn: () => api.deleteWorkflow(workflow.key, workflow.library),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["workflows"] });
       queryClient.invalidateQueries({ queryKey: ["domains"] });
@@ -327,6 +341,7 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         save.mutate();
       }}
     >
+      <LibraryBadge library={workflow.library} customised={workflow.customised} />
       <div className="grid gap-4 sm:grid-cols-[16rem_1fr]">
         <Field label="Name">
           <input className={inputClass} value={name} onChange={(e) => {
@@ -386,6 +401,17 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         <button type="submit" disabled={!dirty || !name.trim() || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
           Save workflow
         </button>
+        {workflow.library === "shared" && <SaveTarget value={target} onChange={setTarget} canShared={canShared} noun="workflow" />}
+        {workflow.customised && (
+          <button
+            type="button"
+            className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
+            disabled={revert.isPending}
+            onClick={() => window.confirm(`Drop this project's changes to ${workflow.name} and use the shared workflow again?`) && revert.mutate()}
+          >
+            Revert to shared
+          </button>
+        )}
         {dirty && (
           <button type="button" className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg" onClick={() => {
               setName(workflow.name);
@@ -398,19 +424,23 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         )}
         {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
         {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
-        <button
-          type="button"
-          className="ml-auto rounded-md px-3 py-1.5 text-sm text-bad hover:bg-bad/10 disabled:opacity-50"
-          disabled={remove.isPending}
-          onClick={() =>
-            window.confirm(
-              `Delete the ${workflow.name} workflow?${defaultFor.length ? ` It is the default for ${defaultFor.map((d) => d.name).join(", ")}.` : ""} Runs that used it are not affected.`,
-            ) && remove.mutate()
-          }
-        >
-          Delete workflow
-        </button>
-        {(save.error || remove.error) && <p className="w-full text-sm text-bad">{((save.error || remove.error) as Error).message}</p>}
+        {!workflow.customised && (workflow.library === "project" || canShared) && (
+          <button
+            type="button"
+            className="ml-auto rounded-md px-3 py-1.5 text-sm text-bad hover:bg-bad/10 disabled:opacity-50"
+            disabled={remove.isPending}
+            onClick={() =>
+              window.confirm(
+                `Delete the ${workflow.name} workflow${workflow.library === "shared" ? " from every project" : ""}?${defaultFor.length ? ` It is the default for ${defaultFor.map((d) => d.name).join(", ")}.` : ""} Runs that used it are not affected.`,
+              ) && remove.mutate()
+            }
+          >
+            Delete workflow
+          </button>
+        )}
+        {(save.error || remove.error || revert.error) && (
+          <p className="w-full text-sm text-bad">{((save.error || remove.error || revert.error) as Error).message}</p>
+        )}
       </div>
     </form>
   );
@@ -450,7 +480,10 @@ export function WorkflowsPage() {
                 to={`/workflows/${w.key}`}
                 className={({ isActive }) => `block rounded-md px-2 py-1.5 text-sm hover:bg-muted ${isActive ? "bg-muted font-medium" : ""}`}
               >
-                <span className="block">{w.name}</span>
+                <span className="flex items-center gap-2">
+                  <span className="flex-1">{w.name}</span>
+                  <LibraryBadge library={w.library} customised={w.customised} compact />
+                </span>
                 <span className="block text-xs font-normal text-subtle">
                   {w.scope !== "operation" && <span className="text-accent">{w.scope === "monolith" ? "Discovery" : "Features"} · </span>}
                   {w.stages.length - gates} agent{w.stages.length - gates === 1 ? "" : "s"} · {gates} approval{gates === 1 ? "" : "s"}

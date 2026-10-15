@@ -12,7 +12,7 @@ from langgraph.types import interrupt
 from sqlalchemy import func, select
 
 from app import agent_store, contracts_store, discovery_store, modulith_scope
-from app import workspace
+from app import projects, workspace
 from app.agents import get_agent
 from app.agents.base_agent import AgentContext, AgentInputs, ArtifactOut, PriorDocument, docs_dir
 from app.agents.common import kind
@@ -28,6 +28,11 @@ from app.tools import git_ops
 MAX_DOCUMENT_BYTES = 5_000_000
 
 
+def _project_of(run_id: str) -> str:
+    with session_scope() as s:
+        return s.get(Run, run_id).project
+
+
 def _set_run(run_id: str, **fields) -> None:
     with session_scope() as s:
         run = s.get(Run, run_id)
@@ -38,7 +43,7 @@ def _set_run(run_id: str, **fields) -> None:
 def _inputs(run_id: str, stage: str) -> AgentInputs:
     with session_scope() as s:
         run = s.get(Run, run_id)
-        domain = s.get(Domain, run.domain)
+        domain = s.get(Domain, (run.project, run.domain))
         run_inputs = normalize_inputs(run.inputs)
         label = "this operation" if (run.scope or "operation") == "operation" else "this discovery run"
         if domain is None:
@@ -56,7 +61,7 @@ def _inputs(run_id: str, stage: str) -> AgentInputs:
 def _ownership() -> dict[str, dict]:
     with session_scope() as s:
         return {d.key: {"tables": d.owned_tables or [], "packages": d.owned_packages or []}
-                for d in s.scalars(select(Domain))}
+                for d in s.scalars(select(Domain).where(Domain.project == projects.current()))}
 
 
 def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef) -> list[PriorDocument]:
@@ -115,6 +120,7 @@ def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
 def make_agent_node(workflow: Workflow, stage: StageDef):
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
+        projects.set_current(_project_of(run_id))  # nodes may run on another thread than the runner's
         ws = Path(state["workspace"])
         feedback = state.get("feedback", {}).get(stage.key)
         refresh = stage.key in (state.get("refresh") or [])

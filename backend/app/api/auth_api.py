@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app import auth
 from app.auth import COOKIE, CurrentUser, current_user
-from app.db.models import User
+from app.db.models import Project, ProjectMember, User
 from app.db.session import session_scope
 
 router = APIRouter(prefix="/api/auth")
@@ -95,6 +95,8 @@ def bootstrap(body: BootstrapIn, request: Request, response: Response) -> dict:
         s.add(user)
         s.flush()
         user_id = user.id
+        for key in s.scalars(select(Project.key)):  # the first admin can open every project there is
+            s.add(ProjectMember(project=key, user_id=user_id, role=auth.ADMIN))
     _set_cookie(request, response, auth.start_session(user_id))
     return {"user": me_out(_fresh(user_id))}
 

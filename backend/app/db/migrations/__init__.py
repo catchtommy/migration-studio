@@ -33,8 +33,9 @@ def upgrade(engine: Engine) -> None:
         cfg = _config(conn)
         tables = set(inspect(conn).get_table_names())
         if MigrationContext.configure(conn).get_current_revision() is None and "runs" in tables:
-            # A SQLite database from before migrations: bring it up to the baseline the old way, then track it.
-            Base.metadata.create_all(conn, tables=_baseline_tables())
+            # A SQLite database from before migrations (all of its tables exist): bring its columns up to the
+            # baseline the old way, then track it.
+            Base.metadata.create_all(conn, tables=[t for t in _baseline_tables() if t.name.startswith("graph_")])
             _add_missing_columns(conn)
             command.stamp(cfg, BASELINE)
         command.upgrade(cfg, "head")
@@ -44,12 +45,17 @@ def _baseline_tables():
     return [t for t in Base.metadata.sorted_tables if t.name in BASELINE_TABLES]
 
 
+# Columns later revisions add; bringing an old database up to the baseline must leave them to those revisions.
+LATER_COLUMNS = {("stage_executions", "rerun")}
+
+
 def _add_missing_columns(conn) -> None:
     """What startup used to do: add nullable columns introduced since a table was created."""
     inspector = inspect(conn)
     for table in _baseline_tables():
         existing = {c["name"] for c in inspector.get_columns(table.name)}
         for column in table.columns:
-            if column.name not in existing and column.nullable:
+            later = column.name == "project" or (table.name, column.name) in LATER_COLUMNS
+            if column.name not in existing and column.nullable and not later:
                 conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column.name} "
                                   f"{column.type.compile(conn.dialect)}"))

@@ -59,6 +59,16 @@ function NewRunForm() {
     },
   });
 
+  if (domains.length === 0)
+    return (
+      <div className="card border-t-4 border-t-accent p-4 text-sm">
+        This project has no domains yet.{" "}
+        <Link to="/domains" className="text-accent hover:underline">
+          Discover the bounded contexts or add domains →
+        </Link>
+      </div>
+    );
+
   return (
     <Guarded permission="runs.start">
       <form

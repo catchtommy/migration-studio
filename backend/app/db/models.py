@@ -18,6 +18,12 @@ class Base(DeclarativeBase):
     pass
 
 
+# Project keys. Rows of the shared agent/workflow library and global settings use these instead of a project key
+# (a primary key column can't be NULL, and Oracle stores '' as NULL).
+SHARED = "_shared"
+GLOBAL = "_global"
+
+
 class Run(Base):
     """One migration of a single (domain, operation) through a workflow. Discovery runs use the same machinery with a
     reserved domain or operation (see app/discovery_store.py)."""
@@ -25,6 +31,7 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    project: Mapped[str] = mapped_column(String(64), index=True)
     domain: Mapped[str] = mapped_column(String(64), index=True)
     operation: Mapped[str] = mapped_column(String(128))
     # pending | running | awaiting_input | awaiting_approval | changes_requested | completed | failed
@@ -125,6 +132,7 @@ class AuditEvent(Base):
 class Setting(Base):
     __tablename__ = "settings"
 
+    project: Mapped[str] = mapped_column(String(64), primary_key=True, default=GLOBAL)  # GLOBAL or a project key
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[dict | list | str | int | bool | None] = mapped_column(JSONText)
 
@@ -134,6 +142,7 @@ class Domain(Base):
 
     __tablename__ = "domains"
 
+    project: Mapped[str] = mapped_column(String(64), primary_key=True)
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
     description: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)
@@ -154,6 +163,7 @@ class Agent(Base):
 
     __tablename__ = "agents"
 
+    project: Mapped[str] = mapped_column(String(64), primary_key=True, default=SHARED)  # SHARED: the library
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     title: Mapped[str] = mapped_column(String(128))
     description: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)
@@ -175,6 +185,7 @@ class WorkflowDef(Base):
 
     __tablename__ = "workflows"
 
+    project: Mapped[str] = mapped_column(String(64), primary_key=True, default=SHARED)  # SHARED: the library
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
     description: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)
@@ -211,6 +222,7 @@ class Contract(Base):
 
     __tablename__ = "contracts"
 
+    project: Mapped[str] = mapped_column(String(64), primary_key=True)
     key: Mapped[str] = mapped_column(String(128), primary_key=True)  # e.g. customer.get-customer, loan.loan-approved
     provider: Mapped[str] = mapped_column(String(64), index=True)  # domain that owns it
     kind: Mapped[str] = mapped_column(String(16))  # api | event | command
@@ -233,6 +245,7 @@ class Dependency(Base):
     __tablename__ = "dependencies"
 
     id: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
+    project: Mapped[str] = mapped_column(String(64), index=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
     interaction: Mapped[str] = mapped_column(String(128))  # id within the run's cross-domain catalogue
     source: Mapped[str] = mapped_column(String(64), index=True)  # domain that calls / depends
@@ -251,9 +264,10 @@ class Feature(Base):
     discovery when its gate is approved, or added by hand."""
 
     __tablename__ = "features"
-    __table_args__ = (UniqueConstraint("domain", "key"),)
+    __table_args__ = (UniqueConstraint("project", "domain", "key"),)
 
     id: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
+    project: Mapped[str] = mapped_column(String(64), index=True)
     domain: Mapped[str] = mapped_column(String(64), index=True)
     key: Mapped[str] = mapped_column(String(128))  # the operation name of its migration runs
     name: Mapped[str] = mapped_column(String(255))
@@ -336,3 +350,26 @@ class UserSession(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class Project(Base):
+    """A migration project: its own monolith, domains, runs, contracts and settings, and its members."""
+
+    __tablename__ = "projects"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
+class ProjectMember(Base):
+    """A user's access to a project, with the role (a key of `roles`) they have in it."""
+
+    __tablename__ = "project_members"
+
+    project: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)

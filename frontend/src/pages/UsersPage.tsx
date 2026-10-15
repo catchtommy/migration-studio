@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Permission, type Role, type User } from "../lib/api";
-import { useMe } from "../lib/hooks";
+import { useCurrentProject, useMe, useProjects } from "../lib/hooks";
 import { slug } from "../lib/slug";
 import { Field, inputClass as input } from "../components/Field";
 import { PageTitle } from "../components/PageTitle";
 import { UsersIcon } from "../components/icons";
 
 const button = "rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium hover:border-accent/50 disabled:opacity-50";
+const GLOBAL_HINT =
+  "For work outside projects: global settings, users, creating projects, and changing the shared agent and workflow library. They give no access to any project or its runs.";
 const primary = "rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50";
 
 function RolePicker({ roles, value, onChange }: { roles: Role[]; value: string[]; onChange: (roles: string[]) => void }) {
@@ -32,12 +34,75 @@ function RolePicker({ roles, value, onChange }: { roles: Role[]; value: string[]
   );
 }
 
+/** The projects a user can open and their role in each. Only projects the signed-in user may manage can be changed. */
+function ProjectAccess({ user, roles }: { user: User; roles: Role[] }) {
+  const queryClient = useQueryClient();
+  const { data: projects = [] } = useProjects();
+  const roleIn = Object.fromEntries(user.projects.map((p) => [p.project, p.role]));
+  const set = useMutation({
+    mutationFn: async ({ project, role }: { project: string; role: string }) => {
+      if (role) await api.setMember(project, user.id, role);
+      else await api.removeMember(project, user.id);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+  const manageable = projects.filter((p) => p.permissions.includes("project.manage"));
+  const others = user.projects.filter((m) => !manageable.some((p) => p.key === m.project));
+  return (
+    <div className="space-y-2">
+      <span className="block text-sm font-medium">Project access</span>
+      <p className="text-xs text-subtle">They can open only these projects and their runs; their role in each decides what they can do there.</p>
+      <ul className="divide-y divide-border rounded-md border border-border bg-surface">
+        {manageable.map((p) => (
+          <li key={p.key} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-sm">
+            <span>{p.name}</span>
+            <select
+              aria-label={`Access to ${p.name}`}
+              className="rounded-md border border-border bg-bg px-2 py-1 text-sm"
+              value={roleIn[p.key] ?? ""}
+              disabled={set.isPending}
+              onChange={(e) => {
+                const role = e.target.value;
+                if (role || confirm(`Remove ${user.display_name}'s access to ${p.name}?`)) set.mutate({ project: p.key, role });
+              }}
+            >
+              <option value="">No access</option>
+              {roles.map((r) => (
+                <option key={r.key} value={r.key}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </li>
+        ))}
+        {others.map((m) => (
+          <li key={m.project} className="flex items-center justify-between gap-3 px-3 py-2 text-sm text-subtle">
+            <span>{m.name}</span>
+            <span>{roles.find((r) => r.key === m.role)?.name ?? m.role}</span>
+          </li>
+        ))}
+      </ul>
+      {set.error && <p className="text-sm text-bad">{(set.error as Error).message}</p>}
+    </div>
+  );
+}
+
 function AddUser({ roles, onDone }: { roles: Role[]; onDone: () => void }) {
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ display_name: "", username: "", password: "", roles: ["developer"] });
+  const project = useCurrentProject();
+  const [form, setForm] = useState({ display_name: "", username: "", password: "", roles: [] as string[] });
+  const [projectRole, setProjectRole] = useState<string>("developer"); // "" = don't add to the project
   const create = useMutation({
-    mutationFn: () => api.createUser(form),
+    mutationFn: async () => {
+      const user = await api.createUser(form);
+      if (project && projectRole) await api.setMember(project.key, user.id, projectRole);
+      return user;
+    },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
       queryClient.invalidateQueries({ queryKey: ["users"] });
       queryClient.invalidateQueries({ queryKey: ["roles"] });
       onDone();
@@ -69,7 +134,19 @@ function AddUser({ roles, onDone }: { roles: Role[]; onDone: () => void }) {
           />
         </Field>
       </div>
-      <Field label="Roles">
+      {project && (
+        <Field label={`Access to ${project.name}`} hint="Give them access to other projects after adding them (Edit).">
+          <select className={`${input} max-w-xs`} value={projectRole} onChange={(e) => setProjectRole(e.target.value)}>
+            {roles.map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.name}
+              </option>
+            ))}
+            <option value="">No access</option>
+          </select>
+        </Field>
+      )}
+      <Field label="Global roles (optional)" hint={GLOBAL_HINT}>
         <RolePicker roles={roles} value={form.roles} onChange={(r) => setForm({ ...form, roles: r })} />
       </Field>
       {create.error && <p className="text-sm text-bad">{(create.error as Error).message}</p>}
@@ -113,15 +190,17 @@ function UserRow({ user, roles, isMe }: { user: User; roles: Role[]; isMe: boole
           </span>
         </div>
         <div className="flex flex-wrap gap-1">
-          {user.roles.length ? (
-            user.roles.map((r) => (
-              <span key={r} className="rounded-full bg-accent/10 px-2 py-0.5 text-xs text-accent">
-                {roleName(r)}
-              </span>
-            ))
-          ) : (
-            <span className="text-xs text-subtle">no roles</span>
-          )}
+          {user.projects.map((p) => (
+            <span key={p.project} title={`${roleName(p.role)} in ${p.name}`} className="rounded-full bg-muted px-2 py-0.5 text-xs">
+              {p.name}: {roleName(p.role)}
+            </span>
+          ))}
+          {user.projects.length === 0 && <span className="text-xs text-subtle">no project access</span>}
+          {user.roles.map((r) => (
+            <span key={r} title="Global role" className="rounded-full bg-accent/10 px-2 py-0.5 text-xs text-accent">
+              {roleName(r)} (global)
+            </span>
+          ))}
         </div>
         {!user.active && <span className="rounded-full bg-bad/10 px-2 py-0.5 text-xs text-bad">deactivated</span>}
         <div className="flex gap-2">
@@ -148,7 +227,7 @@ function UserRow({ user, roles, isMe }: { user: User; roles: Role[]; isMe: boole
           <Field label="Name">
             <input className={`${input} max-w-sm`} value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
           </Field>
-          <Field label="Roles">
+          <Field label="Global roles" hint={GLOBAL_HINT}>
             <RolePicker roles={roles} value={form.roles} onChange={(r) => setForm({ ...form, roles: r })} />
           </Field>
           {!isMe && (
@@ -160,6 +239,7 @@ function UserRow({ user, roles, isMe }: { user: User; roles: Role[]; isMe: boole
           <button className={primary} disabled={!form.display_name.trim() || save.isPending} onClick={() => save.mutate()}>
             Save
           </button>
+          <ProjectAccess user={user} roles={roles} />
         </div>
       )}
 
@@ -323,7 +403,12 @@ export function UsersPage() {
   const tabClass = (t: string) => `rounded-full px-3 py-1.5 text-sm ${tab === t ? "bg-accent/15 font-medium text-accent" : "text-subtle hover:text-fg"}`;
   return (
     <div className="space-y-6">
-      <PageTitle icon={<UsersIcon />} title="Users & roles" subtitle="Who can sign in, and what each role may do." tone="from-sky-500 to-indigo-600" />
+      <PageTitle
+        icon={<UsersIcon />}
+        title="Users & roles"
+        subtitle="Who can sign in, which projects each person can open, and what each role may do."
+        tone="from-sky-500 to-indigo-600"
+      />
       <div className="flex gap-1">
         <button className={tabClass("users")} onClick={() => setTab("users")}>
           Users

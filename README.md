@@ -72,13 +72,46 @@ except, for convenience, `database.json`.
   before this choice existed keep their `data/studio.db` (SQLite) and are upgraded in place; their old
   `checkpoints.db` is imported once and kept as `checkpoints.db.imported`.
 
+## Projects
+
+Migration Studio runs several migration projects side by side. Each project has its own monolith repository,
+domains, features, runs, documents, contracts, settings and members; the header's project switcher changes the
+project you work in (the choice is remembered per browser).
+
+- **Projects page** (switcher → *All projects*): the projects you can open. Users with **Manage projects** create
+  projects there (name, key, language, stacks, repository); the creator becomes the project's admin.
+- **Project page** (*Project* in the menu): the project's settings and its **Members**.
+  - *Language and stack*: Java, C# / .NET, TypeScript / Node.js, Python, Go or other, plus what the monolith is
+    and what it migrates to. Every agent gets this, so AI agents work in the project's language even where their
+    instructions mention Java.
+  - *Source and toolchains*: the monolith repository, the legacy and target toolchain homes (a JDK, .NET SDK, Node,
+    Python or Go install). `run_command` puts the agent's toolchain first on `PATH` and sets `JAVA_HOME` or
+    `DOTNET_ROOT` for Java and .NET.
+  - The test database connection, self-check attempts and the cross-domain conventions.
+- **Agents and workflows** are a shared library used by every project. A project can **customise** one: saving with
+  *This project only* gives the project its own copy (marked *copy*), which other projects don't see; *Revert to
+  shared* drops it. Projects can also have agents and workflows of their own. Changing the shared library needs
+  *Manage agents* / *Manage workflows* as a global role; a project role only allows project copies.
+- The AI provider, Copilot sign-in, corporate network and database are global (**Settings**).
+- Data from before projects is in the **Default project**; its existing users became members.
+
 ## Users and permissions
 
 Everyone signs in with a username and password; nothing is visible without signing in. The first person to open a
 new installation creates the **admin** account, then adds everyone else under **Users** (shown to users who can
 manage users).
 
-Each user has one or more roles; a role is a set of permissions, edited as a grid on **Users → Roles & permissions**:
+**Access to a project and its runs is given per project.** Only a project's members can open it, its domains, runs,
+documents and contracts; anyone else gets *403* from the API and doesn't see the project in the UI. Each member has a
+**role in that project**, and that role alone decides what they can do there. Access is given on the project's
+**Members** tab, or per person under **Users → Edit → Project access**.
+
+**Global roles** (Users page) are for work outside projects: global settings, users, creating projects, and changing
+the shared agent/workflow library. They give no access to any project. Users with *Manage projects* see every
+project and can manage its members, but they open its runs only after adding themselves. The first admin is made a
+member of every project that exists when they're created, and whoever creates a project becomes its admin.
+
+A role is a set of permissions, edited as a grid on **Users → Roles & permissions**:
 
 | Permission | Allows |
 |---|---|
@@ -88,8 +121,10 @@ Each user has one or more roles; a role is a set of permissions, edited as a gri
 | Run migrations | Start migration runs, retry failed ones |
 | Approve workflow runs | Approve or reject at gates (also re-running or withdrawing a held rejection) |
 | Edit documents & answer agents | Edit run documents and inputs, answer agents' questions |
-| Manage settings & database | Settings, Copilot sign-in, switching the database |
-| Manage users & roles | Users, passwords, roles |
+| Manage project | The project's settings and members |
+| Manage global settings & database *(global only)* | AI provider, network, Copilot sign-in, switching the database |
+| Manage users & roles *(global only)* | Users, passwords, roles |
+| Manage projects *(global only)* | Create and delete projects, manage the members of any project |
 
 Default roles: **Admin** (everything, can't be changed), **Architect**, **Developer**, **Reviewer**, **Viewer**
 (read-only). The **Agents** and **Workflows** pages are only shown to users who can manage them (agents'
@@ -101,6 +136,7 @@ every change. Approvals, answers and document edits record the signed-in user.
   Five wrong passwords lock a username for 15 minutes.
 - Forgotten passwords: an admin resets them on the Users page (the user is signed out everywhere).
 - The app always keeps at least one active user who can manage users.
+- *Global only* permissions come from a user's own roles; a project role never grants them.
 
 ## AI provider: GitHub Copilot
 

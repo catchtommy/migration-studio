@@ -8,8 +8,10 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "runs.start": "Run migrations",
   "runs.approve": "Approve workflow runs",
   "runs.edit": "Edit documents & answer agents",
-  "settings.manage": "Manage settings & database",
+  "project.manage": "Manage project",
+  "settings.manage": "Manage global settings & database",
   "users.manage": "Manage users & roles",
+  "projects.manage": "Manage projects",
 };
 
 /** Controls inside are disabled for users without the permission (the backend refuses the change anyway).

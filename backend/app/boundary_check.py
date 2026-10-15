@@ -1,12 +1,22 @@
-"""Checks that a domain's microservice contains only its own domain: no references to other domains' Java packages
-and no use of other domains' tables. Ownership comes from each domain's Boundary settings (owned packages/tables)."""
+"""Checks that a domain's microservice contains only its own domain: no references to other domains' code packages
+(Java packages, .NET namespaces, modules) and no use of other domains' tables. Ownership comes from each domain's
+Boundary settings (owned packages/tables). Works on the source files of every supported language."""
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
-CODE_SUFFIXES = {".java", ".kt", ".xml", ".sql", ".yml", ".yaml", ".properties"}
-SKIP_DIRS = {"target", "build", ".gradle", "node_modules", ".git", ".idea"}
+CODE_SUFFIXES = {
+    ".java", ".kt", ".scala", ".groovy",  # JVM
+    ".cs", ".vb", ".fs", ".csproj", ".cshtml", ".razor",  # .NET
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",  # TypeScript / JavaScript
+    ".py", ".go", ".rb", ".php",  # others
+    ".xml", ".sql", ".yml", ".yaml", ".properties", ".json", ".config",  # configuration, SQL, mappings
+}
+SKIP_DIRS = {"target", "build", ".gradle", "node_modules", ".git", ".idea", "bin", "obj", "dist", ".venv",
+             "__pycache__", "vendor"}
+# Lines that declare or import code (they name packages, not tables, even when a segment matches a table's name).
+DECLARATIONS = ("import ", "package ", "using ", "namespace ", "from ", "require(", "export ")
 MAX_VIOLATIONS = 200
 
 
@@ -49,8 +59,7 @@ def check(workspace: Path, domain: str, service_dir: str, ownership: dict[str, d
     for f in _files(root):
         rel = str(f.relative_to(workspace))
         for n, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
-            # Java import/package lines name packages, not tables (a package segment can share a table's name).
-            declaration = line.lstrip().startswith(("import ", "package "))
+            declaration = line.lstrip().startswith(DECLARATIONS)
             for pattern, rule, detail in rules:
                 if (rule == "package" or not declaration) and pattern.search(line):
                     violations.append(Violation(rel, n, rule, detail))

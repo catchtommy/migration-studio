@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AuditEvent, type Permission } from "./api";
+import { api, getCurrentProject, GLOBAL_PERMISSIONS, withProject, type AuditEvent, type Permission, type Project } from "./api";
 
 export function useCopilotStatus() {
   return useQuery({ queryKey: ["copilotStatus"], queryFn: api.copilotStatus, staleTime: 60_000 });
@@ -23,8 +23,29 @@ export function useMe() {
   return useQuery({ queryKey: ["me"], queryFn: api.me, staleTime: 60_000 });
 }
 
-/** Whether the signed-in user has a permission. The backend enforces it too; this only shapes the UI. */
+export function useProjects() {
+  return useQuery({ queryKey: ["projects"], queryFn: api.projects, staleTime: 60_000 });
+}
+
+/** The project the app is working in (see the project switcher). */
+export function useCurrentProject(): Project | undefined {
+  const { data } = useProjects();
+  const key = getCurrentProject();
+  return data?.find((p) => p.key === key);
+}
+
+/** Whether the signed-in user has a permission: in the current project (their roles plus their role there), or for
+ * global ones (users, global settings, projects) from their own roles. The backend enforces it too; this only shapes
+ * the UI. */
 export function useCan(permission: Permission): boolean {
+  const { data } = useMe();
+  const project = useCurrentProject();
+  if (GLOBAL_PERMISSIONS.includes(permission)) return !!data?.user?.permissions.includes(permission);
+  return !!project?.permissions.includes(permission);
+}
+
+/** A global permission from the user's own roles, e.g. to change the shared agent library. */
+export function useCanGlobally(permission: Permission): boolean {
   const { data } = useMe();
   return !!data?.user?.permissions.includes(permission);
 }
@@ -36,7 +57,7 @@ export function useRunEvents(runId: string) {
 
   useEffect(() => {
     setEvents([]);
-    const source = new EventSource(`/api/runs/${runId}/events`);
+    const source = new EventSource(withProject(`/api/runs/${runId}/events`));
     source.addEventListener("audit", (e) => {
       const event: AuditEvent = JSON.parse((e as MessageEvent).data);
       setEvents((prev) => (prev.some((p) => p.id === event.id) ? prev : [...prev, event]));

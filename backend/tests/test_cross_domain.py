@@ -5,7 +5,7 @@ import pytest
 
 from app import agent_store, boundary_check, contracts_store, workflow_store
 from app.agents import llm
-from app.db.models import Agent, Setting, WorkflowDef
+from app.db.models import SHARED, Agent, Setting, WorkflowDef
 from app.db.session import session_scope
 from tests.conftest import start_run, wait_for
 from tests.test_agents_domains import ScriptedClient, _reply, _text, _tool, ctx  # noqa: F401  (fixture)
@@ -187,7 +187,7 @@ def test_standard_workflow_upgrade_only_touches_an_unmodified_workflow(client):
 
     def reset(steps):
         with session_scope() as s:
-            s.get(WorkflowDef, "standard").steps = steps
+            s.get(WorkflowDef, (SHARED, "standard")).steps = steps
             s.query(Setting).filter(Setting.key == "_standard_workflow_v2").delete()
 
     original = client.get("/api/workflows/standard").json()["steps"]
@@ -206,11 +206,11 @@ def test_standard_workflow_upgrade_only_touches_an_unmodified_workflow(client):
 def test_new_builtin_agent_is_added_once(client):
     with session_scope() as s:
         s.query(Setting).filter(Setting.key == "_added_integration_design").delete()
-        s.delete(s.get(Agent, "integration_design"))
+        s.delete(s.get(Agent, (SHARED, "integration_design")))
     agent_store.seed()
     assert agent_store.exists("integration_design")
     with session_scope() as s:
-        s.delete(s.get(Agent, "integration_design"))
+        s.delete(s.get(Agent, (SHARED, "integration_design")))
     agent_store.seed()  # marker present: a deliberately deleted built-in stays deleted
     assert not agent_store.exists("integration_design")
     with session_scope() as s:
@@ -230,9 +230,9 @@ def test_untouched_builtin_agents_are_brought_up_to_date_once(client, monkeypatc
     })
     with session_scope() as s:
         s.query(Setting).filter(Setting.key == agent_store.UPGRADE_MARKER).delete()
-        deep = s.get(Agent, "deep_dive")
+        deep = s.get(Agent, (SHARED, "deep_dive"))
         deep.instructions, deep.outputs, deep.mode, deep.model = old, ["deep-dive.md"], "llm", "gpt-5"
-        s.get(Agent, "modernise").instructions = "Edited by the team."  # not a known default: left alone
+        s.get(Agent, (SHARED, "modernise")).instructions = "Edited by the team."  # not a known default: left alone
     agent_store.seed()
 
     deep = client.get("/api/agents/deep_dive").json()
@@ -242,7 +242,7 @@ def test_untouched_builtin_agents_are_brought_up_to_date_once(client, monkeypatc
     assert client.get("/api/agents/modernise").json()["instructions"] == "Edited by the team."
 
     with session_scope() as s:  # runs once: a later old-looking text is not touched
-        s.get(Agent, "deep_dive").instructions = old
+        s.get(Agent, (SHARED, "deep_dive")).instructions = old
     agent_store.seed()
     assert client.get("/api/agents/deep_dive").json()["instructions"] == old
     for key in ("deep_dive", "modernise"):
