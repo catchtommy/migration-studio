@@ -10,6 +10,7 @@ import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { DomainFeatures } from "./DomainFeatures";
+import { Guarded } from "../components/Guarded";
 
 type Tab = "features" | "docs" | "inputs" | "boundary" | "dependencies" | "details";
 const TABS: { key: Tab; label: string }[] = [
@@ -38,34 +39,36 @@ function Boundary({ domain }: { domain: Domain }) {
     },
   });
   return (
-    <form
-      className="max-w-3xl space-y-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        save.mutate();
-      }}
-    >
-      <p className="text-sm text-subtle">
-        What belongs to {domain.name}. Agents use this to tell domains apart, and the boundary check fails another domain's microservice if it uses these
-        packages or tables directly instead of going through a contract.
-      </p>
-      <div className="card grid gap-4 p-4 md:grid-cols-2">
-        <Field label="Owned tables" hint="One per line, e.g. CUSTOMER, CUST_ADDRESS">
-          <textarea rows={8} className={`${inputClass} font-mono text-xs`} value={tables} onChange={(e) => setTables(e.target.value)} />
-        </Field>
-        <Field label="Owned Java packages" hint="One per line, e.g. com.acme.customer">
-          <textarea rows={8} className={`${inputClass} font-mono text-xs`} value={packages} onChange={(e) => setPackages(e.target.value)} />
-        </Field>
-      </div>
-      <div className="flex items-center gap-3">
-        <button type="submit" disabled={!dirty || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-          Save boundary
-        </button>
-        {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
-        {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
-        {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
-      </div>
-    </form>
+    <Guarded permission="domains.manage">
+      <form
+        className="max-w-3xl space-y-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save.mutate();
+        }}
+      >
+        <p className="text-sm text-subtle">
+          What belongs to {domain.name}. Agents use this to tell domains apart, and the boundary check fails another domain's microservice if it uses these
+          packages or tables directly instead of going through a contract.
+        </p>
+        <div className="card grid gap-4 p-4 md:grid-cols-2">
+          <Field label="Owned tables" hint="One per line, e.g. CUSTOMER, CUST_ADDRESS">
+            <textarea rows={8} className={`${inputClass} font-mono text-xs`} value={tables} onChange={(e) => setTables(e.target.value)} />
+          </Field>
+          <Field label="Owned Java packages" hint="One per line, e.g. com.acme.customer">
+            <textarea rows={8} className={`${inputClass} font-mono text-xs`} value={packages} onChange={(e) => setPackages(e.target.value)} />
+          </Field>
+        </div>
+        <div className="flex items-center gap-3">
+          <button type="submit" disabled={!dirty || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+            Save boundary
+          </button>
+          {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
+          {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
+          {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
+        </div>
+      </form>
+    </Guarded>
   );
 }
 
@@ -231,44 +234,46 @@ function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Agent[] }
   });
 
   return (
-    <form
-      className="space-y-6"
-      onSubmit={(e) => {
-        e.preventDefault();
-        save.mutate();
-      }}
-    >
-      <p className="text-sm text-subtle">
-        Every run in this domain passes these to its agents (whichever workflow it uses). Operation-specific entry points can be added when starting a run. Agents can still ask you questions while
-        they work.
-      </p>
-      <section className="card p-4">
-        <Field label="Shared context (all agents)" hint="Module layout, naming conventions, schemas, known quirks: anything every stage should know.">
-          <textarea rows={4} className={inputClass} value={form.context} onChange={(e) => setForm({ ...form, context: e.target.value })} />
-        </Field>
-      </section>
-      {agents.map((s, i) => (
-        <section key={s.key} className="space-y-3 card p-4">
-          <h3 className="font-semibold">
-            <span className="mr-2 text-xs tabular-nums text-subtle">{i + 1}</span>
-            {s.title}
-          </h3>
-          <InputsEditor
-            value={form.inputs[s.key]}
-            onChange={(v) => setForm({ ...form, inputs: { ...form.inputs, [s.key]: v } })}
-            notesHint={`Anything the ${s.title} agent should know for this domain.`}
-          />
+    <Guarded permission="domains.manage">
+      <form
+        className="space-y-6"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save.mutate();
+        }}
+      >
+        <p className="text-sm text-subtle">
+          Every run in this domain passes these to its agents (whichever workflow it uses). Operation-specific entry points can be added when starting a run. Agents can still ask you questions while
+          they work.
+        </p>
+        <section className="card p-4">
+          <Field label="Shared context (all agents)" hint="Module layout, naming conventions, schemas, known quirks: anything every stage should know.">
+            <textarea rows={4} className={inputClass} value={form.context} onChange={(e) => setForm({ ...form, context: e.target.value })} />
+          </Field>
         </section>
-      ))}
-      <div className="sticky bottom-0 flex items-center gap-3 border-t border-border bg-bg py-3">
-        <button type="submit" disabled={!dirty || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-          Save inputs
-        </button>
-        {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
-        {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
-        {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
-      </div>
-    </form>
+        {agents.map((s, i) => (
+          <section key={s.key} className="space-y-3 card p-4">
+            <h3 className="font-semibold">
+              <span className="mr-2 text-xs tabular-nums text-subtle">{i + 1}</span>
+              {s.title}
+            </h3>
+            <InputsEditor
+              value={form.inputs[s.key]}
+              onChange={(v) => setForm({ ...form, inputs: { ...form.inputs, [s.key]: v } })}
+              notesHint={`Anything the ${s.title} agent should know for this domain.`}
+            />
+          </section>
+        ))}
+        <div className="sticky bottom-0 flex items-center gap-3 border-t border-border bg-bg py-3">
+          <button type="submit" disabled={!dirty || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+            Save inputs
+          </button>
+          {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
+          {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
+          {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
+        </div>
+      </form>
+    </Guarded>
   );
 }
 
@@ -299,60 +304,62 @@ function Details({ domain }: { domain: Domain }) {
   });
 
   return (
-    <div className="max-w-2xl space-y-8">
-      <form
-        className="space-y-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          save.mutate();
-        }}
-      >
-        <Field label="Name">
-          <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label="Description" hint="Also given to the agents.">
-          <textarea rows={3} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
-        </Field>
-        <Field label="Default workflow" hint="Preselected when starting a run in this domain.">
-          <select className={inputClass} value={defaultWorkflow} onChange={(e) => setDefaultWorkflow(e.target.value)}>
-            <option value="">Standard (no domain default)</option>
-            {workflows
-              .filter((w) => w.scope === "operation")
-              .map((w) => (
-                <option key={w.key} value={w.key}>
-                  {w.name}
-                </option>
-              ))}
-          </select>
-        </Field>
-        <div className="flex items-center gap-3">
-          <button type="submit" disabled={!name.trim() || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-            Save details
-          </button>
-          {save.isSuccess && <span className="text-sm text-ok">Saved</span>}
-          {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
-        </div>
-      </form>
-      <section className="space-y-2 border-t border-border pt-6">
-        <h3 className="font-semibold">Delete domain</h3>
-        <p className="text-sm text-subtle">
-          Deletes the domain with everything recorded for it: its migration and feature-listing runs (documents, approvals, workspaces), its feature list, its
-          cross-domain dependencies and the contracts it provides. This can't be undone.
-          {runs > 0 && ` It has ${runs} migration run${runs === 1 ? "" : "s"}.`}
-        </p>
-        <button
-          className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
-          disabled={remove.isPending}
-          onClick={() => {
-            const typed = window.prompt(`Type ${domain.key} to delete the ${domain.name} domain and all its runs.`);
-            if (typed?.trim() === domain.key) remove.mutate();
+    <Guarded permission="domains.manage">
+      <div className="max-w-2xl space-y-8">
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save.mutate();
           }}
         >
-          Delete {domain.name} and its runs
-        </button>
-        {remove.error && <p className="text-sm text-bad">{(remove.error as Error).message}</p>}
-      </section>
-    </div>
+          <Field label="Name">
+            <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Description" hint="Also given to the agents.">
+            <textarea rows={3} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
+          </Field>
+          <Field label="Default workflow" hint="Preselected when starting a run in this domain.">
+            <select className={inputClass} value={defaultWorkflow} onChange={(e) => setDefaultWorkflow(e.target.value)}>
+              <option value="">Standard (no domain default)</option>
+              {workflows
+                .filter((w) => w.scope === "operation")
+                .map((w) => (
+                  <option key={w.key} value={w.key}>
+                    {w.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <div className="flex items-center gap-3">
+            <button type="submit" disabled={!name.trim() || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+              Save details
+            </button>
+            {save.isSuccess && <span className="text-sm text-ok">Saved</span>}
+            {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
+          </div>
+        </form>
+        <section className="space-y-2 border-t border-border pt-6">
+          <h3 className="font-semibold">Delete domain</h3>
+          <p className="text-sm text-subtle">
+            Deletes the domain with everything recorded for it: its migration and feature-listing runs (documents, approvals, workspaces), its feature list, its
+            cross-domain dependencies and the contracts it provides. This can't be undone.
+            {runs > 0 && ` It has ${runs} migration run${runs === 1 ? "" : "s"}.`}
+          </p>
+          <button
+            className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
+            disabled={remove.isPending}
+            onClick={() => {
+              const typed = window.prompt(`Type ${domain.key} to delete the ${domain.name} domain and all its runs.`);
+              if (typed?.trim() === domain.key) remove.mutate();
+            }}
+          >
+            Delete {domain.name} and its runs
+          </button>
+          {remove.error && <p className="text-sm text-bad">{(remove.error as Error).message}</p>}
+        </section>
+      </div>
+    </Guarded>
   );
 }
 

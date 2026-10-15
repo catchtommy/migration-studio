@@ -2,22 +2,21 @@
 
 import json
 import logging
-import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from app.config import settings
 from app.db.models import Run
 from app.db.session import emit, session_scope
 from app.orchestrator import questions
+from app.orchestrator.checkpointer import SqlAlchemySaver
 from app.orchestrator.graph import build_graph
 from app.orchestrator.stages import Workflow
 from app.settings_store import get as get_setting
 from app.tools import git_ops
+from app.workspace import ensure as ensure_workspace
 
 log = logging.getLogger(__name__)
 
@@ -28,9 +27,8 @@ class RunBusyError(RuntimeError):
 
 class Runner:
     # Generous: a run whose agent is waiting for an answer holds its worker thread.
-    def __init__(self, checkpoint_path: Path, max_workers: int = 16):
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        self._saver = SqliteSaver(sqlite3.connect(checkpoint_path, check_same_thread=False))
+    def __init__(self, max_workers: int = 16):
+        self._saver = SqlAlchemySaver()  # checkpoints live in the studio database
         self._graphs: dict[str, object] = {}  # workflow definition (JSON) -> compiled graph
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="run")
         self._active: set[str] = set()
@@ -43,6 +41,10 @@ class Runner:
     def is_active(self, run_id: str) -> bool:
         with self._lock:
             return run_id in self._active
+
+    def has_active(self) -> bool:
+        with self._lock:
+            return bool(self._active)
 
     def graph_for(self, run_id: str):
         """The compiled graph for the workflow snapshot this run started with."""
@@ -86,9 +88,13 @@ class Runner:
                 domain, operation, workspace, branch = run.domain, run.operation, run.workspace, run.branch
             if initial:
                 emit(run_id, "status", "Preparing workspace")
-                git_ops.init_workspace(Path(workspace), get_setting("monolith_repo") or None, branch)
+                base_sha = git_ops.init_workspace(Path(workspace), get_setting("monolith_repo") or None, branch)
+                with session_scope() as s:
+                    s.get(Run, run_id).base_sha = base_sha
                 inp = {"run_id": run_id, "domain": domain, "operation": operation, "workspace": workspace,
                        "feedback": {}, "stage_shas": {}}
+            else:
+                ensure_workspace(run_id)
 
             self.graph_for(run_id).invoke(inp, self._config(run_id))
             gate, error = self.pending_gate(run_id), None
@@ -137,5 +143,5 @@ runner: Runner | None = None
 def get_runner() -> Runner:
     global runner
     if runner is None:
-        runner = Runner(settings.checkpoint_path)
+        runner = Runner()
     return runner

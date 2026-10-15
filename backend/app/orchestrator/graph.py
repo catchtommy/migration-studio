@@ -12,8 +12,10 @@ from langgraph.types import interrupt
 from sqlalchemy import func, select
 
 from app import agent_store, contracts_store, discovery_store, modulith_scope
+from app import workspace
 from app.agents import get_agent
-from app.agents.base_agent import AgentContext, AgentInputs, ArtifactOut, PriorDocument
+from app.agents.base_agent import AgentContext, AgentInputs, ArtifactOut, PriorDocument, docs_dir
+from app.agents.common import kind
 from app.db.models import Artifact, Domain, Run, StageExecution, utcnow
 from app.db.session import emit, session_scope
 from app.domain_store import normalize_inputs
@@ -22,6 +24,8 @@ from app.orchestrator.stages import StageDef, Workflow
 from app.orchestrator.state import MigrationState
 from app.settings_store import get_all as get_settings
 from app.tools import git_ops
+
+MAX_DOCUMENT_BYTES = 5_000_000
 
 
 def _set_run(run_id: str, **fields) -> None:
@@ -55,25 +59,38 @@ def _ownership() -> dict[str, dict]:
                 for d in s.scalars(select(Domain))}
 
 
-def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef, ws: Path) -> list[PriorDocument]:
-    """The latest attempt's documents from each earlier stage this stage uses. Contents come from the workspace,
-    so reviewers' manual edits are included."""
+def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef) -> list[PriorDocument]:
+    """The latest attempt's documents from each earlier stage this stage uses. Contents come from the database, which
+    holds reviewers' manual edits."""
     sources = workflow.inputs_of(stage.key)
     with session_scope() as s:
-        rows = s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage.in_(sources))).all()
+        rows = s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage.in_(sources))
+                         .order_by(Artifact.id)).all()
         latest = {}
         for a in rows:
             latest[a.stage] = max(latest.get(a.stage, 0), a.attempt)
-        docs = sorted({(a.stage, a.path) for a in rows if a.attempt == latest[a.stage]},
-                      key=lambda d: (sources.index(d[0]), d[1]))
-    out = []
-    for source, path in docs:
-        file = ws / path
-        if not file.is_file():
+        docs = {(a.stage, a.path): a.content for a in rows if a.attempt == latest[a.stage]}
+    return [PriorDocument(stage=source, stage_title=workflow.by_key[source].title, path=path,
+                          content=content if stage.include_content else None)
+            for (source, path), content in sorted(docs.items(), key=lambda d: (sources.index(d[0][0]), d[0][1]))]
+
+
+def _documents(ws: Path, outputs: list[ArtifactOut], docs: str, start_sha: str, end_sha: str) -> list[ArtifactOut]:
+    """The stage's documents: what the agent returned plus anything else it wrote to the run's documents folder
+    (contract specs, notes), so the database has every document."""
+    found = {out.path: out for out in outputs}
+    for path in git_ops.changed_files(ws, start_sha, end_sha):
+        if path in found or not path.startswith(docs + "/"):
             continue
-        out.append(PriorDocument(stage=source, stage_title=workflow.by_key[source].title, path=path,
-                                 content=file.read_text(errors="replace") if stage.include_content else None))
-    return out
+        f = ws / path
+        if f.stat().st_size > MAX_DOCUMENT_BYTES:
+            continue
+        try:
+            f.read_text()
+        except UnicodeDecodeError:  # not a text document
+            continue
+        found[path] = ArtifactOut(name=f.name, path=path, kind=kind(path))
+    return list(found.values())
 
 
 def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
@@ -118,7 +135,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             attempt=attempt, workspace=ws, feedback=feedback, settings=settings,
             log=lambda msg: emit(run_id, "log", msg, stage.key),
             config=config or {}, stage_def=stage, inputs=_inputs(run_id, stage.key),
-            previous_artifacts=_previous_artifacts(workflow, run_id, stage, ws),
+            previous_artifacts=_previous_artifacts(workflow, run_id, stage),
             answered=questions.answered_for(run_id, stage.key),
             catalogue=(discovery_store.domains_brief(domain) if discovery else
                        contracts_store.catalogue_brief(domain, settings)),
@@ -144,12 +161,14 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
 
         end_sha = git_ops.commit_all(
             ws, f"[{stage.key}] {discovery_store.subject(state['domain'], state['operation'])} attempt {attempt}")
+        outputs = _documents(ws, outputs, docs_dir(domain, state["operation"]), start_sha, end_sha)
         with session_scope() as s:
             for out in outputs:
                 s.add(Artifact(run_id=run_id, stage=stage.key, attempt=attempt, name=out.name, path=out.path,
                                kind=out.kind, content=(ws / out.path).read_text()))
             ex = s.get(StageExecution, exec_id)
             ex.status, ex.end_sha, ex.finished_at = "completed", end_sha, utcnow()
+            ex.diff = git_ops.diff(ws, start_sha, end_sha, binary=True)
         emit(run_id, "status", f"{stage.title} completed: {len(outputs)} artifact(s)", stage.key)
 
         remaining_feedback = {k: v for k, v in state.get("feedback", {}).items() if k != stage.key}
@@ -193,7 +212,7 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
             return {"route": after}
 
         target = decision.get("target_stage") or gate.reviews[0]
-        git_ops.reset_hard(Path(state["workspace"]), state["stage_shas"][target]["start"])
+        workspace.roll_back(run_id, Path(state["workspace"]), state["stage_shas"][target]["start"], target)
         emit(run_id, "approval", f"{gate.title}: rejected, re-running from {workflow.by_key[target].title}", gate.key)
         return {
             "route": target,

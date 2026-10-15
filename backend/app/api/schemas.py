@@ -114,7 +114,7 @@ class Decision(BaseModel):
     decision: Literal["approve", "reject"]
     comments: str | None = None
     target_stage: str | None = None
-    reviewer: str = Field(min_length=1, max_length=128)
+    reviewer: str | None = Field(default=None, max_length=128)  # ignored: the signed-in user is recorded
     # Rejections only: "now" re-runs straight away; "later" holds the run so agents, inputs and documents can be
     # amended first, and it re-runs on POST /runs/{id}/rerun.
     rerun: Literal["now", "later"] = "now"
@@ -148,7 +148,7 @@ class QuestionOut(ORM):
 
 class AnswerIn(BaseModel):
     answer: str = ""  # blank = skip: the agent is told to use its judgement
-    answered_by: str = Field(min_length=1, max_length=128)
+    answered_by: str | None = Field(default=None, max_length=128)  # ignored: the signed-in user is recorded
 
 
 class AgentIn(BaseModel):
@@ -176,6 +176,7 @@ class AgentIn(BaseModel):
 
 
 class AgentOut(AgentIn):
+    instructions: str  # empty for users who can't manage agents
     key: str
     builtin: bool
     created_at: datetime

@@ -8,7 +8,6 @@ test("a rejection can be held while the inputs are amended, then re-run", async 
   await page.getByRole("button", { name: "Start migration" }).click();
 
   await expect(page.getByRole("heading", { name: /👤 Approve analysis/ })).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel("Reviewer").fill("e2e-reviewer");
   await page.getByLabel(/Comments/).fill("Missing the nightly batch");
   await page.getByRole("button", { name: "Reject, amend first" }).click();
 

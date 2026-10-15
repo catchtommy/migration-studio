@@ -1,21 +1,31 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import URL, Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
-from app.db.models import AuditEvent, Base
+from app.db import config as db_config
+from app.db.models import AuditEvent
 
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 
-_is_sqlite = settings.db_url.startswith("sqlite")
-engine = create_engine(
-    settings.db_url,
-    connect_args={"check_same_thread": False} if _is_sqlite else {},
-)
 
-if _is_sqlite:
+class NotConfigured(RuntimeError):
+    """No database has been chosen yet: the studio is in setup mode."""
+
+
+_engine: Engine | None = None
+SessionLocal = sessionmaker(expire_on_commit=False)
+
+
+def make_engine(url: URL) -> Engine:
+    if url.get_backend_name() != "sqlite":
+        # pre_ping replaces connections the server or a firewall dropped; the pool covers the runner's worker threads
+        # (up to 16) plus the API's requests.
+        return create_engine(url, connect_args=db_config.connect_args(url), pool_pre_ping=True, pool_size=10,
+                             max_overflow=20)
+    engine = create_engine(url, connect_args=db_config.connect_args(url))
 
     @event.listens_for(engine, "connect")
     def _sqlite_pragmas(dbapi_conn, _):
@@ -25,29 +35,37 @@ if _is_sqlite:
         cur.execute("PRAGMA busy_timeout=5000")
         cur.close()
 
+    return engine
 
-SessionLocal = sessionmaker(engine, expire_on_commit=False)
+
+def configure(url: URL) -> None:
+    """Use this database from now on."""
+    global _engine
+    old, _engine = _engine, make_engine(url)
+    SessionLocal.configure(bind=_engine)
+    if old is not None:
+        old.dispose()
+
+
+def is_configured() -> bool:
+    return _engine is not None
+
+
+def get_engine() -> Engine:
+    if _engine is None:
+        raise NotConfigured("Choose a database on the setup screen first")
+    return _engine
 
 
 def init_db() -> None:
-    Base.metadata.create_all(engine)
-    _add_missing_columns()
+    from app.db.migrations import upgrade
 
-
-def _add_missing_columns() -> None:
-    """create_all only creates missing tables; add nullable columns introduced since a table was created."""
-    inspector = inspect(engine)
-    with engine.begin() as conn:
-        for table in Base.metadata.sorted_tables:
-            existing = {c["name"] for c in inspector.get_columns(table.name)}
-            for column in table.columns:
-                if column.name not in existing and column.nullable:
-                    conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column.name} "
-                                      f"{column.type.compile(engine.dialect)}"))
+    upgrade(get_engine())
 
 
 @contextmanager
 def session_scope() -> Iterator[Session]:
+    get_engine()
     session = SessionLocal()
     try:
         yield session

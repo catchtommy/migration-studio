@@ -34,7 +34,6 @@ test("a workflow built in the UI drives a run, including its approval gate", asy
   const timeline = page.locator("aside li");
   await expect(timeline).toHaveCount(3);
   await expect(page.getByRole("heading", { name: "👤 Approve docs" })).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel("Reviewer").fill("e2e-reviewer");
   await page.getByRole("button", { name: "Approve", exact: true }).click();
   await expect(page.getByText("Completed").first()).toBeVisible({ timeout: 30_000 });
 

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, CONTRACT_STATUSES, type Contract, type ContractStatus } from "../lib/api";
-import { useDomains } from "../lib/hooks";
+import { useDomains, useCan } from "../lib/hooks";
 import { ContractStatusChip, KindChip } from "../components/Chips";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { PageTitle } from "../components/PageTitle";
@@ -22,6 +22,7 @@ function DomainRef({ domain, names }: { domain: string; names: Map<string, strin
 function ContractRow({ contract, names }: { contract: Contract; names: Map<string, string> }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  const canEdit = useCan("domains.manage");
   const update = useMutation({
     mutationFn: (status: ContractStatus) => api.updateContract(contract.key, status),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["contracts"] }),
@@ -55,7 +56,7 @@ function ContractRow({ contract, names }: { contract: Contract; names: Map<strin
               aria-label={`Status of ${contract.key}`}
               className="rounded border border-border bg-surface px-1 py-0.5 text-xs text-subtle"
               value={contract.status}
-              disabled={update.isPending}
+              disabled={!canEdit || update.isPending}
               onChange={(e) => update.mutate(e.target.value as ContractStatus)}
             >
               {CONTRACT_STATUSES.map((s) => (

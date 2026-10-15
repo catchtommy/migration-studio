@@ -2,12 +2,13 @@ import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Domain, type Feature, type FeatureInput } from "../lib/api";
-import { useDomains } from "../lib/hooks";
+import { useDomains, useCan } from "../lib/hooks";
 import { Field, inputClass } from "../components/Field";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { AgentModeNote } from "../components/AgentModeNote";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
+import { Guarded } from "../components/Guarded";
 
 const FEATURES_AGENT = "domain_features";
 
@@ -33,31 +34,33 @@ function ListingSetup({ domain, onStarted, onCancel }: { domain: Domain; onStart
     },
   });
   return (
-    <section className="card space-y-3 border-t-4 border-t-accent p-4" aria-label="Set up feature listing">
-      <div>
-        <h3 className="font-semibold">Set up the feature listing for {domain.name}</h3>
-        <p className="mt-0.5 text-sm text-subtle">
-          The agent lists every feature in the domain's code, then the run waits for you to review the list. Tell it where the domain's code and documentation are.
-        </p>
-      </div>
-      <AgentModeNote agentKey={FEATURES_AGENT} />
-      <InputsEditor
-        value={inputs}
-        onChange={setInputs}
-        pathsLabel="Where to look"
-        pathsHint="One per line, relative to the repository root: the domain's packages, controllers, sqlmaps, documentation (docs/loan/*.md). Saved for later re-lists."
-        notesHint="E.g. naming conventions, batch jobs to include, code that is no longer used."
-      />
-      <div className="flex items-center gap-2">
-        <button onClick={() => start.mutate()} disabled={start.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-          Start feature listing
-        </button>
-        <button onClick={onCancel} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
-          Cancel
-        </button>
-        {start.error && <span className="text-sm text-bad">{(start.error as Error).message}</span>}
-      </div>
-    </section>
+    <Guarded permission="domains.manage">
+      <section className="card space-y-3 border-t-4 border-t-accent p-4" aria-label="Set up feature listing">
+        <div>
+          <h3 className="font-semibold">Set up the feature listing for {domain.name}</h3>
+          <p className="mt-0.5 text-sm text-subtle">
+            The agent lists every feature in the domain's code, then the run waits for you to review the list. Tell it where the domain's code and documentation are.
+          </p>
+        </div>
+        <AgentModeNote agentKey={FEATURES_AGENT} />
+        <InputsEditor
+          value={inputs}
+          onChange={setInputs}
+          pathsLabel="Where to look"
+          pathsHint="One per line, relative to the repository root: the domain's packages, controllers, sqlmaps, documentation (docs/loan/*.md). Saved for later re-lists."
+          notesHint="E.g. naming conventions, batch jobs to include, code that is no longer used."
+        />
+        <div className="flex items-center gap-2">
+          <button onClick={() => start.mutate()} disabled={start.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+            Start feature listing
+          </button>
+          <button onClick={onCancel} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
+            Cancel
+          </button>
+          {start.error && <span className="text-sm text-bad">{(start.error as Error).message}</span>}
+        </div>
+      </section>
+    </Guarded>
   );
 }
 
@@ -87,46 +90,48 @@ function FeatureForm({ domain, feature, onDone }: { domain: Domain; feature?: Fe
     },
   });
   return (
-    <form
-      className="card space-y-3 border-t-4 border-t-accent p-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        save.mutate();
-      }}
-    >
-      <h3 className="font-semibold">{feature ? `Edit ${feature.name}` : "Add a feature"}</h3>
-      <div className="grid gap-3 sm:grid-cols-[1fr_14rem]">
-        <Field label="Name">
-          <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Create loan" />
+    <Guarded permission="domains.manage">
+      <form
+        className="card space-y-3 border-t-4 border-t-accent p-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save.mutate();
+        }}
+      >
+        <h3 className="font-semibold">{feature ? `Edit ${feature.name}` : "Add a feature"}</h3>
+        <div className="grid gap-3 sm:grid-cols-[1fr_14rem]">
+          <Field label="Name">
+            <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Create loan" />
+          </Field>
+          <Field label="Key" hint={feature ? "The migration's operation name; can't be changed." : "Becomes the migration's operation name."}>
+            <input className={`${inputClass} font-mono text-xs`} value={key} disabled={!!feature} onChange={(e) => setKey(e.target.value)} placeholder="create-loan" />
+          </Field>
+        </div>
+        <Field label="Description">
+          <textarea rows={2} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
         </Field>
-        <Field label="Key" hint={feature ? "The migration's operation name; can't be changed." : "Becomes the migration's operation name."}>
-          <input className={`${inputClass} font-mono text-xs`} value={key} disabled={!!feature} onChange={(e) => setKey(e.target.value)} placeholder="create-loan" />
-        </Field>
-      </div>
-      <Field label="Description">
-        <textarea rows={2} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
-      </Field>
-      <div className="grid gap-3 md:grid-cols-3">
-        <Field label="Entry points" hint="One per line: classes, methods, URLs, iBatis statements. The migration's agents start here.">
-          <textarea rows={4} className={`${inputClass} font-mono text-xs`} value={entryPoints} onChange={(e) => setEntryPoints(e.target.value)} />
-        </Field>
-        <Field label="Tables" hint="One per line.">
-          <textarea rows={4} className={`${inputClass} font-mono text-xs`} value={tables} onChange={(e) => setTables(e.target.value)} />
-        </Field>
-        <Field label="Calls domains" hint="Keys of other domains it reaches into, one per line.">
-          <textarea rows={4} className={`${inputClass} font-mono text-xs`} value={calls} onChange={(e) => setCalls(e.target.value)} />
-        </Field>
-      </div>
-      <div className="flex items-center gap-2">
-        <button type="submit" disabled={!name.trim() || !key.trim() || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-          {feature ? "Save feature" : "Add feature"}
-        </button>
-        <button type="button" onClick={onDone} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
-          Cancel
-        </button>
-        {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
-      </div>
-    </form>
+        <div className="grid gap-3 md:grid-cols-3">
+          <Field label="Entry points" hint="One per line: classes, methods, URLs, iBatis statements. The migration's agents start here.">
+            <textarea rows={4} className={`${inputClass} font-mono text-xs`} value={entryPoints} onChange={(e) => setEntryPoints(e.target.value)} />
+          </Field>
+          <Field label="Tables" hint="One per line.">
+            <textarea rows={4} className={`${inputClass} font-mono text-xs`} value={tables} onChange={(e) => setTables(e.target.value)} />
+          </Field>
+          <Field label="Calls domains" hint="Keys of other domains it reaches into, one per line.">
+            <textarea rows={4} className={`${inputClass} font-mono text-xs`} value={calls} onChange={(e) => setCalls(e.target.value)} />
+          </Field>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="submit" disabled={!name.trim() || !key.trim() || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+            {feature ? "Save feature" : "Add feature"}
+          </button>
+          <button type="button" onClick={onDone} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
+            Cancel
+          </button>
+          {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
+        </div>
+      </form>
+    </Guarded>
   );
 }
 
@@ -140,6 +145,7 @@ function FeatureRow({ domain, feature, names, onEdit }: { domain: Domain; featur
     },
   });
   const run = feature.migration;
+  const canEdit = useCan("domains.manage");
   return (
     <tr className="border-t border-border align-top">
       <td className="px-4 py-3">
@@ -185,16 +191,20 @@ function FeatureRow({ domain, feature, names, onEdit }: { domain: Domain; featur
         )}
       </td>
       <td className="whitespace-nowrap px-4 py-3 text-right">
-        <button onClick={onEdit} className="rounded-md px-2 py-1 text-xs text-subtle hover:bg-muted hover:text-fg">
-          Edit
-        </button>
-        {!run && (
-          <button
-            onClick={() => window.confirm(`Remove ${feature.name} from the feature list?`) && remove.mutate()}
-            className="rounded-md px-2 py-1 text-xs text-subtle hover:bg-bad/10 hover:text-bad"
-          >
-            Remove
-          </button>
+        {canEdit && (
+          <>
+            <button onClick={onEdit} className="rounded-md px-2 py-1 text-xs text-subtle hover:bg-muted hover:text-fg">
+              Edit
+            </button>
+            {!run && (
+              <button
+                onClick={() => window.confirm(`Remove ${feature.name} from the feature list?`) && remove.mutate()}
+                className="rounded-md px-2 py-1 text-xs text-subtle hover:bg-bad/10 hover:text-bad"
+              >
+                Remove
+              </button>
+            )}
+          </>
         )}
       </td>
     </tr>

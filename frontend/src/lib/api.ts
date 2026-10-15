@@ -304,6 +304,81 @@ export interface LoginStep {
   result: { status: "completed" | "declined" | "needs-plaintext-consent"; host: string | null; login: string | null } | null;
 }
 
+export type DatabaseDialect = "postgresql" | "oracle" | "sqlite";
+
+/** The studio's own database connection. `database` is the PostgreSQL database name, the Oracle service name or the
+ * SQLite file. The password is never sent back; `has_password` says whether one is saved. */
+export interface DatabaseConfig {
+  dialect: DatabaseDialect;
+  host: string;
+  port: number | null;
+  database: string;
+  username: string;
+  password?: string;
+  options: Record<string, string>;
+  has_password?: boolean;
+}
+
+export interface DatabaseStatus {
+  configured: boolean;
+  source: "env" | "file" | "default" | null; // env: STUDIO_DATABASE_URL; default: the existing data/studio.db
+  dialect: DatabaseDialect | null;
+  config: DatabaseConfig | null;
+  version: string | null;
+  copied_rows?: number | null;
+}
+
+export type Permission =
+  | "agents.manage"
+  | "workflows.manage"
+  | "domains.manage"
+  | "runs.start"
+  | "runs.approve"
+  | "runs.edit"
+  | "settings.manage"
+  | "users.manage";
+
+export interface Me {
+  id: number;
+  username: string;
+  display_name: string;
+  roles: string[];
+  permissions: Permission[];
+}
+
+export interface AuthState {
+  user: Me | null;
+  needs_bootstrap: boolean; // no users yet: the first visitor creates the admin
+}
+
+export interface User {
+  id: number;
+  username: string;
+  display_name: string;
+  active: boolean;
+  roles: string[];
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface Role {
+  key: string;
+  name: string;
+  description: string;
+  permissions: Permission[];
+  locked: boolean; // Admin: always every permission
+  users: number;
+}
+
+export interface PermissionInfo {
+  key: Permission;
+  label: string;
+  description: string;
+}
+
+/** Fired when the backend says the session is gone, so the app shows the sign-in page. */
+export const SIGNED_OUT_EVENT = "studio:signed-out";
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -323,6 +398,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       /* non-JSON error body */
     }
+    if (res.status === 401 && !path.startsWith("/auth/")) window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
     throw new ApiError(res.status, detail);
   }
   if (res.status === 204) return undefined as T;
@@ -335,7 +411,7 @@ export const api = {
   runs: () => request<Run[]>("/runs"),
   run: (id: string) => request<RunDetail>(`/runs/${id}`),
   createRun: (body: { domain: string; operation: string; workflow?: string; inputs?: AgentInputs }) => request<Run>("/runs", json("POST", body)),
-  decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; reviewer: string; rerun?: "now" | "later" }) =>
+  decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; rerun?: "now" | "later" }) =>
     request<Approval>(`/runs/${id}/decision`, json("POST", body)),
   rerun: (id: string, body: { comments?: string; target_stage?: string }) => request<Run>(`/runs/${id}/rerun`, json("POST", body)),
   backToReview: (id: string) => request<Run>(`/runs/${id}/back-to-review`, { method: "POST" }),
@@ -346,8 +422,7 @@ export const api = {
   updateArtifact: (id: number, content: string) => request<Artifact>(`/artifacts/${id}`, json("PUT", { content })),
   diff: (runId: string, executionId: number) => request<{ diff: string }>(`/runs/${runId}/stages/${executionId}/diff`),
   questions: (runId: string) => request<Question[]>(`/runs/${runId}/questions`),
-  answer: (questionId: number, answer: string, answered_by: string) =>
-    request<Question>(`/questions/${questionId}/answer`, json("POST", { answer, answered_by })),
+  answer: (questionId: number, answer: string) => request<Question>(`/questions/${questionId}/answer`, json("POST", { answer })),
   copilotStatus: () => request<CopilotStatus>("/copilot/status"),
   copilotLogin: (kind: "github" | "entra") => request<{ flow_id: string; step: LoginStep }>("/copilot/login", json("POST", { kind })),
   copilotLoginAdvance: (flowId: string, input?: string) => request<LoginStep>(`/copilot/login/${flowId}/advance`, json("POST", { input })),
@@ -394,4 +469,23 @@ export const api = {
   discoverAllFeatures: () => request<Run[]>("/discovery/features", { method: "POST" }),
   contracts: (domain?: string) => request<Contract[]>(`/contracts${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`),
   updateContract: (key: string, status: ContractStatus) => request<Contract>(`/contracts/${encodeURIComponent(key)}`, json("PUT", { status })),
+  me: () => request<AuthState>("/auth/me"),
+  login: (username: string, password: string) => request<{ user: Me }>("/auth/login", json("POST", { username, password })),
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  bootstrap: (body: { username: string; display_name: string; password: string }) => request<{ user: Me }>("/auth/bootstrap", json("POST", body)),
+  changePassword: (current_password: string, new_password: string) => request<void>("/auth/password", json("PUT", { current_password, new_password })),
+  users: () => request<User[]>("/users"),
+  createUser: (body: { username: string; display_name: string; password: string; roles: string[] }) => request<User>("/users", json("POST", body)),
+  updateUser: (id: number, body: { display_name?: string; active?: boolean; roles?: string[] }) => request<User>(`/users/${id}`, json("PUT", body)),
+  resetPassword: (id: number, password: string) => request<void>(`/users/${id}/password`, json("PUT", { password })),
+  deleteUser: (id: number) => request<void>(`/users/${id}`, { method: "DELETE" }),
+  roles: () => request<Role[]>("/roles"),
+  createRole: (body: { key: string; name: string; description: string; permissions: Permission[] }) => request<Role>("/roles", json("POST", body)),
+  updateRole: (key: string, body: { name: string; description: string; permissions: Permission[] }) => request<Role>(`/roles/${key}`, json("PUT", body)),
+  deleteRole: (key: string) => request<void>(`/roles/${key}`, { method: "DELETE" }),
+  permissions: () => request<PermissionInfo[]>("/permissions"),
+  databaseStatus: () => request<DatabaseStatus>("/database"),
+  testDatabase: (config: DatabaseConfig) => request<{ ok: boolean; version: string }>("/database/test", json("POST", config)),
+  configureDatabase: (body: { config: DatabaseConfig; copy_data: boolean; replace: boolean }) =>
+    request<DatabaseStatus>("/database", json("POST", body)),
 };

@@ -79,12 +79,17 @@ class AgentContext:
     @property
     def output_dir(self) -> Path:
         """Where analysis/design documents for this operation live inside the workspace."""
-        d = self.workspace / ".migration" / self.domain / self.operation
+        d = self.workspace / docs_dir(self.domain, self.operation)
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     def rel(self, path: Path) -> str:
         return str(path.relative_to(self.workspace))
+
+
+def docs_dir(domain: str, operation: str) -> str:
+    """The run's documents folder, relative to its workspace."""
+    return f".migration/{domain}/{operation}"
 
 
 class StageAgent(ABC):

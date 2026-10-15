@@ -14,7 +14,8 @@ from app.api.schemas import (
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import contracts_store, discovery_store, workflow_store
+from app import contracts_store, discovery_store, workflow_store, workspace
+from app.auth import CurrentUser, require
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
 from app.orchestrator.runner import RunBusyError, get_runner
@@ -65,7 +66,7 @@ def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key
     return run
 
 
-@router.post("/runs", response_model=RunOut, status_code=201)
+@router.post("/runs", response_model=RunOut, status_code=201, dependencies=[Depends(require("runs.start"))])
 def create_run(body: RunCreate, db: Session = Depends(get_db)):
     """A migration of one feature. The domain's features must have been listed first."""
     domain = db.get(Domain, body.domain)
@@ -95,7 +96,8 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/runs/{run_id}/decision", response_model=ApprovalOut)
-def decide(run_id: str, body: Decision, db: Session = Depends(get_db)):
+def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
+           user: CurrentUser = Depends(require("runs.approve"))):
     run = _run_or_404(db, run_id)
     runner = get_runner()
     gate = runner.pending_gate(run_id) if run.status == "awaiting_approval" else None
@@ -125,7 +127,7 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db)):
 
     target = (body.target_stage or gate["reviews"][0]) if body.decision == "reject" else None
     approval = Approval(run_id=run_id, gate=gate["gate"], decision=body.decision, comments=body.comments,
-                        target_stage=target, reviewer=body.reviewer)
+                        target_stage=target, reviewer=user.display_name)
     db.add(approval)
     if body.decision == "reject" and body.rerun == "later":
         # The graph stays paused at the gate; agents and inputs are read when a stage starts, so amendments made now
@@ -133,7 +135,7 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db)):
         run.status = "changes_requested"
         run.pending_rerun = {"gate": gate["gate"], "target_stage": target, "comments": body.comments}
         db.commit()
-        emit(run_id, "approval", f"Changes requested by {body.reviewer}; {_stage_title(run, target)} re-runs once "
+        emit(run_id, "approval", f"Changes requested by {user.display_name}; {_stage_title(run, target)} re-runs once "
                                  "the amendments are made", gate["gate"])
         return approval
     db.commit()
@@ -155,7 +157,7 @@ def _held(db: Session, run_id: str) -> Run:
     return run
 
 
-@router.post("/runs/{run_id}/rerun", response_model=RunOut)
+@router.post("/runs/{run_id}/rerun", response_model=RunOut, dependencies=[Depends(require("runs.approve"))])
 def rerun(run_id: str, body: Rerun, db: Session = Depends(get_db)):
     """Re-run a rejection that was held for amendments, from its target stage, with its (possibly updated)
     comments."""
@@ -186,7 +188,7 @@ def rerun(run_id: str, body: Rerun, db: Session = Depends(get_db)):
     return run
 
 
-@router.post("/runs/{run_id}/back-to-review", response_model=RunOut)
+@router.post("/runs/{run_id}/back-to-review", response_model=RunOut, dependencies=[Depends(require("runs.approve"))])
 def back_to_review(run_id: str, db: Session = Depends(get_db)):
     """Withdraw a rejection held for amendments: the gate is open for a decision again."""
     run = _held(db, run_id)
@@ -201,7 +203,7 @@ def back_to_review(run_id: str, db: Session = Depends(get_db)):
     return run
 
 
-@router.put("/runs/{run_id}/inputs", response_model=RunDetail)
+@router.put("/runs/{run_id}/inputs", response_model=RunDetail, dependencies=[Depends(require("runs.edit"))])
 def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db)):
     """Change the run's own paths and notes. Stages started afterwards (re-runs and retries) get the new ones."""
     run = _run_or_404(db, run_id)
@@ -214,7 +216,7 @@ def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db
     return get_run(run_id, db)
 
 
-@router.post("/runs/{run_id}/retry", response_model=RunOut)
+@router.post("/runs/{run_id}/retry", response_model=RunOut, dependencies=[Depends(require("runs.start"))])
 def retry(run_id: str, db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id)
     if run.status != "failed":
@@ -234,9 +236,9 @@ def list_questions(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/questions/{question_id}/answer", response_model=QuestionOut)
-def answer_question(question_id: int, body: AnswerIn):
+def answer_question(question_id: int, body: AnswerIn, user: CurrentUser = Depends(require("runs.edit"))):
     try:
-        return questions.answer(question_id, body.answer, body.answered_by)
+        return questions.answer(question_id, body.answer, user.display_name)
     except KeyError:
         raise HTTPException(404, "Question not found")
     except ValueError as e:
@@ -258,7 +260,8 @@ def get_artifact(artifact_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/artifacts/{artifact_id}", response_model=ArtifactOut)
-def edit_artifact(artifact_id: int, body: ArtifactUpdate, db: Session = Depends(get_db)):
+def edit_artifact(artifact_id: int, body: ArtifactUpdate, db: Session = Depends(get_db),
+                  user: CurrentUser = Depends(require("runs.edit"))):
     """Manual edit before approval: written to the workspace and committed so later stages build on it."""
     artifact = db.get(Artifact, artifact_id)
     if artifact is None:
@@ -266,12 +269,12 @@ def edit_artifact(artifact_id: int, body: ArtifactUpdate, db: Session = Depends(
     run = db.get(Run, artifact.run_id)
     if run.status not in ("awaiting_approval", "changes_requested"):
         raise HTTPException(409, "Artifacts can only be edited while the run is waiting for approval or amendments")
-    ws = Path(run.workspace)
+    ws = workspace.ensure(run.id)
     (ws / artifact.path).write_text(body.content)
     git_ops.commit_all(ws, f"[manual edit] {artifact.path}")
     artifact.content = body.content
     db.commit()
-    emit(run.id, "artifact", f"Artifact edited by reviewer: {artifact.path}", artifact.stage)
+    emit(run.id, "artifact", f"Artifact edited by {user.display_name}: {artifact.path}", artifact.stage)
     return artifact
 
 
@@ -281,7 +284,9 @@ def stage_diff(run_id: str, execution_id: int, db: Session = Depends(get_db)):
     ex = db.get(StageExecution, execution_id)
     if ex is None or ex.run_id != run_id or not (ex.start_sha and ex.end_sha):
         raise HTTPException(404, "No diff for this stage execution")
-    try:
+    if ex.diff is not None or ex.start_sha == ex.end_sha:
+        return {"diff": ex.diff or ""}
+    try:  # attempts from before diffs were stored
         return {"diff": git_ops.diff(Path(run.workspace), ex.start_sha, ex.end_sha)}
     except git_ops.GitError:
         raise HTTPException(410, "This attempt was rolled back and its commits are no longer available")

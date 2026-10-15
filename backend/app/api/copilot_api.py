@@ -2,9 +2,10 @@
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from app.auth import require
 from app.copilot_service import get_service
 
 router = APIRouter(prefix="/api/copilot")
@@ -37,7 +38,7 @@ def models():
     return get_service().models()
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[Depends(require("settings.manage"))])
 def login_begin(body: LoginBegin):
     try:
         return get_service().login_begin(body.kind)
@@ -45,7 +46,7 @@ def login_begin(body: LoginBegin):
         raise _fail(e)
 
 
-@router.post("/login/{flow_id}/advance")
+@router.post("/login/{flow_id}/advance", dependencies=[Depends(require("settings.manage"))])
 def login_advance(flow_id: str, body: LoginAdvance):
     """Moves the browser sign-in on; waits while the person completes it in their browser."""
     try:
@@ -54,7 +55,7 @@ def login_advance(flow_id: str, body: LoginAdvance):
         raise _fail(e)
 
 
-@router.delete("/login/{flow_id}", status_code=204)
+@router.delete("/login/{flow_id}", status_code=204, dependencies=[Depends(require("settings.manage"))])
 def login_cancel(flow_id: str):
     try:
         get_service().login_cancel(flow_id)
@@ -62,7 +63,7 @@ def login_cancel(flow_id: str):
         raise _fail(e)
 
 
-@router.post("/token")
+@router.post("/token", dependencies=[Depends(require("settings.manage"))])
 def login_with_token(body: TokenLogin):
     try:
         get_service().login_with_token(body.token.strip(), body.host.strip())
@@ -71,7 +72,7 @@ def login_with_token(body: TokenLogin):
     return get_service().status()
 
 
-@router.post("/logout")
+@router.post("/logout", dependencies=[Depends(require("settings.manage"))])
 def logout():
     try:
         get_service().logout()

@@ -1,8 +1,9 @@
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app import settings_store
+from app.auth import require
 from app.copilot_service import get_service, normalize_host
 
 router = APIRouter(prefix="/api/settings")
@@ -13,7 +14,7 @@ def get_settings() -> dict[str, Any]:
     return settings_store.get_all()
 
 
-@router.put("")
+@router.put("", dependencies=[Depends(require("settings.manage"))])
 def update_settings(values: dict[str, Any]) -> dict[str, Any]:
     if "github_host" in values:
         values = {**values, "github_host": normalize_host(values["github_host"])}

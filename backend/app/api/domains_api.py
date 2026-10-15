@@ -8,6 +8,7 @@ from app.api.schemas import (
     DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, FeatureCreate, FeatureIn,
     DiscoveryStart, FeatureOut, OperationDocs, RunOut,
 )
+from app.auth import require
 from app.db.models import Artifact, Dependency, Domain, Feature, Run
 from app.db.session import get_db
 from app.domain_store import normalize_inputs
@@ -44,7 +45,7 @@ def dependency_map():
     return contracts_store.dependency_map()
 
 
-@router.post("", response_model=DomainOut, status_code=201)
+@router.post("", response_model=DomainOut, status_code=201, dependencies=[Depends(require("domains.manage"))])
 def create_domain(body: DomainCreate, db: Session = Depends(get_db)):
     if db.get(Domain, body.key):
         raise HTTPException(409, f"Domain {body.key} already exists")
@@ -59,7 +60,7 @@ def get_domain(key: str, db: Session = Depends(get_db)):
     return _domain_or_404(db, key)
 
 
-@router.put("/{key}", response_model=DomainOut)
+@router.put("/{key}", response_model=DomainOut, dependencies=[Depends(require("domains.manage"))])
 def update_domain(key: str, body: DomainUpdate, db: Session = Depends(get_db)):
     domain = _domain_or_404(db, key)
     for field in ("name", "description", "context"):
@@ -85,7 +86,7 @@ def update_domain(key: str, body: DomainUpdate, db: Session = Depends(get_db)):
     return domain
 
 
-@router.delete("/{key}", status_code=204)
+@router.delete("/{key}", status_code=204, dependencies=[Depends(require("domains.manage"))])
 def delete_domain(key: str, with_runs: bool = False, db: Session = Depends(get_db)):
     """Delete a domain. One with runs (migrations or feature listings) is only deleted with_runs=true, which also
     deletes the runs, their documents and workspaces, its features, dependencies and the contracts it provides."""
@@ -131,7 +132,7 @@ def list_features(key: str, db: Session = Depends(get_db)):
     return discovery_store.features_of(key)
 
 
-@router.post("/{key}/features", response_model=FeatureOut, status_code=201)
+@router.post("/{key}/features", response_model=FeatureOut, status_code=201, dependencies=[Depends(require("domains.manage"))])
 def add_feature(key: str, body: FeatureCreate, db: Session = Depends(get_db)):
     _domain_or_404(db, key)
     try:
@@ -140,7 +141,7 @@ def add_feature(key: str, body: FeatureCreate, db: Session = Depends(get_db)):
         raise HTTPException(409, str(e))
 
 
-@router.put("/{key}/features/{feature}", response_model=FeatureOut)
+@router.put("/{key}/features/{feature}", response_model=FeatureOut, dependencies=[Depends(require("domains.manage"))])
 def update_feature(key: str, feature: str, body: FeatureIn, db: Session = Depends(get_db)):
     _domain_or_404(db, key)
     try:
@@ -149,7 +150,7 @@ def update_feature(key: str, feature: str, body: FeatureIn, db: Session = Depend
         raise HTTPException(404, "Feature not found")
 
 
-@router.delete("/{key}/features/{feature}", status_code=204)
+@router.delete("/{key}/features/{feature}", status_code=204, dependencies=[Depends(require("domains.manage"))])
 def delete_feature(key: str, feature: str, db: Session = Depends(get_db)):
     _domain_or_404(db, key)
     try:
@@ -160,7 +161,7 @@ def delete_feature(key: str, feature: str, db: Session = Depends(get_db)):
         raise HTTPException(409, str(e))
 
 
-@router.post("/{key}/discover-features", response_model=RunOut, status_code=201)
+@router.post("/{key}/discover-features", response_model=RunOut, status_code=201, dependencies=[Depends(require("domains.manage"))])
 def discover_features(key: str, body: DiscoveryStart | None = None, db: Session = Depends(get_db)):
     """Start the run that lists this domain's features."""
     return start_features(db, key, body or DiscoveryStart())

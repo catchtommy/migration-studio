@@ -11,7 +11,6 @@ test("an approved integration design fills the contracts catalogue and the depen
 
   const approve = page.getByRole("button", { name: "Approve", exact: true });
   await expect(page.getByRole("heading", { name: /👤 Approve analysis/ })).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel("Reviewer").fill("e2e-reviewer");
   await approve.click();
   await expect(page.getByRole("heading", { name: /👤 Approve design/ })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Review the output of Cross-domain dependency finder, Modulith design: Domain, Modulith design: Wrapper, Modulith design: Orchestrator, Cross-domain integration design")).toBeVisible();

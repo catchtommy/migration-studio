@@ -194,22 +194,21 @@ def _latest_decisions(s, run_id: str, stages: list[str]) -> Artifact | None:
 
 
 def record_approved_design(run_id: str, reviewed_stages: list[str]) -> int:
-    """On approval of a gate: record the run's integration decisions and contracts. Reads the workspace copy, so a
-    reviewer's manual edits count. Returns the number of decisions recorded (0 when the gate reviews none)."""
+    """On approval of a gate: record the run's integration decisions and contracts. Reads the database copy, which has
+    reviewers' manual edits. Returns the number of decisions recorded (0 when the gate reviews none)."""
     with session_scope() as s:
         run = s.get(Run, run_id)
         artifact = _latest_decisions(s, run_id, reviewed_stages)
         if artifact is None:
             return 0
-        file = Path(run.workspace) / artifact.path
-        text = file.read_text() if file.is_file() else artifact.content
-        parsed = parse_decisions(text)
+        parsed = parse_decisions(artifact.content)
         base = PurePosixPath(artifact.path).parent
 
         for c in parsed["contracts"]:
             spec_path = str(base / c["spec"]) if c.get("spec") else None
-            spec_file = Path(run.workspace) / spec_path if spec_path else None
-            spec = spec_file.read_text() if spec_file and spec_file.is_file() else None
+            spec_doc = spec_path and s.scalar(select(Artifact).where(Artifact.run_id == run_id, Artifact.path == spec_path)
+                                              .order_by(Artifact.id.desc()).limit(1))
+            spec = spec_doc.content if spec_doc else None
             row = s.get(Contract, c["key"])
             if row is None:
                 row = Contract(key=c["key"], consumers=[], status="approved")

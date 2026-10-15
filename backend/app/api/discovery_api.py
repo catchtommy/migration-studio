@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app import discovery_store, workflow_store
 from app.api.runs import start_run
 from app.api.schemas import DiscoveryOverview, DiscoveryStart, FeaturesStart, RunOut
+from app.auth import require
 from app.db.models import Domain, Run
 from app.db.session import get_db
 from app.domain_store import normalize_inputs
@@ -17,7 +18,7 @@ def overview():
     return discovery_store.overview()
 
 
-@router.post("/bounded-contexts", response_model=RunOut, status_code=201)
+@router.post("/bounded-contexts", response_model=RunOut, status_code=201, dependencies=[Depends(require("domains.manage"))])
 def discover_bounded_contexts(body: DiscoveryStart | None = None, db: Session = Depends(get_db)):
     """Start the run that finds the monolith's bounded contexts."""
     body = body or DiscoveryStart()
@@ -37,7 +38,7 @@ def start_features(db: Session, domain: str, body: DiscoveryStart) -> Run:
                      body.workflow or workflow_store.default_for(None, "domain"), _inputs(body))
 
 
-@router.post("/features", response_model=list[RunOut], status_code=201)
+@router.post("/features", response_model=list[RunOut], status_code=201, dependencies=[Depends(require("domains.manage"))])
 def discover_all_features(body: FeaturesStart | None = None, db: Session = Depends(get_db)):
     """Start listing features for every domain that has no unfinished listing run (and, by default, no feature list
     yet)."""

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app import contracts_store
 from app.api.schemas import ContractOut, ContractUpdate
+from app.auth import require
 from app.db.models import Contract
 from app.db.session import get_db
 
@@ -23,7 +24,7 @@ def get_contract(key: str, db: Session = Depends(get_db)):
     return contracts_store.as_dict(contract)
 
 
-@router.put("/{key}", response_model=ContractOut)
+@router.put("/{key}", response_model=ContractOut, dependencies=[Depends(require("domains.manage"))])
 def update_contract(key: str, body: ContractUpdate, db: Session = Depends(get_db)):
     """Record progress, e.g. when the monolith facade or the new service starts providing the contract."""
     contract = db.get(Contract, key)

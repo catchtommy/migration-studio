@@ -8,7 +8,7 @@ from sqlalchemy import inspect, select, text
 
 from app.agents.defaults import AUTO, CLAUDE_MODELS, DOCS, default_config
 from app.db.models import Agent, Setting
-from app.db.session import engine, session_scope
+from app.db.session import get_engine, session_scope
 from app.orchestrator.stages import BUILTIN_STAGES
 
 FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instructions", "tools", "outputs", "max_turns",
@@ -62,6 +62,7 @@ def custom_default(key: str, title: str, description: str) -> dict[str, Any]:
 
 def _legacy_configs() -> dict[str, dict]:
     """Per-stage configs saved before agents became a library (table `agent_configs`)."""
+    engine = get_engine()
     if not inspect(engine).has_table("agent_configs"):
         return {}
     with engine.connect() as conn:

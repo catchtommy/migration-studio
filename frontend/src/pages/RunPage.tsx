@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, MONOLITH, runSubject } from "../lib/api";
-import { useRunEvents, useWorkflows } from "../lib/hooks";
+import { useRunEvents, useWorkflows, useCan } from "../lib/hooks";
 import { ActivityLog } from "../components/ActivityLog";
 import { AmendPanel } from "../components/AmendPanel";
 import { ApprovalPanel } from "../components/ApprovalPanel";
@@ -13,6 +13,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 
 export function RunPage() {
+  const canRetry = useCan("runs.start");
   const { runId = "" } = useParams();
   const queryClient = useQueryClient();
   const { data: workflows = [] } = useWorkflows();
@@ -94,7 +95,8 @@ export function RunPage() {
           <p className="text-sm text-bad">{run.error}</p>
           <button
             className="rounded-md bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
-            disabled={retry.isPending}
+            disabled={!canRetry || retry.isPending}
+            title={canRetry ? undefined : "Needs the “Run migrations” permission"}
             onClick={() => retry.mutate()}
           >
             Retry from failed stage

@@ -13,7 +13,6 @@ test("a migration run goes through every stage and gate from the UI", async ({ p
 
   // Gate 1: analysis
   await expect(approve).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel("Reviewer").fill("e2e-reviewer");
   await approve.click();
 
   // Gate 2: design — reject once, then approve the re-run

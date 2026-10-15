@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AuditEvent } from "./api";
+import { api, type AuditEvent, type Permission } from "./api";
 
 export function useCopilotStatus() {
   return useQuery({ queryKey: ["copilotStatus"], queryFn: api.copilotStatus, staleTime: 60_000 });
@@ -18,26 +18,15 @@ export function useDomains() {
   return useQuery({ queryKey: ["domains"], queryFn: api.domains });
 }
 
-const REVIEWER_KEY = "migration-studio.reviewer";
+/** The signed-in user (null while signed out). */
+export function useMe() {
+  return useQuery({ queryKey: ["me"], queryFn: api.me, staleTime: 60_000 });
+}
 
-/** The reviewer name recorded on approvals; remembered per browser. */
-export function useReviewer(): [string, (name: string) => void] {
-  const [name, setName] = useState(() => {
-    try {
-      return localStorage.getItem(REVIEWER_KEY) ?? "";
-    } catch {
-      return "";
-    }
-  });
-  const update = (value: string) => {
-    setName(value);
-    try {
-      localStorage.setItem(REVIEWER_KEY, value);
-    } catch {
-      /* storage unavailable: keep in memory only */
-    }
-  };
-  return [name, update];
+/** Whether the signed-in user has a permission. The backend enforces it too; this only shapes the UI. */
+export function useCan(permission: Permission): boolean {
+  const { data } = useMe();
+  return !!data?.user?.permissions.includes(permission);
 }
 
 /** Streams the run's audit log over SSE and refreshes run data whenever something meaningful happens. */

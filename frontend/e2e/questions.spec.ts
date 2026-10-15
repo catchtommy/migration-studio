@@ -10,7 +10,6 @@ test("the run pauses for an agent's question and continues once it is answered",
   const panel = page.getByRole("region", { name: "Agent question" });
   await expect(panel.getByRole("heading", { name: "The AS-IS documentation agent has a question" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Needs input").first()).toBeVisible();
-  await panel.getByLabel("Your name").fill("e2e-reviewer");
   await panel.getByRole("button", { name: "See the notes on the domain" }).click();
   await panel.getByRole("button", { name: "Send answer" }).click();
 
@@ -21,5 +20,5 @@ test("the run pauses for an agent's question and continues once it is answered",
   await page.getByRole("button", { name: /AS-IS documentation/ }).click();
   await expect(page.locator("article").getByText("See the notes on the domain")).toBeVisible();
   await page.getByText("1 question answered during this attempt").click();
-  await expect(page.getByText("— e2e-reviewer")).toBeVisible();
+  await expect(page.getByText(/— \S/).first()).toBeVisible(); // recorded as the signed-in user
 });

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type RunBrief } from "../lib/api";
-import { useDomains } from "../lib/hooks";
+import { useDomains, useCan } from "../lib/hooks";
 import { slug } from "../lib/slug";
 import { Field, inputClass } from "../components/Field";
 import { PageTitle } from "../components/PageTitle";
@@ -12,6 +12,7 @@ import { PATTERN_CELL, PATTERN_NAMES, PatternChip } from "../components/Chips";
 import { StatusBadge } from "../components/StatusBadge";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { AgentModeNote } from "../components/AgentModeNote";
+import { Guarded } from "../components/Guarded";
 
 const ACTIVE = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested"];
 const isActive = (run: RunBrief | null) => !!run && ACTIVE.includes(run.status);
@@ -72,97 +73,99 @@ function DiscoveryPanel() {
   const missing = data.domains.filter((d) => d.features === 0 && !unfinished(d.run)).length;
 
   return (
-    <section className="card space-y-4 border-t-4 border-t-accent p-4">
-      <div>
-        <h2 className="font-semibold">Discovery</h2>
-        <p className="mt-0.5 text-sm text-subtle">Map the monolith before migrating it. Each step is a workflow run with an approval gate; approving it updates the domains below.</p>
-      </div>
-      <div className="grid gap-5 md:grid-cols-2">
-        <Step n={1} title="Find the bounded contexts" done={data.contexts_approved}>
-          <p className="text-sm text-subtle">
-            Groups the monolith's code and tables by business capability. Approving adds new contexts as domains and fills in their packages, tables and entry points; no
-            domain is deleted.
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            {run && unfinished(run) ? (
-              <Link to={`/runs/${run.id}`} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted">
-                Bounded contexts <StatusBadge status={run.status} /> <span className="text-accent">Open →</span>
-              </Link>
-            ) : (
-              setup !== "contexts" && (
-                <button onClick={() => setSetup("contexts")} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
-                  {data.contexts_approved ? "Find them again…" : "Find bounded contexts…"}
-                </button>
-              )
-            )}
-            {run && !unfinished(run) && (
-              <Link to={`/runs/${run.id}`} className="text-sm text-accent hover:underline">
-                Last result
-              </Link>
-            )}
-          </div>
-          {run && unfinished(run) && (
-            <p className="text-xs text-subtle">
-              <em>Where to look & notes</em> is set when a run starts. Finish this one first: approve it, or reject it with comments naming the documentation to read
-              (the agent re-runs with them).
+    <Guarded permission="domains.manage">
+      <section className="card space-y-4 border-t-4 border-t-accent p-4">
+        <div>
+          <h2 className="font-semibold">Discovery</h2>
+          <p className="mt-0.5 text-sm text-subtle">Map the monolith before migrating it. Each step is a workflow run with an approval gate; approving it updates the domains below.</p>
+        </div>
+        <div className="grid gap-5 md:grid-cols-2">
+          <Step n={1} title="Find the bounded contexts" done={data.contexts_approved}>
+            <p className="text-sm text-subtle">
+              Groups the monolith's code and tables by business capability. Approving adds new contexts as domains and fills in their packages, tables and entry points; no
+              domain is deleted.
             </p>
-          )}
-          {setup === "contexts" && !(run && unfinished(run)) && (
-            <div role="region" className="space-y-3 rounded-md border border-border bg-bg p-3" aria-label="Set up bounded contexts">
-              <AgentModeNote agentKey="bounded_contexts" />
-              <InputsEditor
-                value={shownInputs}
-                onChange={setInputs}
-                pathsLabel="Where to look"
-                pathsHint="One per line, relative to the repository root: existing documentation (docs/**/*.md), an index file, key modules."
-                notesHint="E.g. which folders to ignore, domains you already know, or that the docs may be out of date and the code wins."
-              />
-              <div className="flex items-center gap-2">
-                <button onClick={() => contexts.mutate()} disabled={contexts.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-                  Start
-                </button>
-                <button onClick={() => setSetup(null)} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
-                  Cancel
-                </button>
-              </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {run && unfinished(run) ? (
+                <Link to={`/runs/${run.id}`} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted">
+                  Bounded contexts <StatusBadge status={run.status} /> <span className="text-accent">Open →</span>
+                </Link>
+              ) : (
+                setup !== "contexts" && (
+                  <button onClick={() => setSetup("contexts")} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
+                    {data.contexts_approved ? "Find them again…" : "Find bounded contexts…"}
+                  </button>
+                )
+              )}
+              {run && !unfinished(run) && (
+                <Link to={`/runs/${run.id}`} className="text-sm text-accent hover:underline">
+                  Last result
+                </Link>
+              )}
             </div>
-          )}
-          {contexts.error && <p className="text-sm text-bad">{(contexts.error as Error).message}</p>}
-        </Step>
-        <Step n={2} title="List each domain's features" done={data.domains.length > 0 && listed === data.domains.length}>
-          <p className="text-sm text-subtle">
-            {listed} of {data.domains.length} domains have a feature list
-            {listing > 0 && `, ${listing} being listed`}. Migrations start from these lists; review each one at its gate.
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            {setup !== "features" && (
-              <button onClick={() => setSetup("features")} disabled={missing === 0} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-                List features for {missing === data.domains.length ? "all" : missing} domain{missing === 1 ? "" : "s"}…
-              </button>
-            )}
-            {!data.contexts_approved && <span className="text-xs text-warn">Best after step 1 is approved.</span>}
-          </div>
-          {setup === "features" && (
-            <div role="region" className="space-y-3 rounded-md border border-border bg-bg p-3" aria-label="Set up feature listing">
-              <AgentModeNote agentKey="domain_features" />
-              <p className="text-sm text-subtle">
-                Each domain's run uses that domain's <em>Domain features</em> inputs (where to look and notes). To set them first, open a domain's Features tab and
-                use <strong>List features…</strong> there.
+            {run && unfinished(run) && (
+              <p className="text-xs text-subtle">
+                <em>Where to look & notes</em> is set when a run starts. Finish this one first: approve it, or reject it with comments naming the documentation to read
+                (the agent re-runs with them).
               </p>
-              <div className="flex items-center gap-2">
-                <button onClick={() => features.mutate()} disabled={features.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-                  Start for {missing} domain{missing === 1 ? "" : "s"}
-                </button>
-                <button onClick={() => setSetup(null)} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
-                  Cancel
-                </button>
+            )}
+            {setup === "contexts" && !(run && unfinished(run)) && (
+              <div role="region" className="space-y-3 rounded-md border border-border bg-bg p-3" aria-label="Set up bounded contexts">
+                <AgentModeNote agentKey="bounded_contexts" />
+                <InputsEditor
+                  value={shownInputs}
+                  onChange={setInputs}
+                  pathsLabel="Where to look"
+                  pathsHint="One per line, relative to the repository root: existing documentation (docs/**/*.md), an index file, key modules."
+                  notesHint="E.g. which folders to ignore, domains you already know, or that the docs may be out of date and the code wins."
+                />
+                <div className="flex items-center gap-2">
+                  <button onClick={() => contexts.mutate()} disabled={contexts.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+                    Start
+                  </button>
+                  <button onClick={() => setSetup(null)} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
+                    Cancel
+                  </button>
+                </div>
               </div>
+            )}
+            {contexts.error && <p className="text-sm text-bad">{(contexts.error as Error).message}</p>}
+          </Step>
+          <Step n={2} title="List each domain's features" done={data.domains.length > 0 && listed === data.domains.length}>
+            <p className="text-sm text-subtle">
+              {listed} of {data.domains.length} domains have a feature list
+              {listing > 0 && `, ${listing} being listed`}. Migrations start from these lists; review each one at its gate.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              {setup !== "features" && (
+                <button onClick={() => setSetup("features")} disabled={missing === 0} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+                  List features for {missing === data.domains.length ? "all" : missing} domain{missing === 1 ? "" : "s"}…
+                </button>
+              )}
+              {!data.contexts_approved && <span className="text-xs text-warn">Best after step 1 is approved.</span>}
             </div>
-          )}
-          {features.error && <p className="text-sm text-bad">{(features.error as Error).message}</p>}
-        </Step>
-      </div>
-    </section>
+            {setup === "features" && (
+              <div role="region" className="space-y-3 rounded-md border border-border bg-bg p-3" aria-label="Set up feature listing">
+                <AgentModeNote agentKey="domain_features" />
+                <p className="text-sm text-subtle">
+                  Each domain's run uses that domain's <em>Domain features</em> inputs (where to look and notes). To set them first, open a domain's Features tab and
+                  use <strong>List features…</strong> there.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => features.mutate()} disabled={features.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+                    Start for {missing} domain{missing === 1 ? "" : "s"}
+                  </button>
+                  <button onClick={() => setSetup(null)} className="rounded-md px-3 py-1.5 text-sm hover:bg-muted">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+            {features.error && <p className="text-sm text-bad">{(features.error as Error).message}</p>}
+          </Step>
+        </div>
+      </section>
+    </Guarded>
   );
 }
 
@@ -183,47 +186,49 @@ function NewDomainForm() {
   });
 
   return (
-    <form
-      className="space-y-3 card p-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        create.mutate();
-      }}
-    >
-      <h2 className="font-semibold">New domain</h2>
-      <div className="grid gap-3 sm:grid-cols-[1fr_12rem]">
-        <Field label="Name">
-          <input
-            className={inputClass}
-            value={name}
-            placeholder="e.g. Collateral"
-            onChange={(e) => {
-              setName(e.target.value);
-              if (!keyEdited) setKey(slug(e.target.value, "-"));
-            }}
-          />
+    <Guarded permission="domains.manage">
+      <form
+        className="space-y-3 card p-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          create.mutate();
+        }}
+      >
+        <h2 className="font-semibold">New domain</h2>
+        <div className="grid gap-3 sm:grid-cols-[1fr_12rem]">
+          <Field label="Name">
+            <input
+              className={inputClass}
+              value={name}
+              placeholder="e.g. Collateral"
+              onChange={(e) => {
+                setName(e.target.value);
+                if (!keyEdited) setKey(slug(e.target.value, "-"));
+              }}
+            />
+          </Field>
+          <Field label="Key" hint="Used in branch names">
+            <input
+              className={`${inputClass} font-mono text-xs`}
+              value={key}
+              onChange={(e) => {
+                setKeyEdited(true);
+                setKey(e.target.value);
+              }}
+            />
+          </Field>
+        </div>
+        <Field label="Description">
+          <textarea rows={2} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
         </Field>
-        <Field label="Key" hint="Used in branch names">
-          <input
-            className={`${inputClass} font-mono text-xs`}
-            value={key}
-            onChange={(e) => {
-              setKeyEdited(true);
-              setKey(e.target.value);
-            }}
-          />
-        </Field>
-      </div>
-      <Field label="Description">
-        <textarea rows={2} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
-      </Field>
-      <div className="flex items-center gap-3">
-        <button type="submit" disabled={!name.trim() || !key || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-          Add domain
-        </button>
-        {create.error && <span className="text-sm text-bad">{(create.error as Error).message}</span>}
-      </div>
-    </form>
+        <div className="flex items-center gap-3">
+          <button type="submit" disabled={!name.trim() || !key || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+            Add domain
+          </button>
+          {create.error && <span className="text-sm text-bad">{(create.error as Error).message}</span>}
+        </div>
+      </form>
+    </Guarded>
   );
 }
 
@@ -310,6 +315,7 @@ function MigrationOverview({ names }: { names: Map<string, string> }) {
 }
 
 export function DomainsPage() {
+  const canCreate = useCan("domains.manage");
   const { data: domains, isLoading } = useDomains();
   const { data: discovery } = useQuery({ queryKey: ["discovery"], queryFn: api.discovery });
   const [adding, setAdding] = useState(false);
@@ -317,7 +323,7 @@ export function DomainsPage() {
   return (
     <div className="space-y-6">
       <PageTitle icon={<GridIcon />} title="Domains" subtitle="Tell each domain's agents where to look, and read the documentation they produced." tone="from-sky-500 to-indigo-500">
-        {!adding && (
+        {!adding && canCreate && (
           <button onClick={() => setAdding(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
             New domain
           </button>

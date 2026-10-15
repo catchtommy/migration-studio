@@ -9,6 +9,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { PageTitle } from "../components/PageTitle";
 import { ActivityIcon, CheckIcon, ClockIcon, LayersIcon, MessageIcon } from "../components/icons";
+import { Guarded } from "../components/Guarded";
 
 /** emphasis: text colour for the count when something is waiting on a person. */
 function StatTile({ label, value, icon, tone, emphasis }: { label: string; value: number; icon: React.ReactNode; tone: string; emphasis?: string }) {
@@ -59,93 +60,95 @@ function NewRunForm() {
   });
 
   return (
-    <form
-      className="card flex flex-wrap items-end gap-3 border-t-4 border-t-accent p-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        create.mutate();
-      }}
-    >
-      <label className="text-sm">
-        <span className="mb-1 block text-xs font-medium text-subtle">Domain</span>
-        <select
-          value={domain}
-          onChange={(e) => {
-            setChosen(e.target.value);
-            setChosenWorkflow(null);
-            setChosenFeature(null);
-          }}
-          className="rounded-md border border-border bg-bg px-2 py-1.5"
-        >
-          {domains.map((d) => (
-            <option key={d.key} value={d.key}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="min-w-48 flex-1 text-sm">
-        <span className="mb-1 block text-xs font-medium text-subtle">Feature</span>
-        {features && features.length === 0 ? (
-          <span className="block py-1.5 text-sm text-warn">
-            No features listed yet.{" "}
-            <Link to={`/domains/${domain}?tab=features`} className="text-accent hover:underline">
-              List them first →
-            </Link>
-          </span>
-        ) : (
-          <select value={operation} onChange={(e) => setChosenFeature(e.target.value)} className="w-full rounded-md border border-border bg-bg px-2 py-1.5">
-            {available.length === 0 && <option value="">Every feature is already migrating</option>}
-            {(features ?? []).map((f) => (
-              <option key={f.key} value={f.key} disabled={!!f.migration}>
-                {f.name}
-                {f.migration ? (f.migration.status === "completed" ? " (migrated)" : " (in progress)") : ""}
+    <Guarded permission="runs.start">
+      <form
+        className="card flex flex-wrap items-end gap-3 border-t-4 border-t-accent p-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          create.mutate();
+        }}
+      >
+        <label className="text-sm">
+          <span className="mb-1 block text-xs font-medium text-subtle">Domain</span>
+          <select
+            value={domain}
+            onChange={(e) => {
+              setChosen(e.target.value);
+              setChosenWorkflow(null);
+              setChosenFeature(null);
+            }}
+            className="rounded-md border border-border bg-bg px-2 py-1.5"
+          >
+            {domains.map((d) => (
+              <option key={d.key} value={d.key}>
+                {d.name}
               </option>
             ))}
           </select>
+        </label>
+        <label className="min-w-48 flex-1 text-sm">
+          <span className="mb-1 block text-xs font-medium text-subtle">Feature</span>
+          {features && features.length === 0 ? (
+            <span className="block py-1.5 text-sm text-warn">
+              No features listed yet.{" "}
+              <Link to={`/domains/${domain}?tab=features`} className="text-accent hover:underline">
+                List them first →
+              </Link>
+            </span>
+          ) : (
+            <select value={operation} onChange={(e) => setChosenFeature(e.target.value)} className="w-full rounded-md border border-border bg-bg px-2 py-1.5">
+              {available.length === 0 && <option value="">Every feature is already migrating</option>}
+              {(features ?? []).map((f) => (
+                <option key={f.key} value={f.key} disabled={!!f.migration}>
+                  {f.name}
+                  {f.migration ? (f.migration.status === "completed" ? " (migrated)" : " (in progress)") : ""}
+                </option>
+              ))}
+            </select>
+          )}
+        </label>
+        <label className="text-sm">
+          <span className="mb-1 block text-xs font-medium text-subtle">Workflow</span>
+          <select value={workflow} onChange={(e) => setChosenWorkflow(e.target.value)} className="rounded-md border border-border bg-bg px-2 py-1.5">
+            {workflows.map((w) => (
+              <option key={w.key} value={w.key}>
+                {w.name}
+                {w.key === domainDefault ? " (domain default)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => setShowInputs(!showInputs)}
+          aria-expanded={showInputs}
+          className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
+        >
+          {showInputs ? "Hide agent inputs" : "Add entry points & notes"}
+        </button>
+        <button type="submit" disabled={!domain || !workflow || !operation || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+          Start migration
+        </button>
+        {feature && feature.entry_points.length > 0 && (
+          <p className="w-full text-xs text-subtle">
+            Agents start from the feature's entry points: <span className="font-mono">{feature.entry_points.join(", ")}</span>
+            {showInputs ? ". Entry points you add below replace them." : "."}
+          </p>
         )}
-      </label>
-      <label className="text-sm">
-        <span className="mb-1 block text-xs font-medium text-subtle">Workflow</span>
-        <select value={workflow} onChange={(e) => setChosenWorkflow(e.target.value)} className="rounded-md border border-border bg-bg px-2 py-1.5">
-          {workflows.map((w) => (
-            <option key={w.key} value={w.key}>
-              {w.name}
-              {w.key === domainDefault ? " (domain default)" : ""}
-            </option>
-          ))}
-        </select>
-      </label>
-      <button
-        type="button"
-        onClick={() => setShowInputs(!showInputs)}
-        aria-expanded={showInputs}
-        className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
-      >
-        {showInputs ? "Hide agent inputs" : "Add entry points & notes"}
-      </button>
-      <button type="submit" disabled={!domain || !workflow || !operation || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
-        Start migration
-      </button>
-      {feature && feature.entry_points.length > 0 && (
-        <p className="w-full text-xs text-subtle">
-          Agents start from the feature's entry points: <span className="font-mono">{feature.entry_points.join(", ")}</span>
-          {showInputs ? ". Entry points you add below replace them." : "."}
-        </p>
-      )}
-      {showInputs && (
-        <div className="w-full">
-          <InputsEditor
-            value={inputs}
-            onChange={setInputs}
-            pathsLabel="Entry points and files for this feature"
-            notesLabel="Notes for the agents"
-            notesHint="Given to every agent in this run, alongside the domain's inputs."
-          />
-        </div>
-      )}
-      {create.error && <p className="w-full text-sm text-bad">{(create.error as Error).message}</p>}
-    </form>
+        {showInputs && (
+          <div className="w-full">
+            <InputsEditor
+              value={inputs}
+              onChange={setInputs}
+              pathsLabel="Entry points and files for this feature"
+              notesLabel="Notes for the agents"
+              notesHint="Given to every agent in this run, alongside the domain's inputs."
+            />
+          </div>
+        )}
+        {create.error && <p className="w-full text-sm text-bad">{(create.error as Error).message}</p>}
+      </form>
+    </Guarded>
   );
 }
 

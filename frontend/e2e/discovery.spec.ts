@@ -4,7 +4,6 @@ test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this m
 
 async function approveGate(page: Page, gate: string) {
   await expect(page.getByRole("heading", { name: new RegExp(`👤 ${gate}`) })).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel("Reviewer").fill("e2e-reviewer");
   const approve = page.getByRole("button", { name: "Approve", exact: true });
   await approve.click();
   await expect(approve).toBeHidden({ timeout: 30_000 }); // recorded when the decision is accepted

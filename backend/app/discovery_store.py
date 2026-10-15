@@ -150,7 +150,7 @@ def record_approved(run_id: str, reviews: list[str]) -> str | None:
     the gate has nothing to record. Raises InvalidDocument when the (possibly hand-edited) file is invalid."""
     with session_scope() as s:
         run = s.get(Run, run_id)
-        scope, domain, workspace = run.scope or "operation", run.domain, run.workspace
+        scope, domain = run.scope or "operation", run.domain
         if scope == "operation":
             return None
         name = CONTEXTS_FILE if scope == "monolith" else FEATURES_FILE
@@ -163,8 +163,7 @@ def record_approved(run_id: str, reviews: list[str]) -> str | None:
         artifact = next((a for a in rows if a.attempt == latest[a.stage]), None)
         if artifact is None:
             return None
-        file = Path(workspace) / artifact.path
-        text = file.read_text() if file.is_file() else artifact.content
+        text = artifact.content
     if scope == "monolith":
         return _record_contexts(run_id, parse_bounded_contexts(text))
     return _record_features(run_id, domain, parse_features(text))

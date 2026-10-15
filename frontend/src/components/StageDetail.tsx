@@ -6,6 +6,7 @@ import { ActivityLog } from "./ActivityLog";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { DiffView } from "./DiffView";
 import { StatusBadge } from "./StatusBadge";
+import { useCan } from "../lib/hooks";
 
 type Tab = "output" | "changes" | "activity";
 
@@ -37,7 +38,8 @@ export function StageDetail({ stage, stages, run, events, questions }: {
 
   const execution = attempts[attemptIdx];
   const isLatest = attemptIdx === attempts.length - 1;
-  const editable = isLatest && (run.status === "awaiting_approval" || run.status === "changes_requested") && !!run.pending_gate?.reviews.includes(stage.key);
+  const canEdit = useCan("runs.edit");
+  const editable = canEdit && isLatest && (run.status === "awaiting_approval" || run.status === "changes_requested") && !!run.pending_gate?.reviews.includes(stage.key);
   const shown = artifacts.filter((a) => a.stage === stage.key && a.attempt === execution?.attempt);
   const gateApprovals = run.approvals.filter((a) => a.gate === stage.key);
   const title = (key: string) => stages.find((s) => s.key === key)?.title ?? key;

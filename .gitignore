@@ -9,3 +9,4 @@ frontend/dist/
 frontend/test-results/
 frontend/playwright-report/
 .DS_Store
+frontend/e2e/.auth.json

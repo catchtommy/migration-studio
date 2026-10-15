@@ -47,6 +47,61 @@ cd ../frontend && PATH=../.tools/node/bin:$PATH npm install
 
 Node 20 lives in `.tools/node` (the system Node is too old for Vite).
 
+## Database
+
+On first start the UI asks which database to use; change it later under **Settings → Database**.
+
+| Choice | Use it for |
+|---|---|
+| **PostgreSQL** | Production and shared installations. Create an empty database with UTF8 encoding and a user that can create tables. |
+| **Oracle** 19c+ | Production, where Oracle is the standard. Give the service name of the pluggable database; the user needs `CREATE TABLE` and quota on its tablespace. Uses python-oracledb in thin mode, so no Oracle Client install is needed. |
+| **SQLite** | Local development and the test suite only: one writer at a time, on this server's disk. The UI shows a warning while it is in use. |
+
+Everything the studio records lives in that database: settings, agents, workflows, domains, features, contracts, runs,
+every document agents write (md, yaml, contract specs) with reviewers' edits, each stage's diff, and the LangGraph
+checkpoints of paused runs. Backing up the database backs up the studio; nothing under `backend/data` needs a backup
+except, for convenience, `database.json`.
+
+- **Where the connection is kept**: `backend/data/database.json`, readable by its owner only (it holds the password).
+  The `STUDIO_DATABASE_URL` environment variable overrides it, e.g.
+  `postgresql+psycopg://user:pass@host:5432/studio` or `oracle+oracledb://user:pass@host:1521/?service_name=STUDIO`;
+  the database can't be changed from the UI then.
+- **Switching** (Settings → Database → Change database) can copy all data from the current database into an empty
+  new one. No run may be working while it switches.
+- **Tables** are created and upgraded automatically at startup (Alembic, `backend/app/db/migrations`). Installs from
+  before this choice existed keep their `data/studio.db` (SQLite) and are upgraded in place; their old
+  `checkpoints.db` is imported once and kept as `checkpoints.db.imported`.
+
+## Users and permissions
+
+Everyone signs in with a username and password; nothing is visible without signing in. The first person to open a
+new installation creates the **admin** account, then adds everyone else under **Users** (shown to users who can
+manage users).
+
+Each user has one or more roles; a role is a set of permissions, edited as a grid on **Users → Roles & permissions**:
+
+| Permission | Allows |
+|---|---|
+| Manage agents | Create, edit, reset and delete agents |
+| Manage workflows | Create, edit and delete workflows |
+| Manage domains & features | Domains, feature lists, contract status, discovery runs |
+| Run migrations | Start migration runs, retry failed ones |
+| Approve workflow runs | Approve or reject at gates (also re-running or withdrawing a held rejection) |
+| Edit documents & answer agents | Edit run documents and inputs, answer agents' questions |
+| Manage settings & database | Settings, Copilot sign-in, switching the database |
+| Manage users & roles | Users, passwords, roles |
+
+Default roles: **Admin** (everything, can't be changed), **Architect**, **Developer**, **Reviewer**, **Viewer**
+(read-only). The **Agents** and **Workflows** pages are only shown to users who can manage them (agents'
+instructions aren't sent to anyone else; other pages still show agent and workflow names). Everything else is
+visible to anyone signed in, with *View only* where you can't change things; the backend checks the permission on
+every change. Approvals, answers and document edits record the signed-in user.
+
+- Passwords are stored as scrypt hashes; sessions are an HttpOnly cookie valid for 12 hours of inactivity.
+  Five wrong passwords lock a username for 15 minutes.
+- Forgotten passwords: an admin resets them on the Users page (the user is signed out everywhere).
+- The app always keeps at least one active user who can manage users.
+
 ## AI provider: GitHub Copilot
 
 Agents set to *AI* run with **GitHub Copilot using your own account** (Settings → AI provider; the Claude API is
@@ -193,8 +248,8 @@ beyond that.
 
 ## How it works
 
-- **Run** = one `(domain, feature)` through one workflow; one LangGraph thread, checkpointed in
-  `backend/data/checkpoints.db`. The run keeps a snapshot of its workflow, so editing or deleting a workflow only
+- **Run** = one `(domain, feature)` through one workflow; one LangGraph thread, checkpointed in the studio database
+  (`orchestrator/checkpointer.py`). The run keeps a snapshot of its workflow, so editing or deleting a workflow only
   affects runs started afterwards. The graph is built per workflow snapshot (`orchestrator/graph.py`).
 - **Workflows** (Workflows page): create, copy, edit and delete named workflows. Steps are agents from the library and
   approval gates; each gate chooses which earlier agent steps it reviews (and can send back to on rejection).
@@ -205,6 +260,9 @@ beyond that.
   characters; larger documents are listed for the agent to read).
 - **Workspace**: each run clones the monolith (Settings → Monolith repository) into `backend/data/workspaces/<run id>`
   on branch `migration/<domain>/<operation>`. Every stage commits its output, so each attempt has a reviewable diff.
+  The workspace is only a working copy: each stage's diff and documents are stored in the database, and a missing
+  workspace is rebuilt from them (`app/workspace.py`) — re-cloned at the run's starting commit, the stages' code
+  changes replayed, the documents (with reviewers' edits) written back.
 - **Gates** pause the graph with `interrupt()`. *Approve* continues. Rejecting requires comments, and has two forms:
   - *Reject & re-run now*: the workspace is reset to where the chosen stage started, and the stage re-runs straight
     away with the comments as feedback.
@@ -242,8 +300,12 @@ beyond that.
 
 ```bash
 cd backend && .venv/bin/pytest            # workflow routing: approve, reject/rollback, retry, manual edits
+# Same suite on PostgreSQL or Oracle (an empty database each time):
+#   STUDIO_TEST_DATABASE_URL=postgresql+psycopg://user@localhost:5432/studio_test .venv/bin/pytest
 cd frontend && npm test                   # unit tests
 cd frontend && npm run e2e                # full run through the UI (needs ./dev.sh running)
+# e2e signs in as E2E_USERNAME / E2E_PASSWORD (default e2e-admin / e2e-admin-password); on a stack with no users
+# yet it creates that account as the first admin, so point it at a test stack, not a shared one.
 # Question flow: start the backend with STUDIO_STUB_QUESTIONS=1 (stub agents then ask one question per stage)
 # and run `E2E_STUB_QUESTIONS=1 npm run e2e`. STUDIO_API / E2E_BASE_URL point Vite / Playwright at another stack.
 ```
