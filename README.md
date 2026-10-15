@@ -84,7 +84,7 @@ project you work in (the choice is remembered per browser).
   - *Language and stack*: Java, C# / .NET, TypeScript / Node.js, Python, Go or other, plus what the monolith is
     and what it migrates to. Every agent gets this, so AI agents work in the project's language even where their
     instructions mention Java.
-  - *Source and toolchains*: the monolith repository, the legacy and target toolchain homes (a JDK, .NET SDK, Node,
+  - *Source and toolchains*: the monolith repository and its base branch (empty: the default branch), the legacy and target toolchain homes (a JDK, .NET SDK, Node,
     Python or Go install). `run_command` puts the agent's toolchain first on `PATH` and sets `JAVA_HOME` or
     `DOTNET_ROOT` for Java and .NET.
   - The test database connection, self-check attempts and the cross-domain conventions.
@@ -172,7 +172,7 @@ host, not on github.com.
 6. Go to **Agents**, switch an agent's mode to **AI**, and start a migration run. Leave the model on `auto`, or
    pick one of the models the page suggests for your account.
 
-The monolith repository URL (**Settings → Monolith repository**) can point at the same `ghe.com` host; runs clone it
+The monolith repository URL (**Project → Monolith repository**) can point at the same `ghe.com` host; runs clone it
 with your normal git credentials, as in your terminal.
 
 ### Troubleshooting
@@ -294,7 +294,7 @@ beyond that.
   Documents are passed explicitly: each agent step *uses the output of* all earlier agent steps (default) or selected
   ones, and gets their latest documents' paths, or their contents with *Include contents in prompt* (up to 200k
   characters; larger documents are listed for the agent to read).
-- **Workspace**: each run clones the monolith (Settings → Monolith repository) into `backend/data/workspaces/<run id>`
+- **Workspace**: each run clones the monolith (Project → Monolith repository, at its base branch) into `backend/data/workspaces/<run id>`
   on branch `migration/<domain>/<operation>`. Every stage commits its output, so each attempt has a reviewable diff.
   The workspace is only a working copy: each stage's diff and documents are stored in the database, and a missing
   workspace is rebuilt from them (`app/workspace.py`) — re-cloned at the run's starting commit, the stages' code

@@ -17,14 +17,19 @@ def git(repo: Path, *args: str, stdin: str | None = None) -> str:
     return proc.stdout.strip()
 
 
-def init_workspace(path: Path, source_repo: str | None, branch: str, base_sha: str | None = None) -> str:
-    """Clone the monolith (or start an empty repo when none is configured) and check out the run branch, at
-    `base_sha` when rebuilding an existing run. Returns the commit the branch starts from."""
+def init_workspace(path: Path, source_repo: str | None, branch: str, base_sha: str | None = None,
+                   source_branch: str | None = None) -> str:
+    """Clone the monolith (or start an empty repo when none is configured) and check out the run branch: from
+    `source_branch` (the repository's default branch when None), or at `base_sha` when rebuilding an existing run.
+    Returns the commit the branch starts from."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if source_repo:
-        proc = subprocess.run(["git", "clone", "--quiet", source_repo, str(path)], capture_output=True, text=True)
+        start = ["--branch", source_branch] if source_branch and not base_sha else []
+        proc = subprocess.run(["git", "clone", "--quiet", *start, "--", source_repo, str(path)], capture_output=True,
+                              text=True)
         if proc.returncode != 0:
-            raise GitError(f"git clone {source_repo} failed: {proc.stderr.strip()}")
+            on = f" (branch {source_branch})" if start else ""
+            raise GitError(f"git clone {source_repo}{on} failed: {proc.stderr.strip()}")
     else:
         path.mkdir(exist_ok=True)
         git(path, "init", "--quiet")

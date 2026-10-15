@@ -1,6 +1,7 @@
 """Runtime settings editable from the UI, persisted in the `settings` table: global ones (AI provider, network) and
 each project's own (its monolith, stack, toolchains, conventions)."""
 
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -21,6 +22,7 @@ GLOBAL_DEFAULTS: dict[str, Any] = {
 }
 PROJECT_DEFAULTS: dict[str, Any] = {
     "monolith_repo": "",  # git URL or local path; empty = blank workspace
+    "monolith_branch": "",  # the branch (or tag) runs start from; empty = the repository's default branch
     "max_attempts": 3,  # self-verification retries per stage
     # What the project migrates from and to; given to every agent, so AI agents work in the project's language.
     "language": "java",  # see LANGUAGES
@@ -38,6 +40,7 @@ PROJECT_DEFAULTS: dict[str, Any] = {
 }
 DEFAULTS = {**GLOBAL_DEFAULTS, **PROJECT_DEFAULTS}
 NETWORK_KEYS = {"https_proxy", "no_proxy", "extra_ca_file", "copilot_cli_path", "copilot_disable_websockets"}
+BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")  # a plain git ref name (never an option)
 LANGUAGES = {"java": "Java", "csharp": "C# / .NET", "typescript": "TypeScript / Node.js", "python": "Python",
              "go": "Go", "other": "Other"}
 
@@ -75,6 +78,10 @@ def _check(values: dict[str, Any], allowed: dict[str, Any], kind: str) -> None:
         raise KeyError(f"Unknown {kind} settings: {', '.join(sorted(unknown))}")
     if "language" in values and values["language"] not in LANGUAGES:
         raise KeyError(f"language must be one of {', '.join(LANGUAGES)}")
+    branch = values.get("monolith_branch")
+    if branch is not None and branch != "" and not (isinstance(branch, str) and BRANCH.match(branch)
+                                                    and ".." not in branch and not branch.endswith((".lock", "/"))):
+        raise KeyError("The base branch must be a git branch or tag name, e.g. main or release/2.4")
 
 
 def update_global(values: dict[str, Any]) -> dict[str, Any]:

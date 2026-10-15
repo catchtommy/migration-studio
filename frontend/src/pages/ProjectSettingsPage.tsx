@@ -204,9 +204,20 @@ function General({ project }: { project: string }) {
 
         <section className="space-y-4">
           <h2 className="font-semibold">Source and toolchains</h2>
-          <Field label="Monolith repository" hint="Git URL or local path. Each run clones it into its own workspace. Leave empty for a blank workspace.">
-            <input className={input} value={form.monolith_repo as string} onChange={(e) => set("monolith_repo", e.target.value)} />
-          </Field>
+          <div className="grid gap-4 sm:grid-cols-[1fr_16rem]">
+            <Field label="Monolith repository" hint="Git URL or local path. Each run clones it into its own workspace. Leave empty for a blank workspace.">
+              <input className={input} value={form.monolith_repo as string} onChange={(e) => set("monolith_repo", e.target.value)} />
+            </Field>
+            <Field label="Base branch" hint="Runs start from this branch or tag. Empty: the repository's default branch.">
+              <input
+                className={input}
+                placeholder="e.g. main or release/2.4"
+                value={(form.monolith_branch as string) ?? ""}
+                disabled={!form.monolith_repo}
+                onChange={(e) => set("monolith_branch", e.target.value.trim())}
+              />
+            </Field>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={`Legacy ${lang.toolchain} home`} hint="The monolith's toolchain, for agents set to Legacy">
               <input className={input} value={form.jdk_legacy_home as string} onChange={(e) => set("jdk_legacy_home", e.target.value)} />

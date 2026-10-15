@@ -204,3 +204,41 @@ def test_project_admins_manage_access_to_projects_they_are_not_in(client):
     assert c.get("/api/runs").status_code == 200  # now a member
     assert next(p for p in c.get("/api/projects").json() if p["key"] == key)["permissions"] == ["runs.approve",
                                                                                                 "runs.edit"]
+
+
+def test_runs_clone_the_monolith_from_the_projects_base_branch(tmp_path):
+    import subprocess
+
+    from app.tools import git_ops
+
+    repo = tmp_path / "monolith"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True)  # noqa: E731
+    run("init", "--quiet", "-b", "main")
+    (repo / "App.java").write_text("main")
+    run("add", "-A")
+    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-m", "main")
+    run("checkout", "--quiet", "-b", "release/2.4")
+    (repo / "App.java").write_text("release")
+    run("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "-am", "release")
+    run("checkout", "--quiet", "main")
+
+    ws = tmp_path / "ws"
+    sha = git_ops.init_workspace(ws, str(repo), "migration/x/y", source_branch="release/2.4")
+    assert (ws / "App.java").read_text() == "release" and git_ops.head(ws) == sha
+    default = tmp_path / "ws2"
+    git_ops.init_workspace(default, str(repo), "migration/x/y")
+    assert (default / "App.java").read_text() == "main"
+    try:
+        git_ops.init_workspace(tmp_path / "ws3", str(repo), "migration/x/y", source_branch="nope")
+        raise AssertionError("cloning a missing branch should fail")
+    except git_ops.GitError as e:
+        assert "branch nope" in str(e)
+
+
+def test_the_base_branch_must_be_a_branch_name(client):
+    key = new_project(client)
+    assert client.put(f"/api/projects/{key}/settings", json={"monolith_branch": "release/2.4"}).status_code == 200
+    for bad in ("--upload-pack=x", "a..b", "has space", "x.lock"):
+        assert client.put(f"/api/projects/{key}/settings", json={"monolith_branch": bad}).status_code == 422, bad
+    assert client.put(f"/api/projects/{key}/settings", json={"monolith_branch": ""}).status_code == 200

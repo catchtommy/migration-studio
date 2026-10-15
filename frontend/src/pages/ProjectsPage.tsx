@@ -20,6 +20,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
   const [source, setSource] = useState(preset.source);
   const [target, setTarget] = useState(preset.target);
   const [repo, setRepo] = useState("");
+  const [branch, setBranch] = useState("");
   const projectKey = key || slug(name, "-");
   const create = useMutation({
     mutationFn: () =>
@@ -27,7 +28,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
         key: projectKey,
         name: name.trim(),
         description,
-        settings: { language, source_stack: source, target_stack: target, monolith_repo: repo.trim() },
+        settings: { language, source_stack: source, target_stack: target, monolith_repo: repo.trim(), monolith_branch: branch.trim() },
       }),
     onSuccess: async (project) => {
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
@@ -82,9 +83,14 @@ function NewProject({ onDone }: { onDone: () => void }) {
           <input className={input} value={target} onChange={(e) => setTarget(e.target.value)} />
         </Field>
       </div>
-      <Field label="Monolith repository" hint="Git URL or local path; can be set later in the project's settings">
-        <input className={input} value={repo} onChange={(e) => setRepo(e.target.value)} />
-      </Field>
+      <div className="grid gap-4 sm:grid-cols-[1fr_16rem]">
+        <Field label="Monolith repository" hint="Git URL or local path; can be set later in the project's settings">
+          <input className={input} value={repo} onChange={(e) => setRepo(e.target.value)} />
+        </Field>
+        <Field label="Base branch" hint="Empty: the repository's default branch">
+          <input className={input} placeholder="e.g. main" value={branch} disabled={!repo.trim()} onChange={(e) => setBranch(e.target.value)} />
+        </Field>
+      </div>
       {create.error && <p className="text-sm text-bad">{(create.error as Error).message}</p>}
       <div className="flex gap-2">
         <button type="submit" disabled={!name.trim() || projectKey.length < 2 || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">

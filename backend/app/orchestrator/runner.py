@@ -112,8 +112,10 @@ class Runner:
                 domain, operation, workspace, branch = run.domain, run.operation, run.workspace, run.branch
                 projects.set_current(run.project)  # this worker thread now works for the run's project
             if initial:
-                emit(run_id, "status", "Preparing workspace")
-                base_sha = git_ops.init_workspace(Path(workspace), get_setting("monolith_repo") or None, branch)
+                source_branch = get_setting("monolith_branch") or None
+                emit(run_id, "status", f"Preparing workspace{f' from branch {source_branch}' if source_branch else ''}")
+                base_sha = git_ops.init_workspace(Path(workspace), get_setting("monolith_repo") or None, branch,
+                                                  source_branch=source_branch)
                 with session_scope() as s:
                     s.get(Run, run_id).base_sha = base_sha
                 inp = {"run_id": run_id, "domain": domain, "operation": operation, "workspace": workspace,
