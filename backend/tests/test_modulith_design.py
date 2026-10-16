@@ -203,9 +203,26 @@ def test_linked_domain_contracts_agent_is_added_to_an_existing_library_once(clie
     assert agent_store.exists("linked_domain_contracts")
 
 
-def test_the_wrapper_agent_stays_in_the_library_but_is_not_in_the_standard_workflow(client):
-    agent = client.get("/api/agents/wrapper_design").json()
-    assert agent["builtin"] and "Replaced in the Standard migration workflow" in agent["description"]
+def test_superseded_agents_are_kept_but_hidden_from_the_agent_list(client):
+    listed = {a["key"] for a in client.get("/api/agents").json()}
+    assert not {"boundary_design", "wrapper_design"} & listed
+    for key in ("boundary_design", "wrapper_design"):  # still in the library: reachable by key, with their defaults
+        agent = client.get(f"/api/agents/{key}").json()
+        assert agent["builtin"] and "Replaced in the Standard migration workflow" in agent["description"]
+        assert agent["instructions"] == default_config(key)["instructions"]
+    assert {"boundary_design", "wrapper_design"} <= set(agent_store.titles())  # workflows can still resolve them
+    assert {"boundary_design", "wrapper_design"} <= {a["key"] for a in agent_store.list_all(include_hidden=True)}
+    assert "wrapper_design" not in _steps(client)  # and the Standard workflow does not use them
+
+
+def test_a_hidden_agent_reappears_while_a_workflow_uses_it(client):
+    key = f"wrapper-wf-{next(_ids)}"
+    r = client.post("/api/workflows", json={"key": key, "name": "Uses the wrapper",
+                                            "steps": [{"kind": "agent", "key": "wrapper_design"}]})
+    assert r.status_code == 201, r.text  # hidden agents can still be used in a workflow
+    assert "wrapper_design" in {a["key"] for a in client.get("/api/agents").json()}
+    assert client.delete(f"/api/workflows/{key}").status_code == 204
+    assert "wrapper_design" not in {a["key"] for a in client.get("/api/agents").json()}
 
 
 def test_untouched_modulith_agents_pick_up_the_new_instructions(client):

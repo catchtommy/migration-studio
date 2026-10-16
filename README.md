@@ -41,8 +41,9 @@ adds what they don't cover: events, sagas and read models.
 
 The *Module in monolith* agent implements the designs: the module, the orchestrator and its `local` and `contract`
 adapters, and the monolith bindings (marked temporary). The earlier *Modular monolith design* (`boundary_design`) and
-*Modulith design: Wrapper* (`wrapper_design`) agents stay in the library for custom workflows but are no longer part
-of the Standard migration workflow.
+*Modulith design: Wrapper* (`wrapper_design`) agents are no longer part of the Standard migration workflow. They stay
+in the code and the database but are hidden from the Agents page and the workflow editor, and reappear while a
+workflow uses them.
 
 ## Run it
 

@@ -12,9 +12,9 @@ from sqlalchemy import inspect, select, text
 
 from app.agents.defaults import AUTO, CLAUDE_MODELS, DOCS, default_config
 from app import projects
-from app.db.models import GLOBAL, SHARED, Agent, Setting
+from app.db.models import GLOBAL, SHARED, Agent, Setting, WorkflowDef
 from app.db.session import get_engine, session_scope
-from app.orchestrator.stages import BUILTIN_STAGES
+from app.orchestrator.stages import BUILTIN_STAGES, SUPERSEDED
 
 FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instructions", "tools", "outputs", "max_turns",
           "checks")
@@ -22,8 +22,8 @@ FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instruction
 LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
                   "_added_linked_domain_contracts": ["linked_domain_contracts"],
                   "_added_discovery_agents": ["bounded_contexts", "domain_features"],
-                  "_added_modulith_design_agents": ["domain_dependencies", "domain_design", "wrapper_design",
-                                                    "orchestrator_design"]}
+                  "_added_modulith_design_agents": ["domain_dependencies", "domain_design",
+                                                    "wrapper_design", "orchestrator_design"]}
 
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
@@ -34,7 +34,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                               "d2fc147964a2e477c07072900e92b7356898e7613f3274d96dfab97576ec8476"},
     "domain_design": {"183bbce289171e4d9b20d7d1506417c2aaf10d85c76f278ae91f80e1cadb6405",
                               "45ad59b8a91325d3caa86f53505051bda11071e52282340470b7eef5fa0649eb"},
-    "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a"},
+    "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
+                       "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
     "orchestrator_design": {"8ee1b3ec61e2994c53791f681523bed3f44c8861ae4576a7cd6c01a9b509bfe7",
                               "b1175e5e93c69bb615256ce4684be01648dd7736bee4955052bbca5be914d9dc"},
     "integration_design": {"22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
@@ -48,6 +49,10 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "monolith_integration": {"08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
 }
 UPGRADE_MARKER = "_upgraded_builtin_defaults_v5"
+# Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
+# working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
+# editor unless a workflow uses them.
+HIDDEN = tuple(stage.key for stage in SUPERSEDED)
 BUILTIN = tuple(BUILTIN_STAGES)
 
 
@@ -155,8 +160,9 @@ def _effective(s, key: str, project: str | None) -> Agent | None:
     return (s.get(Agent, (project, key)) if project else None) or s.get(Agent, (SHARED, key))
 
 
-def list_all(project: str | None = None) -> list[dict[str, Any]]:
-    """The agents a project uses: shared ones, replaced by the project's copies, plus its own."""
+def list_all(project: str | None = None, include_hidden: bool = False) -> list[dict[str, Any]]:
+    """The agents a project uses: shared ones, replaced by the project's copies, plus its own. Superseded built-ins
+    (HIDDEN) are left out unless a workflow still uses them or `include_hidden` is set."""
     project = _project(project)
     with session_scope() as s:
         rows = {r.key: r for r in s.scalars(select(Agent).where(Agent.project == SHARED))}
@@ -164,6 +170,10 @@ def list_all(project: str | None = None) -> list[dict[str, Any]]:
         if project:
             for r in s.scalars(select(Agent).where(Agent.project == project)):
                 rows[r.key] = r
+        if not include_hidden:
+            used = {step["key"] for w in s.scalars(select(WorkflowDef)) for step in w.steps
+                    if step.get("kind") == "agent"}
+            rows = {k: r for k, r in rows.items() if k not in HIDDEN or k in used}
         order = {k: i for i, k in enumerate(BUILTIN)}
         ordered = sorted(rows.values(), key=lambda r: (order.get(r.key, len(order)), r.created_at))
         return [_as_dict(r, customised=r.project != SHARED and r.key in shared) for r in ordered]
@@ -185,7 +195,7 @@ def exists(key: str, project: str | None = None) -> bool:
 
 def titles(project: str | None = None) -> dict[str, tuple[str, str]]:
     """key -> (title, description) for every agent the project uses."""
-    return {a["key"]: (a["title"], a["description"]) for a in list_all(project)}
+    return {a["key"]: (a["title"], a["description"]) for a in list_all(project, include_hidden=True)}
 
 
 def _target(scope: str) -> str:

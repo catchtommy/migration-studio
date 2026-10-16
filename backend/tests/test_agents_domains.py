@@ -22,8 +22,7 @@ def test_builtin_agents_are_editable_and_resettable(client):
     assert [a["key"] for a in agents if a["builtin"]] == [
         "bounded_contexts", "domain_features", "as_is_doc", "deep_dive", "domain_dependencies",
         "linked_domain_contracts", "domain_design", "orchestrator_design", "integration_design", "modular_monolith",
-        "microservice_scaffold", "independent_tests", "modernise", "monolith_integration", "boundary_design",
-        "wrapper_design"]
+        "microservice_scaffold", "independent_tests", "modernise", "monolith_integration"]  # superseded built-ins are hidden
 
     body = {**builtin_default("deep_dive"), "instructions": "Focus on the batch jobs.", "outputs": ["notes.md"]}
     r = client.put("/api/agents/deep_dive", json=body)
