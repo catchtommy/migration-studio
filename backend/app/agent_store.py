@@ -31,13 +31,17 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "boundary_design": {"54005c5822e8c7380780ed9bd94127f80e83e35d8733616754436a17334070b5"},
     "deep_dive": {"9a50019f34790f8b4de82b88a85d7d0b5c7d877100d052ad2886fd66252dc4a3"},
     "domain_dependencies": {"e414b29584fc2df4dfd5d5a4bf1b67f2202e015b1bdbc9e992f937e41a7d51cd",
-                              "d2fc147964a2e477c07072900e92b7356898e7613f3274d96dfab97576ec8476"},
+                              "d2fc147964a2e477c07072900e92b7356898e7613f3274d96dfab97576ec8476",
+                            "6909abd6a1c273ef64d44d286532f0171c7c92c3d0cd78939ce8db8610c33d25"},
     "domain_design": {"183bbce289171e4d9b20d7d1506417c2aaf10d85c76f278ae91f80e1cadb6405",
-                              "45ad59b8a91325d3caa86f53505051bda11071e52282340470b7eef5fa0649eb"},
+                              "45ad59b8a91325d3caa86f53505051bda11071e52282340470b7eef5fa0649eb",
+                      "142d8a42236f9e844bcd3445647e9f34787655dece2bc6ccc0b05ec30862e3c8"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
     "orchestrator_design": {"8ee1b3ec61e2994c53791f681523bed3f44c8861ae4576a7cd6c01a9b509bfe7",
-                              "b1175e5e93c69bb615256ce4684be01648dd7736bee4955052bbca5be914d9dc"},
+                              "b1175e5e93c69bb615256ce4684be01648dd7736bee4955052bbca5be914d9dc",
+                            "f9e96fafed18fe73fe6e62b9d75184fe99b3c6bdf802d190fed21afb42c35542"},
+    "linked_domain_contracts": {"5ef353e2455182ccc268bfd59999b18449c873a8bb41be559aee177df7c6d941"},
     "integration_design": {"22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
                               "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5"},
     "independent_tests": {"d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
@@ -45,10 +49,11 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "modernise": {"a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457"},
     "modular_monolith": {"07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee",
                          "a2faa355ff82f2ded46ea8c43c9f551c16ff2e09a9f5ae0af29931bfac559025",
-                              "31d5f8f0bbaa53df1978c04257e99924dade1b2b41f230a985b8bd08830d9adc"},
+                              "31d5f8f0bbaa53df1978c04257e99924dade1b2b41f230a985b8bd08830d9adc",
+                         "9bf4007e9337fafdab89a901c912245fcd3d44a29989b7732603c7fcada2129b"},
     "monolith_integration": {"08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
 }
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v5"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v6"
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.

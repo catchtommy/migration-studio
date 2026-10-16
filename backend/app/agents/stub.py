@@ -107,6 +107,21 @@ dependencies:
 considered_unrelated: []
 shared_code: []
 """
+    if "domain-design.yaml" in outputs:
+        owned = (ctx.ownership.get(ctx.domain) or {}).get("tables") or []
+        files["domain-design.yaml"] = f"""# [stub] sample guardrail declaration
+domain: {ctx.domain}
+feature: {ctx.operation}
+owned_tables: [{', '.join(owned)}]
+read_only_tables: []
+utility_modules: []
+other_domain_dependencies: [{query}]
+schema_changes: []
+ui_changes: []
+stack_changes: []
+god_module_dependencies: []
+exceptions: []
+"""
     if "linked-domain-contracts.yaml" in outputs:
         files["linked-domain-contracts.yaml"] = f"""# [stub] sample linked-domain contracts
 feature: {ctx.operation}

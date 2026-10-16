@@ -30,6 +30,11 @@ DEPENDENCY_STRENGTHS = ("hard", "soft", "side-effect")
 TOUCHPOINT_KINDS = ("service", "dao", "table", "view", "config", "event")
 MODULITH_SCOPES = ("domain-only", "cross-domain")
 LINKED_CONTRACTS_FILE = "linked-domain-contracts.yaml"  # written by the linked-domain contracts step
+DOMAIN_DESIGN_FILE = "domain-design.yaml"  # the domain design's declaration against the guardrails
+# Lists in domain-design.yaml that must stay empty unless the user approved an exception for that rule.
+DOMAIN_DESIGN_LOCKED = {"schema_changes": "the schema is fixed", "ui_changes": "the UI is fixed",
+                        "stack_changes": "the stack is fixed",
+                        "god_module_dependencies": "the domain must not depend on a God module"}
 # Statuses that record real progress; re-approving a design must not move a contract back from these.
 _LIVE = ("provided-by-monolith", "provided-by-service", "deprecated")
 
@@ -113,6 +118,13 @@ def load_domain_dependencies(text: str) -> dict:
             raise InvalidDocument(f"{where}: {item['domain']} is listed twice with the same relation and direction; "
                                   "merge the touchpoints")
         seen.add(key)
+    for field in ("shared_code", "god_modules"):
+        if data.get(field) is not None and not isinstance(data[field], list):
+            raise InvalidDocument(f"{DOMAIN_DEPENDENCIES_FILE}: {field} must be a list")
+    both = set(data.get("shared_code") or []) & set(data.get("god_modules") or [])
+    if both:
+        raise InvalidDocument(f"{DOMAIN_DEPENDENCIES_FILE}: {', '.join(sorted(both))} is listed as both shared_code "
+                              "(a utility) and god_modules; it is one or the other")
     decision = data.get("decision")
     where = f"{DOMAIN_DEPENDENCIES_FILE} decision"
     if not isinstance(decision, dict):
@@ -182,6 +194,78 @@ def _linked_contracts_problems(output_dir: Path, contracts: list[dict]) -> list[
     return problems
 
 
+def parse_domain_design(text: str) -> dict:
+    """The domain design's guardrail declaration. The locked lists must be empty, unless an exception for that rule
+    was recorded."""
+    data = _load(text, DOMAIN_DESIGN_FILE)
+    where = DOMAIN_DESIGN_FILE
+    _require(data, ("domain",), where)
+    lists = ("owned_tables", "read_only_tables", "utility_modules", "other_domain_dependencies", *DOMAIN_DESIGN_LOCKED)
+    for field in lists:
+        if data.get(field) is None:
+            raise InvalidDocument(f"{where}: missing {field} (write {field}: [] when there is none)")
+        if not isinstance(data[field], list):
+            raise InvalidDocument(f"{where}: {field} must be a list")
+    exceptions = data.get("exceptions") or []
+    if not isinstance(exceptions, list):
+        raise InvalidDocument(f"{where}: exceptions must be a list")
+    for i, e in enumerate(exceptions, 1):
+        if not isinstance(e, dict):
+            raise InvalidDocument(f"{where} exception {i} must be a mapping")
+        _require(e, ("rule", "reason"), f"{where} exception {i}")
+        _one_of(e["rule"], tuple(DOMAIN_DESIGN_LOCKED), f"{where} exception {i}")
+    excused = {e["rule"] for e in exceptions}
+    for field, why in DOMAIN_DESIGN_LOCKED.items():
+        if data[field] and field not in excused:
+            raise InvalidDocument(
+                f"{where}: {field} must be empty ({why}); found {', '.join(map(str, data[field]))}. Remove them, or "
+                f"ask the user and record the approved exception for {field} under exceptions")
+    overlap = {t.upper() for t in data["owned_tables"]} & {t.upper() for t in data["read_only_tables"]}
+    if overlap:
+        raise InvalidDocument(f"{where}: {', '.join(sorted(overlap))} is in both owned_tables and read_only_tables")
+    return data
+
+
+def _domain_design_problems(output_dir: Path, design: dict) -> list[str]:
+    """Check the declaration against the contracts and the dependency finder's decision next to it: the domain may
+    depend on other domains only through linked-domain contracts."""
+    named = [str(d) for d in design["other_domain_dependencies"]]
+    linked = output_dir / LINKED_CONTRACTS_FILE
+    if linked.is_file():
+        try:
+            keys = {c["key"] for c in parse_linked_domain_contracts(linked.read_text())}
+        except InvalidDocument:
+            return []  # reported for that file itself
+        return [f"{DOMAIN_DESIGN_FILE}: other_domain_dependencies names {d}, which is not a contract in "
+                f"{LINKED_CONTRACTS_FILE}; a domain depends on another only through a contract" for d in named
+                if d not in keys]
+    deps = output_dir / DOMAIN_DEPENDENCIES_FILE
+    if named and deps.is_file():
+        try:
+            if load_domain_dependencies(deps.read_text())["decision"]["scope"] == "domain-only":
+                return [f"{DOMAIN_DESIGN_FILE}: other_domain_dependencies must be empty: {DOMAIN_DEPENDENCIES_FILE} "
+                        "decides this feature is domain-only"]
+        except InvalidDocument:
+            return []
+    return []
+
+
+def domain_design_ownership_problems(output_dir: Path, domain: str, ownership: dict[str, dict]) -> list[str]:
+    """Tables the domain design claims, owned or read, that another domain owns. Empty when the file is absent or
+    invalid (that is reported by validate_outputs)."""
+    f = output_dir / DOMAIN_DESIGN_FILE
+    if not f.is_file():
+        return []
+    try:
+        design = parse_domain_design(f.read_text())
+    except InvalidDocument:
+        return []
+    owners = {t.upper(): other for other, o in ownership.items() if other != domain for t in o.get("tables") or []}
+    return [f"{DOMAIN_DESIGN_FILE}: table {t} is owned by domain {owners[t.upper()]}; this domain may only reach it "
+            "through a contract, never own or read it directly"
+            for t in [*design["owned_tables"], *design["read_only_tables"]] if t.upper() in owners]
+
+
 def parse_decisions(text: str, known: frozenset[str] | set[str] = frozenset()) -> dict:
     """`known`: contract keys defined elsewhere in the run (the linked-domain contracts), usable without listing."""
     data = _load(text, DECISIONS_FILE)
@@ -227,6 +311,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
     linked: list[dict] = []
     for name, parse in ((CROSS_DOMAIN_FILE, parse_cross_domain), (DOMAIN_DEPENDENCIES_FILE, parse_domain_dependencies),
                         (LINKED_CONTRACTS_FILE, parse_linked_domain_contracts),
+                        (DOMAIN_DESIGN_FILE, parse_domain_design),
                         (DECISIONS_FILE, lambda text: parse_decisions(text, {c["key"] for c in linked}))):
         f = output_dir / name
         if not f.is_file():
@@ -241,6 +326,8 @@ def validate_outputs(output_dir: Path) -> list[str]:
             problems += _linked_contracts_problems(output_dir, parsed)
             problems += [f"{LINKED_CONTRACTS_FILE}: spec file {c['spec']} for contract {c['key']} does not exist"
                          for c in parsed if c.get("spec") and not (output_dir / c["spec"]).is_file()]
+        if name == DOMAIN_DESIGN_FILE:
+            problems += _domain_design_problems(output_dir, parsed)
         if name == DECISIONS_FILE:
             for c in parsed["contracts"]:
                 if c.get("spec") and not (output_dir / c["spec"]).is_file():

@@ -16,7 +16,7 @@ integration design.
 | --- | --- | --- |
 | **Cross-domain dependency finder** | For this one feature, finds exactly which other domains it is related to: which service, DAO or table of each, in which direction, how strongly, with code references. Also lists the domains it ruled out. | `domain-dependencies.md`, `domain-dependencies.yaml` |
 | **Modulith design: Linked-domain contracts** | Consumer-first: defines what this feature needs from each linked domain as a contract (API, event or command), reusing contracts already in the catalogue. For each, it states what the feature relies on and the **temporary monolith binding** that provides it until the domain is migrated (the existing `Class#method` it delegates to, and when to remove it). | `linked-domain-contracts.md`, `linked-domain-contracts.yaml`, specs under `contracts/` |
-| **Modulith design: Domain** | Designs the feature's domain inside the monolith: packages, public API, owned tables, and the ports it needs, each naming the contract it calls. Same technical stack, no database change, no UI change. | `domain-design.md`, `openapi.yaml` |
+| **Modulith design: Domain** | Designs the feature's domain inside the monolith: packages, public API, owned tables, and the ports it needs, each naming the contract it calls. Same technical stack, no database change, no UI change. | `domain-design.md`, `domain-design.yaml`, `openapi.yaml` |
 | **Modulith design: Orchestrator** | Looks up the dependencies, the contracts and the domain design, and designs how the feature works as is while other domains are not ready (`local` mode: the existing service) and how it moves to the contracts (`contract` mode: served by the monolith binding now, by the domain's own service later), per dependency, by configuration. | `orchestrator-design.md` |
 
 **Scope decision.** The dependency finder also records a decision in `domain-dependencies.yaml`: `domain-only` (the
@@ -41,6 +41,16 @@ adds what they don't cover: events, sagas and read models.
 
 The *Module in monolith* agent implements the designs: the module, the orchestrator and its `local` and `contract`
 adapters, and the monolith bindings (marked temporary). The earlier *Modular monolith design* (`boundary_design`) and
+**Guardrails.** The Modulith design agents act as a DDD architect and share one fixed set of rules: no UI change, no
+database schema change (no DDL; contexts are carved by *who writes which tables* and by business capability, one
+owning domain per table) and no stack change (Java 8, Spring MVC 3, iBatis). The domain may use **utility modules**
+only (stateless helpers with no business rules, database access or domain knowledge) and must never depend on a **God
+module**; the dependency finder classifies shared code as `shared_code` (utility) or `god_modules`. Domains depend on
+each other only through linked-domain contracts. The domain design also writes `domain-design.yaml`, which is
+checked before the agent can finish: `schema_changes`, `ui_changes`, `stack_changes` and `god_module_dependencies`
+must be empty unless the user approved an exception, no table may be owned or read directly if another domain owns
+it, and `other_domain_dependencies` may only name contracts. The Module in monolith agent treats it as hard limits.
+
 *Modulith design: Wrapper* (`wrapper_design`) agents are no longer part of the Standard migration workflow. They stay
 in the code and the database but are hidden from the Agents page and the workflow editor, and reappear while a
 workflow uses them.

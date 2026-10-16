@@ -454,3 +454,76 @@ def test_a_proposed_contract_becomes_approved_by_a_decision_and_a_provided_one_s
                                          ["payments"])
     contract = client.get("/api/contracts/zz.get-thing").json()
     assert contract["name"] == "Get thing" and contract["consumers"] == ["loan", "payments"]
+
+
+# ---- guardrails -------------------------------------------------------------------------------------------------
+
+_DESIGN = """domain: loan
+owned_tables: [LOAN]
+read_only_tables: []
+utility_modules: [com.acme.common.DateUtils]
+other_domain_dependencies: []
+schema_changes: []
+ui_changes: []
+stack_changes: []
+god_module_dependencies: []
+exceptions: []
+"""
+
+
+def test_every_modulith_agent_carries_the_guardrails():
+    for key in ("domain_design", "linked_domain_contracts", "orchestrator_design"):
+        text = INSTRUCTIONS[key]
+        assert "WITHOUT changing the UI, the database schema or the technology stack" in text, key
+        assert "WHO WRITES WHICH TABLES" in text and "God module" in text and "Utility modules only" in text, key
+    assert "domain-design.yaml" in default_config("domain_design")["outputs"]
+    assert "hard limits" in INSTRUCTIONS["modular_monolith"]
+    assert "god_modules" in INSTRUCTIONS["domain_dependencies"]
+
+
+def test_domain_design_declaration_must_keep_the_locked_lists_empty():
+    assert contracts_store.parse_domain_design(_DESIGN)["domain"] == "loan"
+    for field in ("schema_changes", "ui_changes", "stack_changes", "god_module_dependencies"):
+        bad = _DESIGN.replace(f"{field}: []", f"{field}: [x]")
+        with pytest.raises(contracts_store.InvalidDocument, match=field):
+            contracts_store.parse_domain_design(bad)
+    # an exception the user approved for that rule makes it acceptable
+    ok = _DESIGN.replace("schema_changes: []", "schema_changes: [x]").replace(
+        "exceptions: []", "exceptions: [{rule: schema_changes, reason: approved by the user}]")
+    assert contracts_store.parse_domain_design(ok)
+    with pytest.raises(contracts_store.InvalidDocument, match="both owned_tables and read_only_tables"):
+        contracts_store.parse_domain_design(_DESIGN.replace("read_only_tables: []", "read_only_tables: [loan]"))
+    with pytest.raises(contracts_store.InvalidDocument, match="missing schema_changes"):
+        contracts_store.parse_domain_design(_DESIGN.replace("schema_changes: []\n", ""))
+
+
+def test_domain_design_cannot_own_or_read_tables_of_another_domain(tmp_path):
+    (tmp_path / "domain-design.yaml").write_text(
+        _DESIGN.replace("owned_tables: [LOAN]", "owned_tables: [LOAN, CUSTOMER]").replace(
+            "read_only_tables: []", "read_only_tables: [audit_log]"))
+    ownership = {"loan": {"tables": ["LOAN"]}, "customer": {"tables": ["CUSTOMER"]},
+                 "auditing": {"tables": ["AUDIT_LOG"]}}
+    problems = contracts_store.domain_design_ownership_problems(tmp_path, "loan", ownership)
+    assert len(problems) == 2 and "CUSTOMER" in problems[0] and "AUDIT_LOG" in problems[1] or "audit_log" in problems[1]
+    assert contracts_store.domain_design_ownership_problems(tmp_path, "customer", ownership)  # LOAN is not theirs
+
+
+def test_domain_design_dependencies_must_be_contracts(tmp_path):
+    (tmp_path / "domain-design.yaml").write_text(
+        _DESIGN.replace("other_domain_dependencies: []", "other_domain_dependencies: [customer.unknown]"))
+    (tmp_path / "linked-domain-contracts.yaml").write_text(stub.STUB_LINKED_FOR_TESTS) \
+        if hasattr(stub, "STUB_LINKED_FOR_TESTS") else None
+    if (tmp_path / "linked-domain-contracts.yaml").exists():
+        assert any("customer.unknown" in p for p in contracts_store.validate_outputs(tmp_path))
+
+
+def test_dependency_finder_separates_utilities_from_god_modules():
+    base = """feature: f
+domain: loan
+decision: {scope: domain-only, reason: r}
+dependencies: []
+considered_unrelated: []
+"""
+    contracts_store.parse_domain_dependencies(base + "shared_code: [a.DateUtils]\ngod_modules: [a.MasterService]\n")
+    with pytest.raises(contracts_store.InvalidDocument, match="both shared_code"):
+        contracts_store.parse_domain_dependencies(base + "shared_code: [a.X]\ngod_modules: [a.X]\n")

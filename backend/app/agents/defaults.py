@@ -112,7 +112,8 @@ dependencies:                       # empty when scope is domain-only
 considered_unrelated:               # domains you checked and ruled out, with the reason
   - domain: payment
     reason: Only appears in a comment
-shared_code: [com.acme.common.DateUtils]   # utilities used by several domains (not a domain dependency)
+shared_code: [com.acme.common.DateUtils]   # utility modules only: stateless helpers, no business rules
+god_modules: [com.acme.common.MasterService]   # mix several domains' logic: no domain may depend on them
 ```"""
 
 # Machine-readable result of the linked-domain contracts step: what this feature needs from each domain it depends
@@ -135,6 +136,59 @@ contracts:                          # at least one per outbound dependency in do
     binding:                        # TEMPORARY: how the monolith provides it while customer is not migrated
       delegates_to: ["com.acme.customer.CustomerService#getKycStatus"]
       remove_when: The customer service provides this contract
+```"""
+
+# Guardrails for the Modulith design agents (and the implementation that follows). Plain text, included as is.
+_MODULITH_GUARDRAILS = """You act as a DDD architect. You design the target modular monolith that the team can reach \
+WITHOUT changing the UI, the database schema or the technology stack. These guardrails are fixed: a design that \
+breaks one is rejected, not negotiated, and you may not grant yourself an exception.
+1. The schema is fixed. No DDL: never propose a new or changed table, column, index, view, sequence, trigger, \
+constraint or data type, and never propose moving data. Carve domains by WHO WRITES WHICH TABLES and by business \
+capability. Every table has exactly one owning domain, the one whose code writes it. Other domains read or change it \
+only through the owner's contract: no SQL, iBatis statement, join or view of this domain may touch a table another \
+domain owns. Where two domains write the same table, name the owner (the domain whose business rules decide the \
+table's state), treat the other writer as a consumer of the owner's contract, and raise it as an open decision. \
+Never settle it with a schema change.
+2. The UI is fixed. Same URLs, parameters, JSPs, forms, redirects and response shapes. Controllers only delegate to \
+the domain's public API.
+3. The stack is fixed. Java 8, Spring MVC 3 and iBatis. No new framework, library, build module or language feature \
+beyond Java 8.
+4. Utility modules only. The domain may use shared code only if it is a utility module: stateless helpers with no \
+business rules, no database access and no knowledge of any domain (date, string and number helpers, formatting, \
+constants, generic validation, logging). List each one you use and why it qualifies. Shared code that is not a \
+utility is not available to the domain.
+5. No dependency on God modules. A God module is a class or package that mixes several domains' business logic or \
+that most of the code reaches (a giant service, manager, facade, helper or DAO). The domain never imports, injects, \
+extends or configures one, directly or through a utility that wraps one. If the feature uses one today, split it: \
+the logic that belongs to this domain moves into the domain, with behaviour unchanged; the logic that belongs to \
+another domain is reached through a linked-domain contract. Name every God module you found and say how the \
+dependency is removed.
+6. Dependencies run one way and only through contracts. Between domains, only ports and adapters that call \
+linked-domain contracts: no direct class, bean, mapper or table reference to another domain, and no cycles.
+7. Public API only. The domain's internals are package-private; entities and iBatis result objects never leave the \
+domain.
+8. Behaviour is preserved and the scope is this feature. Move and wrap code; do not refactor beyond that, add \
+features, or redesign other features.
+9. Evidence over guesses. Every statement about the current code names its file and line; mark an assumption as an \
+assumption. When table ownership, a table's writer or a God module is unclear, ask the user.
+10. Exceptions only with the user. If the feature cannot meet a rule, stop and ask the user. Record the answer under \
+`exceptions` with the rule and the reason, so that the reviewer sees it at the design gate."""
+
+# Machine-readable guardrail declaration of the domain design. Validated before the agent finishes: the lists that
+# must stay empty are checked, and tables and dependencies are checked against domain ownership and the contracts.
+DOMAIN_DESIGN_SCHEMA = """```yaml
+# domain-design.yaml: the domain's declaration against the guardrails
+domain: loan
+feature: create-loan
+owned_tables: [LOAN, LOAN_SCHEDULE]   # tables this domain WRITES: one owner per table, none owned by another domain
+read_only_tables: [LOAN_TYPE]         # this domain's own tables that its code only reads
+utility_modules: [com.acme.common.DateUtils]   # shared code used: stateless helpers only
+other_domain_dependencies: [customer.get-kyc-status]   # only contract keys from linked-domain-contracts.yaml
+schema_changes: []                    # must stay empty: no new or changed table, column, index, view, trigger
+ui_changes: []                        # must stay empty: URLs, parameters, JSPs, response shapes
+stack_changes: []                     # must stay empty: no new framework or library
+god_module_dependencies: []           # must stay empty: no use of a God module
+exceptions: []                        # only what the user approved: {rule: schema_changes, reason: ...}
 ```"""
 
 _INTEGRATION_RULES = """Decision rules, in order:
@@ -202,9 +256,15 @@ writes. Name them exactly: `package.Class#method`, the SQL statement id, the tab
 - How strongly the feature depends on it: `hard` (fails without it), `soft` (degrades) or `side-effect` (nothing \
 needs the answer).
 
-Be specific: name domains by key, never "other modules"; give a file and line for every touchpoint; put code that \
-belongs to no single domain under `shared_code`, not as a dependency. List the domains you checked and ruled out \
-under `considered_unrelated`, so nobody has to check them again.
+Be specific: name domains by key, never "other modules"; give a file and line for every touchpoint. Code that \
+belongs to no single domain is not a dependency, but classify it:
+- `shared_code`: utility modules only, meaning stateless helpers with no business rules, no database access and no \
+knowledge of any domain (date, string and number helpers, formatting, constants, generic validation).
+- `god_modules`: classes or packages that mix several domains' business logic, or that most of the code reaches (a \
+giant service, manager, facade, helper or DAO). Say in `domain-dependencies.md` where this feature uses one (file \
+and line) and which part of it belongs to which domain. The new domain must not depend on a God module, so the \
+later steps use this to split it.
+List the domains you checked and ruled out under `considered_unrelated`, so nobody has to check them again.
 
 Then record the scope decision under `decision`:
 - `domain-only`: the feature has no outbound dependency on another domain. It uses only its own domain's code and \
@@ -230,6 +290,13 @@ Ask the user when it is unclear which domain owns a class or table.""",
 on. A contract states what the feature needs from a linked domain, so that the domain can provide it from the \
 monolith today and from its own service later. The contract is the lasting result; how the monolith provides it \
 today is temporary. {_LEGACY}
+
+{_MODULITH_GUARDRAILS}
+
+For contracts the guardrails mean: a contract never exposes the shape of a God module or of the database schema, \
+needs no schema change to be provided, and its temporary binding delegates to a method of the linked domain's own \
+service, not to a God module. If the only implementation of a capability lives inside a God module, say so and ask \
+the user how it should be split.
 
 Read `domain-dependencies.yaml` (the dependency finder's result), the deep dive and the contracts catalogue you are \
 given. Work from the consumer's side: ask what this feature needs, not what the other domain's classes happen to \
@@ -267,6 +334,8 @@ a capability.""",
     "domain_design": f"""You design the domain that will own this feature, inside the monolith. This is design only: \
 the domain stays in the monolith, on the same technical stack, with the same database and the same UI. {_LEGACY}
 
+{_MODULITH_GUARDRAILS}
+
 Using the AS-IS document, the deep dive, the dependency finder's `domain-dependencies.yaml` and the \
 linked-domain contracts in `linked-domain-contracts.yaml`, write `domain-design.md` covering:
 - The domain: its key, what it is responsible for and what it is not, and the feature's place in it. If the domain \
@@ -275,9 +344,9 @@ already has features, show how this one fits next to them.
 existing classes, iBatis mappings and Spring XML move or are re-homed into it. Say what stays where it is.
 - The public API of the domain: Java interfaces and DTOs, with the behaviour and errors of each method. Callers \
 outside the domain use only this API.
-- Data: the tables the domain owns, unchanged, in the same schema, with the same iBatis statements. No DDL, no \
-column changes, no new tables. A table owned by another domain is never accessed directly; the domain reaches it \
-through a port.
+- Data: the tables the domain owns, meaning the tables its code writes, each with the iBatis statements that write \
+it; and the tables it only reads. All unchanged, in the same schema. A table another domain owns is never accessed \
+directly; the domain reaches it through a port.
 - Ports: one interface per outbound dependency in `domain-dependencies.yaml`, named after what it does (for \
 example CustomerDirectory), with the methods this feature needs and, for each method, the contract key from \
 `linked-domain-contracts.yaml` it calls. Only the interfaces are designed here; the orchestrator design decides \
@@ -286,10 +355,21 @@ orchestrator steps are skipped.
 - UI: controllers, URLs, parameters and JSPs stay exactly as they are; show how each controller delegates to the \
 public API.
 - Stack: Java 8, Spring MVC 3, iBatis. No new frameworks or libraries.
+- Utility modules: each shared utility the domain uses, and why it is one.
+- God modules: each God module the dependency finder found that the feature uses today, and how the dependency is \
+removed: what moves into this domain and what is reached through a contract.
+- Guardrail check: a table of every guardrail above with its status (met, or exception) and the evidence.
 - Risks and open decisions for the reviewer.
 
 Also write `openapi.yaml`: the REST contract of this feature's public API as an OpenAPI 3.1 document (paths, \
 schemas, error responses), faithful to current behaviour. The microservice stage implements it later.
+
+Also write `domain-design.yaml`, the machine-checked declaration of the guardrails, in this format:
+
+{DOMAIN_DESIGN_SCHEMA}
+
+Before you may finish, the four lists that must stay empty are checked; no table may be owned by another domain; \
+and `other_domain_dependencies` may only name contract keys from `linked-domain-contracts.yaml`.
 
 Ask the user about ownership decisions you cannot settle from the code.""",
 
@@ -321,6 +401,13 @@ Ask the user when a service's behaviour cannot be exposed as it is, for example 
     "orchestrator_design": f"""You design how this feature keeps working exactly as it does today while the other \
 domains it depends on are not ready, and how it moves to their real services later. The result is an \
 orchestrator inside the monolith. {_LEGACY}
+
+{_MODULITH_GUARDRAILS}
+
+For the orchestrator the guardrails mean: the domain's core and the orchestrator never reference legacy classes of \
+other domains or God modules. Only the `local` adapters touch legacy code, one method each, the ones named in the \
+contracts' bindings. They sit in `<domain>.integration.adapter`, are marked temporary, and are the only place where \
+the domain meets legacy code. A transaction, session or request object from legacy code never crosses a port.
 
 Read the dependency finder's `domain-dependencies.yaml`, the linked-domain contracts in \
 `linked-domain-contracts.yaml` and the domain design (its ports). For each dependency decide:
@@ -408,6 +495,9 @@ dependency, defaulting to `local`.
 by delegating to the existing service named in `binding.delegates_to`. Keep the bindings together in a `binding` \
 package and mark each one as temporary, with its `remove_when`. They only delegate; do not change the other \
 domains' logic or tables.
+- Treat `domain-design.yaml` as hard limits: no schema change (no DDL, and no iBatis statement against a table the \
+domain does not own), no UI change, no new library, no use of a God module, and no shared code beyond the listed \
+utility modules. If the code cannot be written within them, stop and ask the user instead of working around them.
 - Keep the code Java 8 / Spring 3 / iBatis compatible. Do not change behaviour.
 - Build with the project's build tool and fix compilation errors before finishing.
 
@@ -510,7 +600,7 @@ OUTPUTS = {
     "as_is_doc": ["as-is.md"],
     "deep_dive": ["deep-dive.md", "test-scenarios.md", "cross-domain.yaml"],
     "domain_dependencies": ["domain-dependencies.md", "domain-dependencies.yaml"],
-    "domain_design": ["domain-design.md", "openapi.yaml"],
+    "domain_design": ["domain-design.md", "domain-design.yaml", "openapi.yaml"],
     "linked_domain_contracts": ["linked-domain-contracts.md", "linked-domain-contracts.yaml"],
     "wrapper_design": ["wrapper-design.md", "wrapper-api.yaml"],
     "orchestrator_design": ["orchestrator-design.md"],

@@ -156,6 +156,7 @@ def verify(ctx: AgentContext) -> list[str]:
     problems = [f"Required document `{out_dir}/{o}` has not been written yet."
                 for o in ctx.config["outputs"] if not (ctx.output_dir / o).is_file()]
     problems += contracts_store.validate_outputs(ctx.output_dir)
+    problems += contracts_store.domain_design_ownership_problems(ctx.output_dir, ctx.domain, ctx.ownership)
     problems += discovery_store.validate_outputs(ctx.output_dir)
     if "boundary" in (ctx.config.get("checks") or []):
         problems += [f"Boundary: {v}" for v in boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir,
