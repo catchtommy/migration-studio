@@ -1,5 +1,5 @@
-"""The Modulith design flow: a per-feature cross-domain dependency finder, then domain, wrapper and orchestrator
-design agents, in the Standard migration workflow."""
+"""The Modulith design flow: a per-feature cross-domain dependency finder, then linked-domain contracts, domain and
+orchestrator design agents, in the Standard migration workflow."""
 
 import itertools
 from pathlib import Path
@@ -16,7 +16,7 @@ from tests.conftest import start_run, wait_for
 from tests.test_cross_domain import _approve, _steps_of_shape
 
 _ids = itertools.count()
-MODULITH = ["domain_dependencies", "domain_design", "wrapper_design", "orchestrator_design"]
+MODULITH = ["domain_dependencies", "linked_domain_contracts", "domain_design", "orchestrator_design"]
 
 
 def _steps(client):
@@ -34,9 +34,11 @@ def test_standard_workflow_replaces_modulith_design_with_the_sub_flow(client):
 def test_each_modulith_step_reads_only_what_it_builds_on(client):
     steps = _steps(client)
     assert steps["domain_dependencies"]["uses"] == ["as_is_doc", "deep_dive"]
-    assert steps["domain_design"]["uses"] == ["as_is_doc", "deep_dive", "domain_dependencies"]
-    assert steps["wrapper_design"]["uses"] == ["deep_dive", "domain_dependencies", "domain_design"]
-    assert steps["orchestrator_design"]["uses"] == ["domain_dependencies", "domain_design", "wrapper_design"]
+    assert steps["linked_domain_contracts"]["uses"] == ["deep_dive", "domain_dependencies"]
+    assert steps["domain_design"]["uses"] == ["as_is_doc", "deep_dive", "domain_dependencies",
+                                              "linked_domain_contracts"]
+    assert steps["orchestrator_design"]["uses"] == ["domain_dependencies", "linked_domain_contracts", "domain_design"]
+    assert "wrapper_design" not in steps
 
 
 def test_modulith_agents_are_read_only_design_agents(client):
@@ -47,19 +49,23 @@ def test_modulith_agents_are_read_only_design_agents(client):
         assert agent["checks"] == []
     outputs = {k: client.get(f"/api/agents/{k}").json()["outputs"] for k in MODULITH}
     assert outputs["domain_dependencies"] == ["domain-dependencies.md", "domain-dependencies.yaml"]
-    assert outputs["wrapper_design"] == ["wrapper-design.md", "wrapper-api.yaml"]
+    assert outputs["linked_domain_contracts"] == ["linked-domain-contracts.md", "linked-domain-contracts.yaml"]
     assert outputs["orchestrator_design"] == ["orchestrator-design.md"]
 
 
 def test_instructions_carry_each_agents_focus():
     deps, domain = INSTRUCTIONS["domain_dependencies"], INSTRUCTIONS["domain_design"]
-    wrapper, orchestrator = INSTRUCTIONS["wrapper_design"], INSTRUCTIONS["orchestrator_design"]
+    contracts, orchestrator = INSTRUCTIONS["linked_domain_contracts"], INSTRUCTIONS["orchestrator_design"]
     assert "domain-dependencies.yaml" in deps and "considered_unrelated" in deps and "touchpoints" in deps
     assert "same database and the same UI" in domain and "No DDL" in domain
-    assert "/internal/api/v1/" in wrapper and "domain-dependencies.yaml" in wrapper
-    assert "`local` mode" in orchestrator and "`wrapper` mode" in orchestrator
-    assert all(k in INSTRUCTIONS["modular_monolith"] for k in ("orchestrator", "wrapper"))
+    assert "domain-dependencies.yaml" in contracts and "reuse" in contracts and "binding" in contracts
+    assert "temporary" in contracts and "linked-domain-contracts.yaml" in contracts
+    assert "`local` mode" in orchestrator and "`contract` mode" in orchestrator
+    assert "linked-domain-contracts.yaml" in domain  # ports name the contract they call
+    assert all(k in INSTRUCTIONS["modular_monolith"] for k in ("orchestrator", "binding", "linked-domain contracts"))
     assert "boundary design" not in INSTRUCTIONS["integration_design"]
+    assert "linked-domain" in INSTRUCTIONS["integration_design"]
+    assert "wrapper" not in orchestrator.lower() and "wrapper" not in deps.lower()
 
 
 # --- domain-dependencies.yaml --------------------------------------------------------------------------------------
@@ -150,7 +156,7 @@ def test_a_run_goes_through_the_sub_flow_and_leaves_the_documents_for_later_step
 
     # The orchestrator step is told about exactly the documents it builds on.
     orchestrator = client.get(f"/api/artifacts/{by_stage['orchestrator_design']['id']}").json()["content"]
-    for stage in ("domain_dependencies", "domain_design", "wrapper_design"):
+    for stage in ("domain_dependencies", "linked_domain_contracts", "domain_design"):
         assert f"{stage}.md`" in orchestrator
     assert "deep_dive.md`" not in orchestrator and "as_is_doc.md`" not in orchestrator
     ws = Path(run["workspace"])
@@ -160,13 +166,13 @@ def test_a_run_goes_through_the_sub_flow_and_leaves_the_documents_for_later_step
 # --- upgrades ------------------------------------------------------------------------------------------------------
 
 def test_standard_workflow_upgrade_from_the_previous_release(client):
-    previous = _steps_of_shape(workflow_store._STANDARD_V2)
+    previous = _steps_of_shape(workflow_store._STANDARD_V3)
     original = client.get("/api/workflows/standard").json()["steps"]
 
     def reset(steps):
         with session_scope() as s:
             s.get(WorkflowDef, (SHARED, "standard")).steps = steps
-            s.query(Setting).filter(Setting.key == "_standard_workflow_v3").delete()
+            s.query(Setting).filter(Setting.key == "_standard_workflow_v4").delete()
 
     reset(previous)
     workflow_store.seed()
@@ -175,40 +181,47 @@ def test_standard_workflow_upgrade_from_the_previous_release(client):
     customised = [st for st in previous if st["key"] != "modernise"]
     reset(customised)
     workflow_store.seed()
-    assert "domain_design" not in _steps(client)  # a customised workflow is left alone
+    assert "linked_domain_contracts" not in _steps(client)  # a customised workflow is left alone
     reset(original)
     workflow_store.seed()
 
 
-def test_modulith_agents_are_added_to_an_existing_library_once(client):
-    marker = "_added_modulith_design_agents"
+def test_linked_domain_contracts_agent_is_added_to_an_existing_library_once(client):
+    marker = "_added_linked_domain_contracts"
     with session_scope() as s:
         s.query(Setting).filter(Setting.key == marker).delete()
-        for key in MODULITH:
-            s.delete(s.get(Agent, (SHARED, key)))
+        s.delete(s.get(Agent, (SHARED, "linked_domain_contracts")))
     agent_store.seed()
-    assert all(agent_store.exists(k) for k in MODULITH)
+    assert agent_store.exists("linked_domain_contracts")
     with session_scope() as s:
-        s.delete(s.get(Agent, (SHARED, "wrapper_design")))
+        s.delete(s.get(Agent, (SHARED, "linked_domain_contracts")))
     agent_store.seed()  # marker present: a deliberately deleted built-in stays deleted
-    assert not agent_store.exists("wrapper_design")
+    assert not agent_store.exists("linked_domain_contracts")
     with session_scope() as s:
         s.query(Setting).filter(Setting.key == marker).delete()
     agent_store.seed()
-    assert agent_store.exists("wrapper_design")
+    assert agent_store.exists("linked_domain_contracts")
 
 
-def test_untouched_integration_and_module_agents_pick_up_the_new_instructions(client):
+def test_the_wrapper_agent_stays_in_the_library_but_is_not_in_the_standard_workflow(client):
+    agent = client.get("/api/agents/wrapper_design").json()
+    assert agent["builtin"] and "Replaced in the Standard migration workflow" in agent["description"]
+
+
+def test_untouched_modulith_agents_pick_up_the_new_instructions(client):
     import hashlib
 
-    previous = {"integration_design": "22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
-                "modular_monolith": "a2faa355ff82f2ded46ea8c43c9f551c16ff2e09a9f5ae0af29931bfac559025"}
+    previous = {"domain_dependencies": "d2fc147964a2e477c07072900e92b7356898e7613f3274d96dfab97576ec8476",
+                "domain_design": "45ad59b8a91325d3caa86f53505051bda11071e52282340470b7eef5fa0649eb",
+                "orchestrator_design": "b1175e5e93c69bb615256ce4684be01648dd7736bee4955052bbca5be914d9dc",
+                "integration_design": "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5",
+                "modular_monolith": "31d5f8f0bbaa53df1978c04257e99924dade1b2b41f230a985b8bd08830d9adc"}
     for key, digest in previous.items():
         assert digest in agent_store.PREVIOUS_DEFAULT_HASHES[key]
         assert hashlib.sha256(INSTRUCTIONS[key].encode()).hexdigest() != digest  # the defaults did change
 
 
-# --- skipping wrapper and orchestrator for domain-only features -----------------------------------------------------
+# --- skipping contracts and orchestrator for domain-only features ---------------------------------------------------
 
 DOMAIN_ONLY = """feature: {op}
 domain: {domain}
@@ -238,20 +251,21 @@ def _run_to_design_gate(client, domain, domain_only, monkeypatch):
     return run, ran
 
 
-def test_domain_only_feature_skips_wrapper_and_orchestrator(client, monkeypatch):
+def test_domain_only_feature_skips_linked_domain_contracts_and_orchestrator(client, monkeypatch):
     run, ran = _run_to_design_gate(client, "customer", True, monkeypatch)
-    assert "wrapper_design" not in ran and "orchestrator_design" not in ran  # no agent, so no AI cost
+    assert "linked_domain_contracts" not in ran and "orchestrator_design" not in ran  # no agent, so no AI cost
     assert {"domain_dependencies", "domain_design", "integration_design"} <= set(ran)
 
     stages = {s["stage"]: s for s in run["stages"]}
-    assert stages["wrapper_design"]["status"] == stages["orchestrator_design"]["status"] == "completed"
+    assert stages["linked_domain_contracts"]["status"] == stages["orchestrator_design"]["status"] == "completed"
     docs = {a["stage"]: a for a in client.get(f"/api/runs/{run['id']}/artifacts").json() if a["name"].endswith(".md")}
-    for stage, nothing in (("wrapper_design", "nothing to wrap"), ("orchestrator_design", "nothing to orchestrate")):
+    for stage, nothing in (("linked_domain_contracts", "no contract to define"),
+                           ("orchestrator_design", "nothing to orchestrate")):
         note = client.get(f"/api/artifacts/{docs[stage]['id']}").json()["content"]
         assert "skipped" in note and nothing in note and "domain-only" in note
     with session_scope() as s:
         log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == run["id"])))
-    assert "Skipped Modulith design: Wrapper" in log
+    assert "Skipped Modulith design: Linked-domain contracts" in log
 
 
 def test_cross_domain_feature_runs_every_modulith_step(client, monkeypatch):
@@ -261,19 +275,165 @@ def test_cross_domain_feature_runs_every_modulith_step(client, monkeypatch):
 
 def test_skip_follows_the_decision_in_the_workspace(tmp_path):
     f = tmp_path / "domain-dependencies.yaml"
-    assert modulith_scope.skip_reason("wrapper_design", tmp_path) is None  # no finder in this workflow: run
+    assert modulith_scope.skip_reason("linked_domain_contracts", tmp_path) is None  # no finder in this workflow: run
     f.write_text(DOMAIN_ONLY.format(op="x", domain="loan"))
-    assert "domain-only" in modulith_scope.skip_reason("wrapper_design", tmp_path)
+    assert "domain-only" in modulith_scope.skip_reason("linked_domain_contracts", tmp_path)
     assert "domain-only" in modulith_scope.skip_reason("orchestrator_design", tmp_path)
+    assert "domain-only" in modulith_scope.skip_reason("wrapper_design", tmp_path)  # the superseded step, if used
     assert modulith_scope.skip_reason("domain_design", tmp_path) is None  # only these two are ever skipped
     assert modulith_scope.skip_reason("integration_design", tmp_path) is None
     f.write_text(GOOD)  # a reviewer's edit to cross-domain brings the steps back
-    assert modulith_scope.skip_reason("wrapper_design", tmp_path) is None
+    assert modulith_scope.skip_reason("linked_domain_contracts", tmp_path) is None
     f.write_text("decision: [")  # unreadable: run the step rather than silently skip it
-    assert modulith_scope.skip_reason("wrapper_design", tmp_path) is None
+    assert modulith_scope.skip_reason("linked_domain_contracts", tmp_path) is None
 
 
 def test_untouched_modulith_agents_from_the_previous_iteration_are_upgraded(client):
-    for key in MODULITH:
+    for key in ("domain_dependencies", "domain_design", "orchestrator_design"):
         assert agent_store.PREVIOUS_DEFAULT_HASHES[key]
-    assert "decision" in INSTRUCTIONS["domain_dependencies"] and "domain-only" in INSTRUCTIONS["wrapper_design"]
+    assert "decision" in INSTRUCTIONS["domain_dependencies"] and "domain-only" in INSTRUCTIONS["linked_domain_contracts"]
+
+
+# --- linked-domain-contracts.yaml ------------------------------------------------------------------------------------
+
+CONTRACTS = """feature: create-loan
+domain: loan
+contracts:
+  - key: customer.get-kyc-status
+    provider: customer
+    kind: api
+    name: Get KYC status
+    version: "1"
+    interactions: [X1]
+    relies_on: Current answer
+    spec: contracts/customer.get-kyc-status.yaml
+    binding:
+      delegates_to: ["com.acme.customer.CustomerService#getKycStatus"]
+      remove_when: The customer service provides this contract
+"""
+
+
+def test_linked_domain_contracts_are_validated(client):
+    parsed = contracts_store.parse_linked_domain_contracts(CONTRACTS)
+    assert parsed[0]["key"] == "customer.get-kyc-status"
+    assert contracts_store.parse_linked_domain_contracts("contracts: []\n") == []
+
+    def bad(text, match):
+        with pytest.raises(contracts_store.InvalidDocument, match=match):
+            contracts_store.parse_linked_domain_contracts(text)
+
+    bad("contracts: nope\n", "must be a list")
+    bad(CONTRACTS.replace("kind: api", "kind: rpc"), "must be one of")
+    bad(CONTRACTS.replace("key: customer.", "key: payment."), "must start with its provider")
+    bad(CONTRACTS.replace("    name: Get KYC status\n", ""), "missing name")
+    bad(CONTRACTS.replace("    spec: contracts/customer.get-kyc-status.yaml\n", ""), "missing spec")
+    bad(CONTRACTS.split("    binding:")[0], "describe the temporary binding")
+    bad(CONTRACTS.replace("delegates_to: [\"com.acme.customer.CustomerService#getKycStatus\"]", "delegates_to: []"),
+        "describe the temporary binding")
+    bad(CONTRACTS.replace("      remove_when: The customer service provides this contract\n", ""),
+        "missing remove_when")
+    bad(CONTRACTS + CONTRACTS.split("contracts:\n")[1], "duplicate key")
+    # A contract already in the catalogue needs neither spec nor binding.
+    reused = "contracts:\n  - {key: customer.get-kyc-status, provider: customer, kind: api, name: KYC, reuse: true}\n"
+    assert contracts_store.parse_linked_domain_contracts(reused)[0]["reuse"] is True
+
+
+def test_contracts_must_match_the_dependencies_and_have_their_specs(tmp_path):
+    (tmp_path / "domain-dependencies.yaml").write_text(GOOD)
+    (tmp_path / "linked-domain-contracts.yaml").write_text(CONTRACTS)
+    problems = contracts_store.validate_outputs(tmp_path)
+    assert problems == ["linked-domain-contracts.yaml: spec file contracts/customer.get-kyc-status.yaml for "
+                        "contract customer.get-kyc-status does not exist"]
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts/customer.get-kyc-status.yaml").write_text("openapi: 3.1.0\n")
+    assert contracts_store.validate_outputs(tmp_path) == []
+
+    (tmp_path / "linked-domain-contracts.yaml").write_text("contracts: []\n")  # customer has no contract
+    assert any("no contract for customer" in p for p in contracts_store.validate_outputs(tmp_path))
+    (tmp_path / "linked-domain-contracts.yaml").write_text(
+        CONTRACTS.replace("customer", "payment"))  # a contract for a domain the feature does not depend on
+    problems = contracts_store.validate_outputs(tmp_path)
+    assert any("no contract for customer" in p for p in problems)
+    assert any("payment.get-kyc-status is for payment, which is not an outbound dependency" in p for p in problems)
+
+
+def test_integration_decisions_can_use_linked_domain_contracts_without_listing_them(tmp_path):
+    decisions = """decisions:
+  - {interaction: X1, target: customer, kind: query, pattern: sync-api, contract: customer.get-kyc-status}
+contracts: []
+"""
+    with pytest.raises(contracts_store.InvalidDocument, match="linked-domain contract"):
+        contracts_store.parse_decisions(decisions)
+    assert contracts_store.parse_decisions(decisions, {"customer.get-kyc-status"})["decisions"]
+
+    (tmp_path / "domain-dependencies.yaml").write_text(GOOD)
+    (tmp_path / "linked-domain-contracts.yaml").write_text(CONTRACTS)
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts/customer.get-kyc-status.yaml").write_text("openapi: 3.1.0\n")
+    (tmp_path / "integration-decisions.yaml").write_text(decisions)
+    assert contracts_store.validate_outputs(tmp_path) == []
+
+
+# --- the contracts catalogue -----------------------------------------------------------------------------------------
+
+def test_approving_the_design_records_the_linked_domain_contracts_as_proposed(client, monkeypatch):
+    original, probe = stub.StubAgent.run, f"probe{next(_ids)}"
+
+    def run(self, ctx):
+        out = original(self, ctx)
+        if self.stage == "linked_domain_contracts":  # a contract key no other test has recorded
+            f = ctx.output_dir / "linked-domain-contracts.yaml"
+            sample = f.read_text()
+            other = next(line.split(":")[1].strip() for line in sample.splitlines() if line.startswith("    provider:"))
+            f.write_text(sample.replace(f"get-{other}-summary", probe))
+            (ctx.output_dir / f"contracts/{other}.{probe}.yaml").write_text(
+                (ctx.output_dir / f"contracts/{other}.get-{other}-summary.yaml").read_text())
+        if self.stage == "integration_design":  # decisions that don't re-list the contract: only the linked file does
+            (ctx.output_dir / "integration-decisions.yaml").write_text("decisions: []\ncontracts: []\n")
+        return out
+
+    monkeypatch.setattr(stub.StubAgent, "run", run)
+    run, _ = _run_to_design_gate(client, "broker", False, monkeypatch)
+    other = next(k for k in sorted(d["key"] for d in client.get("/api/domains").json()) if k != "broker")
+    key = f"{other}.{probe}"
+    assert key not in {c["key"] for c in client.get("/api/contracts").json()}  # nothing before approval
+
+    assert _approve(client, run["id"]).status_code == 200
+    contract = client.get(f"/api/contracts/{key}").json()
+    assert contract["status"] == "proposed" and contract["provider"] == other
+    assert contract["consumers"] == ["broker"] and contract["spec"].startswith("openapi")
+    log = " ".join(e.message for e in _events(run["id"]))
+    assert "Recorded 1 linked-domain contract(s)" in log
+
+
+def _events(run_id):
+    with session_scope() as s:
+        return list(s.scalars(select(AuditEvent).where(AuditEvent.run_id == run_id)))
+
+
+def test_a_proposed_contract_becomes_approved_by_a_decision_and_a_provided_one_stays(client):
+    from app import projects
+    from app.db.models import Contract
+    from pathlib import PurePosixPath
+
+    spec = {"key": "zz.get-thing", "provider": "zz", "kind": "api", "name": "Get thing", "spec": "contracts/a.yaml"}
+    with session_scope() as s:
+        project = projects.current()
+        contracts_store._upsert_contract(s, project, "run-x", spec, PurePosixPath("."), "proposed", ["loan"])
+    assert client.get("/api/contracts/zz.get-thing").json()["status"] == "proposed"
+    with session_scope() as s:
+        contracts_store._upsert_contract(s, projects.current(), "run-x", spec, PurePosixPath("."), "approved", [])
+    assert client.get("/api/contracts/zz.get-thing").json()["status"] == "approved"
+    client.put("/api/contracts/zz.get-thing", json={"status": "provided-by-service"})
+    with session_scope() as s:
+        for status in ("proposed", "approved"):
+            contracts_store._upsert_contract(s, projects.current(), "run-y", spec, PurePosixPath("."), status, [])
+    assert client.get("/api/contracts/zz.get-thing").json()["status"] == "provided-by-service"
+
+    # reuse: only a new consumer is added; the catalogue's definition stands.
+    reuse = {"key": "zz.get-thing", "provider": "zz", "kind": "api", "name": "Renamed by mistake", "reuse": True}
+    with session_scope() as s:
+        contracts_store._upsert_contract(s, projects.current(), "run-z", reuse, PurePosixPath("."), "proposed",
+                                         ["payments"])
+    contract = client.get("/api/contracts/zz.get-thing").json()
+    assert contract["name"] == "Get thing" and contract["consumers"] == ["loan", "payments"]

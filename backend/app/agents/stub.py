@@ -107,6 +107,31 @@ dependencies:
 considered_unrelated: []
 shared_code: []
 """
+    if "linked-domain-contracts.yaml" in outputs:
+        files["linked-domain-contracts.yaml"] = f"""# [stub] sample linked-domain contracts
+feature: {ctx.operation}
+domain: {ctx.domain}
+contracts:
+  - key: {query}
+    provider: {other}
+    kind: api
+    name: Get {other} summary
+    version: "1"
+    description: A {other} summary, as {ctx.operation} needs it
+    interactions: [X1]
+    relies_on: "[stub] Current data; no caching"
+    spec: contracts/{query}.yaml
+    binding:
+      delegates_to: ["com.acme.{other}.{other.capitalize()}Service#get{other.capitalize()}Summary"]
+      remove_when: The {other} service provides this contract
+"""
+        files[f"contracts/{query}.yaml"] = f"""openapi: 3.1.0
+info: {{title: "{other} summary (stub)", version: "1"}}
+paths:
+  /internal/api/v1/{other}/summary/{{id}}:
+    get:
+      responses: {{"200": {{description: Summary}}}}
+"""
     if "integration-decisions.yaml" in outputs:
         files["integration-decisions.yaml"] = f"""# [stub] sample integration decisions
 decisions:

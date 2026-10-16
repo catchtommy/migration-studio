@@ -38,9 +38,9 @@ def steps_of(workflow: Workflow) -> list[dict]:
              "reviews": list(s.reviews)} for s in workflow.stages]
 
 
-STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → Modulith design (domain, wrapper, orchestrator) → "
-                        "cross-domain integration → module → microservice → tests → modernisation → integration, "
-                        "with four approval gates.")
+STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → Modulith design (linked-domain contracts, domain, "
+                        "orchestrator) → cross-domain integration → module → microservice → tests → modernisation "
+                        "→ integration, with four approval gates.")
 
 
 def _shape(steps: list[dict]) -> list[tuple]:
@@ -60,6 +60,12 @@ _STANDARD_V1 = [*_HEAD, ("agent", "boundary_design", ()), ("gate", "gate_design"
 # Second release: boundary design and cross-domain integration design.
 _STANDARD_V2 = [*_HEAD, ("agent", "boundary_design", ()), ("agent", "integration_design", ()),
                 ("gate", "gate_design", ("boundary_design", "integration_design")), *_TAIL]
+# Third release: dependency finder, then domain, wrapper and orchestrator design.
+_STANDARD_V3 = [*_HEAD, ("agent", "domain_dependencies", ()), ("agent", "domain_design", ()),
+                ("agent", "wrapper_design", ()), ("agent", "orchestrator_design", ()),
+                ("agent", "integration_design", ()),
+                ("gate", "gate_design", ("domain_dependencies", "domain_design", "wrapper_design",
+                                         "orchestrator_design", "integration_design")), *_TAIL]
 
 
 def seed() -> None:
@@ -69,9 +75,11 @@ def seed() -> None:
                               description=STANDARD_DESCRIPTION))
             s.add(Setting(key="_standard_workflow_v2", value=True))
             s.add(Setting(key="_standard_workflow_v3", value=True))
+            s.add(Setting(key="_standard_workflow_v4", value=True))
         else:
             # Upgrade the standard workflow only if nobody has changed it; customised ones are left alone.
-            for marker, previous in (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2)):
+            for marker, previous in (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2),
+                                     ("_standard_workflow_v4", _STANDARD_V3)):
                 if s.get(Setting, (GLOBAL, marker)) is None:
                     standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
                     if standard is not None and _shape(standard.steps) == previous:

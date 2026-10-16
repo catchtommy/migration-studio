@@ -13,7 +13,7 @@ test("an approved integration design fills the contracts catalogue and the depen
   await expect(page.getByRole("heading", { name: /👤 Approve analysis/ })).toBeVisible({ timeout: 30_000 });
   await approve.click();
   await expect(page.getByRole("heading", { name: /👤 Approve design/ })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Review the output of Cross-domain dependency finder, Modulith design: Domain, Modulith design: Wrapper, Modulith design: Orchestrator, Cross-domain integration design")).toBeVisible();
+  await expect(page.getByText("Review the output of Cross-domain dependency finder, Modulith design: Linked-domain contracts, Modulith design: Domain, Modulith design: Orchestrator, Cross-domain integration design")).toBeVisible();
   await approve.click();
   await expect(page.getByRole("heading", { name: /👤 Approve tests/ })).toBeVisible({ timeout: 30_000 });
 

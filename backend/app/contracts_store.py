@@ -29,6 +29,7 @@ DEPENDENCY_RELATIONS = ("calls", "reads-data", "writes-data", "called-by", "shar
 DEPENDENCY_STRENGTHS = ("hard", "soft", "side-effect")
 TOUCHPOINT_KINDS = ("service", "dao", "table", "view", "config", "event")
 MODULITH_SCOPES = ("domain-only", "cross-domain")
+LINKED_CONTRACTS_FILE = "linked-domain-contracts.yaml"  # written by the linked-domain contracts step
 # Statuses that record real progress; re-approving a design must not move a contract back from these.
 _LIVE = ("provided-by-monolith", "provided-by-service", "deprecated")
 
@@ -128,7 +129,61 @@ def load_domain_dependencies(text: str) -> dict:
     return {"decision": decision, "dependencies": items}
 
 
-def parse_decisions(text: str) -> dict:
+def parse_linked_domain_contracts(text: str) -> list[dict]:
+    """The contracts between one feature and the domains it depends on, from the linked-domain contracts file."""
+    data = _load(text, LINKED_CONTRACTS_FILE)
+    items = data.get("contracts")
+    if not isinstance(items, list):
+        raise InvalidDocument(f"{LINKED_CONTRACTS_FILE}: 'contracts' must be a list (it can be empty)")
+    seen = set()
+    for i, c in enumerate(items, 1):
+        where = f"{LINKED_CONTRACTS_FILE} contract {i}"
+        if not isinstance(c, dict):
+            raise InvalidDocument(f"{where} must be a mapping")
+        _require(c, ("key", "provider", "kind", "name"), where)
+        _one_of(c["kind"], CONTRACT_KINDS, where)
+        if not str(c["key"]).startswith(f"{c['provider']}."):
+            raise InvalidDocument(f"{where}: key {c['key']} must start with its provider, as {c['provider']}.<name>")
+        if c["key"] in seen:
+            raise InvalidDocument(f"{where}: duplicate key {c['key']}")
+        seen.add(c["key"])
+        if c.get("interactions") is not None and not isinstance(c["interactions"], list):
+            raise InvalidDocument(f"{where}: interactions must be a list")
+        if c.get("reuse"):
+            continue  # already in the catalogue: nothing more to define
+        if not c.get("spec"):
+            raise InvalidDocument(f"{where}: missing spec (or set reuse: true for a contract already in the "
+                                  "catalogue)")
+        binding = c.get("binding")
+        if not isinstance(binding, dict) or not isinstance(binding.get("delegates_to"), list) \
+                or not binding["delegates_to"]:
+            raise InvalidDocument(f"{where}: describe the temporary binding: binding.delegates_to lists the existing "
+                                  "Class#method the monolith delegates to")
+        _require(binding, ("remove_when",), f"{where} binding")
+    return items
+
+
+def _linked_contracts_problems(output_dir: Path, contracts: list[dict]) -> list[str]:
+    """Check the contracts against the dependency finder's file next to them: every domain the feature depends on
+    has a contract, and no contract is for a domain the feature does not depend on."""
+    f = output_dir / DOMAIN_DEPENDENCIES_FILE
+    if not f.is_file():
+        return []
+    try:
+        deps = load_domain_dependencies(f.read_text())["dependencies"]
+    except InvalidDocument:
+        return []  # reported for that file itself
+    outbound = {d["domain"] for d in deps if d.get("direction", "outbound") == "outbound"}
+    providers = {c["provider"] for c in contracts}
+    problems = [f"{LINKED_CONTRACTS_FILE}: no contract for {d}, which {DOMAIN_DEPENDENCIES_FILE} lists as an "
+                "outbound dependency" for d in sorted(outbound - providers)]
+    problems += [f"{LINKED_CONTRACTS_FILE}: contract {c['key']} is for {c['provider']}, which is not an outbound "
+                 f"dependency in {DOMAIN_DEPENDENCIES_FILE}" for c in contracts if c["provider"] not in outbound]
+    return problems
+
+
+def parse_decisions(text: str, known: frozenset[str] | set[str] = frozenset()) -> dict:
+    """`known`: contract keys defined elsewhere in the run (the linked-domain contracts), usable without listing."""
     data = _load(text, DECISIONS_FILE)
     decisions, contracts = data.get("decisions"), data.get("contracts") or []
     if not isinstance(decisions, list) or not isinstance(contracts, list):
@@ -154,9 +209,10 @@ def parse_decisions(text: str) -> dict:
         _one_of(d.get("status", "planned"), DECISION_STATUSES, where)
         if d["pattern"] not in ("deferred", "reference-copy") and not d.get("contract"):
             raise InvalidDocument(f"{where}: pattern {d['pattern']} needs a contract")
-        if d.get("contract") and d["contract"] not in keys and not _exists(d["contract"]):
-            raise InvalidDocument(f"{where}: contract {d['contract']} is neither listed under contracts nor in "
-                                  "the catalogue")
+        if d.get("contract") and d["contract"] not in keys and d["contract"] not in known \
+                and not _exists(d["contract"]):
+            raise InvalidDocument(f"{where}: contract {d['contract']} is neither listed under contracts, nor a "
+                                  "linked-domain contract, nor in the catalogue")
     return {"decisions": decisions, "contracts": contracts}
 
 
@@ -168,8 +224,10 @@ def _exists(key: str) -> bool:
 def validate_outputs(output_dir: Path) -> list[str]:
     """Problems with the structured cross-domain files an agent wrote (none when the files are absent)."""
     problems = []
+    linked: list[dict] = []
     for name, parse in ((CROSS_DOMAIN_FILE, parse_cross_domain), (DOMAIN_DEPENDENCIES_FILE, parse_domain_dependencies),
-                        (DECISIONS_FILE, parse_decisions)):
+                        (LINKED_CONTRACTS_FILE, parse_linked_domain_contracts),
+                        (DECISIONS_FILE, lambda text: parse_decisions(text, {c["key"] for c in linked}))):
         f = output_dir / name
         if not f.is_file():
             continue
@@ -178,6 +236,11 @@ def validate_outputs(output_dir: Path) -> list[str]:
         except InvalidDocument as e:
             problems.append(str(e))
             continue
+        if name == LINKED_CONTRACTS_FILE:
+            linked = parsed
+            problems += _linked_contracts_problems(output_dir, parsed)
+            problems += [f"{LINKED_CONTRACTS_FILE}: spec file {c['spec']} for contract {c['key']} does not exist"
+                         for c in parsed if c.get("spec") and not (output_dir / c["spec"]).is_file()]
         if name == DECISIONS_FILE:
             for c in parsed["contracts"]:
                 if c.get("spec") and not (output_dir / c["spec"]).is_file():
@@ -185,13 +248,58 @@ def validate_outputs(output_dir: Path) -> list[str]:
     return problems
 
 
-def _latest_decisions(s, run_id: str, stages: list[str]) -> Artifact | None:
+def _latest_artifact(s, run_id: str, stages: list[str], name: str) -> Artifact | None:
+    """The file `name` from the latest attempt of the first of these stages that wrote it."""
     rows = s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage.in_(stages))
                      .order_by(Artifact.attempt.desc(), Artifact.id.desc())).all()
     latest_attempt: dict[str, int] = {}
     for a in rows:
         latest_attempt.setdefault(a.stage, a.attempt)
-    return next((a for a in rows if a.name == DECISIONS_FILE and a.attempt == latest_attempt[a.stage]), None)
+    return next((a for a in rows if a.name == name and a.attempt == latest_attempt[a.stage]), None)
+
+
+def _latest_decisions(s, run_id: str, stages: list[str]) -> Artifact | None:
+    return _latest_artifact(s, run_id, stages, DECISIONS_FILE)
+
+
+def _upsert_contract(s, project: str, run_id: str, c: dict, base: PurePosixPath, status: str,
+                     consumers: list[str]) -> None:
+    """Add or update a catalogue contract from a design file. A contract that is already provided is never moved
+    back, and `status` only upgrades a contract that is merely proposed."""
+    spec_path = str(base / c["spec"]) if c.get("spec") else None
+    spec_doc = spec_path and s.scalar(select(Artifact).where(Artifact.run_id == run_id, Artifact.path == spec_path)
+                                      .order_by(Artifact.id.desc()).limit(1))
+    spec = spec_doc.content if spec_doc else None
+    row = s.get(Contract, (project, c["key"]))
+    existed = row is not None
+    if row is None:
+        row = Contract(project=project, key=c["key"], consumers=[], status=status)
+        s.add(row)
+    elif status == "approved" and row.status not in _LIVE:
+        row.status = "approved"
+    row.consumers = sorted(set(row.consumers or []) | set(consumers))
+    if c.get("reuse") and existed:
+        return  # only a new consumer: the catalogue's definition stands
+    row.provider, row.kind, row.name = c["provider"], c["kind"], c["name"]
+    row.version = str(c.get("version") or row.version or "1")
+    row.description = c.get("description") or row.description or ""
+    row.spec, row.spec_path, row.run_id = spec or row.spec, spec_path or row.spec_path, run_id
+
+
+def record_linked_domain_contracts(run_id: str, reviewed_stages: list[str]) -> int:
+    """On approval of a gate: record the linked-domain contracts in the catalogue as proposed, with this run's domain
+    as a consumer. The linked domain's team has not accepted them yet; integration decisions that use them are
+    recorded as approved afterwards. Returns how many contracts were recorded (0 when the gate reviews none)."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        artifact = _latest_artifact(s, run_id, reviewed_stages, LINKED_CONTRACTS_FILE)
+        if artifact is None:
+            return 0
+        contracts = parse_linked_domain_contracts(artifact.content)
+        base = PurePosixPath(artifact.path).parent
+        for c in contracts:
+            _upsert_contract(s, run.project, run_id, c, base, "proposed", [run.domain])
+        return len(contracts)
 
 
 def record_approved_design(run_id: str, reviewed_stages: list[str]) -> int:
@@ -203,25 +311,13 @@ def record_approved_design(run_id: str, reviewed_stages: list[str]) -> int:
         artifact = _latest_decisions(s, run_id, reviewed_stages)
         if artifact is None:
             return 0
-        parsed = parse_decisions(artifact.content)
+        linked = _latest_artifact(s, run_id, reviewed_stages, LINKED_CONTRACTS_FILE)
+        known = {c["key"] for c in parse_linked_domain_contracts(linked.content)} if linked else set()
+        parsed = parse_decisions(artifact.content, known)
         base = PurePosixPath(artifact.path).parent
 
         for c in parsed["contracts"]:
-            spec_path = str(base / c["spec"]) if c.get("spec") else None
-            spec_doc = spec_path and s.scalar(select(Artifact).where(Artifact.run_id == run_id, Artifact.path == spec_path)
-                                              .order_by(Artifact.id.desc()).limit(1))
-            spec = spec_doc.content if spec_doc else None
-            row = s.get(Contract, (project, c["key"]))
-            if row is None:
-                row = Contract(project=project, key=c["key"], consumers=[], status="approved")
-                s.add(row)
-            elif row.status not in _LIVE:
-                row.status = "approved"
-            row.provider, row.kind, row.name = c["provider"], c["kind"], c["name"]
-            row.version = str(c.get("version") or row.version or "1")
-            row.description = c.get("description") or row.description or ""
-            row.consumers = sorted(set(row.consumers or []) | set(c.get("consumers") or []))
-            row.spec, row.spec_path, row.run_id = spec or row.spec, spec_path or row.spec_path, run_id
+            _upsert_contract(s, project, run_id, c, base, "approved", c.get("consumers") or [])
 
         s.query(Dependency).filter(Dependency.run_id == run_id).delete()
         for d in parsed["decisions"]:

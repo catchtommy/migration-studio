@@ -87,7 +87,7 @@ features:
 ```"""
 
 # Machine-readable result of the dependency finder: for one feature, exactly which other domains it is related to.
-# Validated before the agent finishes; the Modulith design agents (domain, wrapper, orchestrator) build on it.
+# Validated before the agent finishes; the Modulith design agents (contracts, domain, orchestrator) build on it.
 DOMAIN_DEPENDENCIES_SCHEMA = """```yaml
 # domain-dependencies.yaml: the other domains this one feature is related to, one entry per domain
 feature: create-loan                # the feature (operation) analysed
@@ -113,6 +113,28 @@ considered_unrelated:               # domains you checked and ruled out, with th
   - domain: payment
     reason: Only appears in a comment
 shared_code: [com.acme.common.DateUtils]   # utilities used by several domains (not a domain dependency)
+```"""
+
+# Machine-readable result of the linked-domain contracts step: what this feature needs from each domain it depends
+# on. Validated before the agent finishes; approving the design gate records the contracts in the catalogue.
+LINKED_DOMAIN_CONTRACTS_SCHEMA = """```yaml
+# linked-domain-contracts.yaml: the contracts between this feature and the domains it depends on
+feature: create-loan
+domain: loan
+contracts:                          # at least one per outbound dependency in domain-dependencies.yaml
+  - key: customer.get-kyc-status    # <provider>.<capability>
+    provider: customer              # the linked domain that provides it
+    kind: api                       # api | event | command
+    name: Get KYC status
+    version: "1"
+    description: Current KYC status of a customer
+    reuse: false                    # true: already in the catalogue under this key; no spec or binding needed
+    interactions: [X1]              # ids from cross-domain.yaml
+    relies_on: Answer is current (no cache); fails closed when the customer is unknown
+    spec: contracts/customer.get-kyc-status.yaml    # OpenAPI 3.1 (api) or AsyncAPI 3 (event/command)
+    binding:                        # TEMPORARY: how the monolith provides it while customer is not migrated
+      delegates_to: ["com.acme.customer.CustomerService#getKycStatus"]
+      remove_when: The customer service provides this contract
 ```"""
 
 _INTEGRATION_RULES = """Decision rules, in order:
@@ -165,7 +187,8 @@ package ownership you are given to tell domains apart; ask the user when ownersh
 Ask the user when a rule's intent is unclear, for example whether an odd branch is a bug or deliberate.""",
 
     "domain_dependencies": f"""You find, for ONE feature of a legacy monolith, exactly which other domains it is related \
-to. Later steps design the new domain, the wrappers and the orchestration from your result, so be specific and \
+to. Later steps define the contracts with the linked domains, design the new domain and design the orchestration \
+from your result, so be specific and \
 complete. {_LEGACY}
 
 Start from the AS-IS document and the deep dive (including its `cross-domain.yaml`), then verify against the code; \
@@ -186,9 +209,11 @@ under `considered_unrelated`, so nobody has to check them again.
 Then record the scope decision under `decision`:
 - `domain-only`: the feature has no outbound dependency on another domain. It uses only its own domain's code and \
 tables (shared utilities don't count, and neither do callers from other domains, which use the domain's public \
-API). `dependencies` is then empty or lists only inbound callers. Migration Studio skips the Wrapper and \
-Orchestrator design steps for this feature, because there is nothing to wrap or orchestrate.
-- `cross-domain`: the feature has at least one outbound dependency. The Wrapper and Orchestrator design steps run.
+API). `dependencies` is then empty or lists only inbound callers. Migration Studio skips the Linked-domain \
+contracts and Orchestrator design steps for this feature, because there is no contract to define and nothing to \
+orchestrate.
+- `cross-domain`: the feature has at least one outbound dependency. The Linked-domain contracts and Orchestrator \
+design steps run.
 Give the `reason` in a sentence. Choose `domain-only` only when you have checked the code and are sure; when in \
 doubt, choose `cross-domain`. The decision is validated against `dependencies`, and the reviewer sees it at the \
 design gate.
@@ -201,11 +226,49 @@ strength and touchpoints; then a short section per domain, and a note on anythin
 
 Ask the user when it is unclear which domain owns a class or table.""",
 
+    "linked_domain_contracts": f"""You define the contracts between this feature and the other domains it depends \
+on. A contract states what the feature needs from a linked domain, so that the domain can provide it from the \
+monolith today and from its own service later. The contract is the lasting result; how the monolith provides it \
+today is temporary. {_LEGACY}
+
+Read `domain-dependencies.yaml` (the dependency finder's result), the deep dive and the contracts catalogue you are \
+given. Work from the consumer's side: ask what this feature needs, not what the other domain's classes happen to \
+offer. For every outbound dependency:
+- Reuse a contract that is already in the catalogue when it covers the need (`reuse: true`, same key) instead of \
+defining a parallel one. Define a new contract, or a new version of an existing one, only for what is missing.
+- Define one contract per capability, at business level (for example "get customer KYC status"), not one per \
+existing method. Several touchpoints can serve one contract. Do not copy legacy shapes that leak internals \
+(sessions, entities, flag codes); the port's adapter translates them.
+- Choose the kind: `api` for a request and response (REST under `/internal/api/v1/<provider>/...`), `event` or \
+`command` when the feature relies on a message.
+- Write a spec for every new or changed contract under `contracts/`: OpenAPI 3.1 for `api`, AsyncAPI 3 for \
+`event` and `command`, with schemas and error responses.
+- State what the feature relies on (`relies_on`): freshness, consistency, idempotency, latency and behaviour on \
+failure, as the current code behaves.
+- Describe the temporary binding: the existing `package.Class#method` the monolith delegates to while the provider \
+is not migrated (`delegates_to`), and when the binding can be removed (`remove_when`). A binding only delegates; \
+it never changes the other domain's logic or tables. Say what cannot be exposed as it is, such as a dependency on \
+the HTTP session, and how to cut it.
+Keys are `<provider>.<capability>`, and the provider is the linked domain's key.
+
+Write `linked-domain-contracts.md` (per linked domain: the contracts, what the feature relies on, the temporary \
+binding, and what the owning team needs to review) and `linked-domain-contracts.yaml` in this format:
+
+{LINKED_DOMAIN_CONTRACTS_SCHEMA}
+
+Every domain with an outbound dependency needs at least one contract, and every contract's provider must be one \
+of those domains; both are checked before you may finish. If `domain-dependencies.yaml` has \
+`decision.scope: domain-only`, Migration Studio skips this step. If you are run anyway, write a short note in \
+`linked-domain-contracts.md` and `contracts: []` in the YAML, and stop.
+
+Ask the user when a service's behaviour cannot be offered as it is, or when it is unclear which domain should own \
+a capability.""",
+
     "domain_design": f"""You design the domain that will own this feature, inside the monolith. This is design only: \
 the domain stays in the monolith, on the same technical stack, with the same database and the same UI. {_LEGACY}
 
-Using the AS-IS document, the deep dive and the dependency finder's `domain-dependencies.yaml`, write \
-`domain-design.md` covering:
+Using the AS-IS document, the deep dive, the dependency finder's `domain-dependencies.yaml` and the \
+linked-domain contracts in `linked-domain-contracts.yaml`, write `domain-design.md` covering:
 - The domain: its key, what it is responsible for and what it is not, and the feature's place in it. If the domain \
 already has features, show how this one fits next to them.
 - The package structure, e.g. `com.acme.<domain>.web`, `.service`, `.dao`, `.model`, `.integration.port`, and which \
@@ -216,9 +279,10 @@ outside the domain use only this API.
 column changes, no new tables. A table owned by another domain is never accessed directly; the domain reaches it \
 through a port.
 - Ports: one interface per outbound dependency in `domain-dependencies.yaml`, named after what it does (for \
-example CustomerDirectory), with the methods this feature needs. Only the interfaces are designed here. The wrapper \
-and orchestrator designs decide what stands behind them. When the decision scope is `domain-only` there are no \
-ports, and those two steps are skipped.
+example CustomerDirectory), with the methods this feature needs and, for each method, the contract key from \
+`linked-domain-contracts.yaml` it calls. Only the interfaces are designed here; the orchestrator design decides \
+what stands behind them. When the decision scope is `domain-only` there are no ports, and the contracts and \
+orchestrator steps are skipped.
 - UI: controllers, URLs, parameters and JSPs stay exactly as they are; show how each controller delegates to the \
 public API.
 - Stack: Java 8, Spring MVC 3, iBatis. No new frameworks or libraries.
@@ -255,31 +319,34 @@ anyway, write `wrapper-design.md` as a short note saying there is nothing to wra
 Ask the user when a service's behaviour cannot be exposed as it is, for example when it depends on the HTTP session.""",
 
     "orchestrator_design": f"""You design how this feature keeps working exactly as it does today while the other \
-domains it depends on are not ready, and how it moves to their wrappers later. The result is an orchestrator inside \
-the monolith. {_LEGACY}
+domains it depends on are not ready, and how it moves to their real services later. The result is an \
+orchestrator inside the monolith. {_LEGACY}
 
-Read the dependency finder's `domain-dependencies.yaml`, the domain design and the wrapper design. For each \
-dependency decide:
+Read the dependency finder's `domain-dependencies.yaml`, the linked-domain contracts in \
+`linked-domain-contracts.yaml` and the domain design (its ports). For each dependency decide:
 - `local` mode: the port's adapter calls the existing in-monolith service directly. This is the default and keeps \
 today's behaviour, including its transactions.
-- `wrapper` mode: the port's adapter calls the wrapper operation over REST.
-- The configuration property or feature flag that selects the mode for each dependency, per domain, and its default.
+- `contract` mode: the port's adapter calls the contract. While the linked domain is still in the monolith, the \
+contract is served by its temporary binding; once the domain has its own service, the same contract is served by \
+that service and only the configuration changes.
+- The configuration property or feature flag that selects the mode for each dependency, and where the contract's \
+base address is configured, with defaults.
 
 Write `orchestrator-design.md` covering:
 - The orchestrator: its classes, the ports it uses, and the order of calls for the feature in each mode (sequence \
 diagrams as text).
-- Transactions: in local mode the feature keeps its single transaction; in wrapper mode a call crosses a \
+- Transactions: in `local` mode the feature keeps its single transaction; in `contract` mode a call crosses a \
 transaction boundary. Say what changes for each shared transaction, and how failures are handled (retry, \
 compensation, or an explicit follow-up).
 - Error mapping, timeouts and fallbacks, so that the caller sees the same result in both modes.
-- A readiness table: for each dependent domain, its state (still in the monolith, wrapper available, migrated), \
-the mode used in that state, and what triggers the switch.
+- A readiness table: for each linked domain, its state (still in the monolith, contract served by the monolith \
+binding, migrated), the mode used in that state, and what triggers the switch.
 - How the deep dive's test scenarios are run in each mode to show the behaviour is unchanged.
 
 If `domain-dependencies.yaml` has `decision.scope: domain-only`, Migration Studio skips this step. If you are run \
 anyway, write `orchestrator-design.md` as a short note saying there is nothing to orchestrate, and stop.
 
-Ask the user when a shared transaction cannot be kept consistent in wrapper mode and the business must decide.""",
+Ask the user when a shared transaction cannot be kept consistent in `contract` mode and the business must decide.""",
 
     "boundary_design": """You design the boundary of the future microservice that will own this operation, using the \
 AS-IS documentation and deep dive.
@@ -299,10 +366,11 @@ Ask the user about ownership decisions you cannot settle from the code.""",
 operation moves into its own microservice. The service must contain only its own domain's features; everything \
 it needs from other domains goes through an agreed contract.
 
-Read the deep dive's cross-domain.yaml, the dependency finder's domain-dependencies.yaml, the domain, wrapper and \
-orchestrator designs, and the contracts catalogue you are given. The wrapper operations are what the monolith \
-offers while other domains are still in it: reuse them as the sync-api contracts instead of designing parallel \
-ones. For every interaction choose one pattern.
+Read the deep dive's cross-domain.yaml, the dependency finder's domain-dependencies.yaml, the linked-domain \
+contracts, the domain and orchestrator designs, and the contracts catalogue you are given. The linked-domain \
+contracts already define the API, event and command contracts to other domains: use their keys as the `contract` \
+of your decisions instead of designing parallel ones. Your decisions add what they do not cover: events, sagas, \
+read models and deferred interactions. For every interaction choose one pattern.
 
 {_INTEGRATION_RULES}
 
@@ -325,7 +393,7 @@ Ask the user when a decision depends on business tolerance for stale data or on 
     "modular_monolith": f"""You extract one operation into a module inside the monolith, shaped like the future \
 microservice. {_LEGACY}
 
-Using the approved domain, wrapper, orchestrator and integration designs:
+Using the approved domain, linked-domain contracts, orchestrator and integration designs:
 - Create the module's package structure as the domain design describes, with a clear public API (service \
 interface + DTOs) matching the REST contract.
 - Move or copy the operation's controller, service, DAO and iBatis mappings into the module. Callers outside the \
@@ -334,10 +402,12 @@ module must go through its public API only.
 in `<domain>.integration.port`, named after what it does (e.g. CustomerDirectory), with an in-monolith adapter for \
 now. Never copy another domain's classes or query its tables from the module.
 - Implement the orchestrator from the orchestrator design: `local` adapters that call the existing services, \
-`wrapper` adapters that call the wrapper REST operations, and the configuration that selects the mode per \
+`contract` adapters that call the linked-domain contracts, and the configuration that selects the mode per \
 dependency, defaulting to `local`.
-- Add the wrapper endpoints from the wrapper design in front of the existing services of the other domains. They \
-only delegate; do not change those services' logic or tables.
+- Add the monolith binding of each contract in `linked-domain-contracts.yaml`: an endpoint that serves the contract \
+by delegating to the existing service named in `binding.delegates_to`. Keep the bindings together in a `binding` \
+package and mark each one as temporary, with its `remove_when`. They only delegate; do not change the other \
+domains' logic or tables.
 - Keep the code Java 8 / Spring 3 / iBatis compatible. Do not change behaviour.
 - Build with the project's build tool and fix compilation errors before finishing.
 
@@ -441,6 +511,7 @@ OUTPUTS = {
     "deep_dive": ["deep-dive.md", "test-scenarios.md", "cross-domain.yaml"],
     "domain_dependencies": ["domain-dependencies.md", "domain-dependencies.yaml"],
     "domain_design": ["domain-design.md", "openapi.yaml"],
+    "linked_domain_contracts": ["linked-domain-contracts.md", "linked-domain-contracts.yaml"],
     "wrapper_design": ["wrapper-design.md", "wrapper-api.yaml"],
     "orchestrator_design": ["orchestrator-design.md"],
     "boundary_design": ["boundary-design.md", "openapi.yaml"],
@@ -455,8 +526,9 @@ OUTPUTS = {
 }
 
 _MODERN_JDK = {"modernise", "monolith_integration"}
-_ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "domain_design", "wrapper_design",
-             "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts", "domain_features"}
+_ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "linked_domain_contracts", "domain_design",
+             "wrapper_design", "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts",
+             "domain_features"}
 _BOUNDARY_CHECKED = {"microservice_scaffold", "modernise"}
 
 

@@ -4,7 +4,7 @@ A web UI that drives the migration of the Java 8 / Spring MVC 3 / iBatis monolit
 one domain operation at a time. Each operation goes through a workflow of agent stages and human approval gates.
 Workflows are editable (Workflows page); the built-in *Standard migration* workflow is:
 
-AS-IS docs → Deep dive → 👤 → **Cross-domain dependency finder → Modulith design (Domain → Wrapper → Orchestrator)** → Cross-domain integration design → 👤 → Module in monolith → Spring Boot microservice → Independent tests → 👤 → Modernisation → Monolith integration → 👤
+AS-IS docs → Deep dive → 👤 → **Cross-domain dependency finder → Modulith design (Linked-domain contracts → Domain → Orchestrator)** → Cross-domain integration design → 👤 → Module in monolith → Spring Boot microservice → Independent tests → 👤 → Modernisation → Monolith integration → 👤
 
 ### Modulith design
 
@@ -15,22 +15,34 @@ integration design.
 | Agent | Does | Writes |
 | --- | --- | --- |
 | **Cross-domain dependency finder** | For this one feature, finds exactly which other domains it is related to: which service, DAO or table of each, in which direction, how strongly, with code references. Also lists the domains it ruled out. | `domain-dependencies.md`, `domain-dependencies.yaml` |
-| **Modulith design: Domain** | Designs the feature's domain inside the monolith: packages, public API, owned tables, the ports it needs. Same technical stack, no database change, no UI change. | `domain-design.md`, `openapi.yaml` |
-| **Modulith design: Wrapper** | Designs a REST wrapper (`/internal/api/v1/<domain>/…`) over each existing service of another domain that the feature depends on, from the dependency finder's touchpoints. | `wrapper-design.md`, `wrapper-api.yaml` |
-| **Modulith design: Orchestrator** | Looks up the dependencies, the domain design and the wrapper design, and designs how the feature works as is while other domains are not ready (`local` mode: the existing service) and how it switches to the wrapper (`wrapper` mode), per dependency, by configuration. | `orchestrator-design.md` |
+| **Modulith design: Linked-domain contracts** | Consumer-first: defines what this feature needs from each linked domain as a contract (API, event or command), reusing contracts already in the catalogue. For each, it states what the feature relies on and the **temporary monolith binding** that provides it until the domain is migrated (the existing `Class#method` it delegates to, and when to remove it). | `linked-domain-contracts.md`, `linked-domain-contracts.yaml`, specs under `contracts/` |
+| **Modulith design: Domain** | Designs the feature's domain inside the monolith: packages, public API, owned tables, and the ports it needs, each naming the contract it calls. Same technical stack, no database change, no UI change. | `domain-design.md`, `openapi.yaml` |
+| **Modulith design: Orchestrator** | Looks up the dependencies, the contracts and the domain design, and designs how the feature works as is while other domains are not ready (`local` mode: the existing service) and how it moves to the contracts (`contract` mode: served by the monolith binding now, by the domain's own service later), per dependency, by configuration. | `orchestrator-design.md` |
 
 **Scope decision.** The dependency finder also records a decision in `domain-dependencies.yaml`: `domain-only` (the
 feature has no outbound dependency on another domain) or `cross-domain`, with a reason. For a `domain-only` feature
-the **Wrapper** and **Orchestrator** steps are skipped: no agent runs, and each leaves a short "skipped" note that
+the **Linked-domain contracts** and **Orchestrator** steps are skipped: no agent runs, and each leaves a short "skipped" note that
 quotes the decision, so the timeline and later steps still see it. The decision is checked against the dependency
 list (`domain-only` with an outbound dependency, or `cross-domain` with none, is refused), and the reviewer sees it
 at the design gate. To bring the steps back, change the decision to `cross-domain` and reject the gate so they
 re-run.
 
 `domain-dependencies.yaml` is validated before the dependency finder may finish (the decision, relations, directions,
-strengths and touchpoints). The *Module in monolith* agent implements the designs: the module, the orchestrator and wrapper
-adapters, and the wrapper endpoints. The earlier *Modular monolith design* (`boundary_design`) agent stays in the
-library for custom workflows but is no longer part of the Standard migration workflow.
+strengths and touchpoints). `linked-domain-contracts.yaml` is validated too: every domain the feature depends on needs
+a contract, every contract needs a spec and (unless it reuses a catalogue contract) a temporary binding, and keys are
+`<provider>.<capability>`.
+
+**The contracts are the lasting part.** The monolith binding is temporary: when the linked domain gets its own
+service, the same contract is served by that service and only the orchestrator's configuration changes. Approving the
+design gate records the contracts in the **Contracts** catalogue as *proposed* (the linked domain's team has not
+accepted them yet) with this feature's domain as a consumer; contracts the integration design also lists become
+*approved*, and a contract already provided is never moved back. The integration design reuses the contract keys and
+adds what they don't cover: events, sagas and read models.
+
+The *Module in monolith* agent implements the designs: the module, the orchestrator and its `local` and `contract`
+adapters, and the monolith bindings (marked temporary). The earlier *Modular monolith design* (`boundary_design`) and
+*Modulith design: Wrapper* (`wrapper_design`) agents stay in the library for custom workflows but are no longer part
+of the Standard migration workflow.
 
 ## Run it
 

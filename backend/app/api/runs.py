@@ -114,6 +114,14 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
     else:
         # An approved design becomes part of the company-wide contracts catalogue before the run moves on.
         try:
+            linked = contracts_store.record_linked_domain_contracts(run_id, list(gate["reviews"]))
+        except contracts_store.InvalidDocument as e:
+            raise HTTPException(422, f"The linked-domain contracts can't be recorded: {e}. Edit the file or reject "
+                                     "the design.")
+        if linked:
+            emit(run_id, "artifact", f"Recorded {linked} linked-domain contract(s) in the contracts catalogue as "
+                                     "proposed", gate["gate"])
+        try:
             recorded = contracts_store.record_approved_design(run_id, list(gate["reviews"]))
         except contracts_store.InvalidDocument as e:
             raise HTTPException(422, f"The integration decisions can't be recorded: {e}. Edit the file or reject "

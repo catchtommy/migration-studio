@@ -29,7 +29,8 @@ def _to_design_gate(client, run_id):
     assert _approve(client, run_id).status_code == 200
     run = wait_for(client, run_id, {"awaiting_approval"})
     assert run["pending_gate"] == {"gate": "gate_design", "reviews": [
-        "domain_dependencies", "domain_design", "wrapper_design", "orchestrator_design", "integration_design"]}
+        "domain_dependencies", "linked_domain_contracts", "domain_design", "orchestrator_design",
+        "integration_design"]}
     return run
 
 

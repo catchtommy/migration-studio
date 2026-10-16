@@ -33,8 +33,8 @@ def test_happy_path_runs_every_stage_and_gate(client):
     run = wait_for(client, run_id, {"completed"})
 
     assert {s["stage"] for s in run["stages"]} == {
-        "as_is_doc", "deep_dive", "gate_analysis", "domain_dependencies", "domain_design", "wrapper_design",
-        "orchestrator_design", "integration_design", "gate_design", "modular_monolith",
+        "as_is_doc", "deep_dive", "gate_analysis", "domain_dependencies", "linked_domain_contracts",
+        "domain_design", "orchestrator_design", "integration_design", "gate_design", "modular_monolith",
         "microservice_scaffold", "independent_tests", "gate_tests", "modernise", "monolith_integration",
         "gate_release"}
     assert all(s["status"] in ("completed", "approved") for s in run["stages"])
