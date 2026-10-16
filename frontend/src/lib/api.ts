@@ -467,6 +467,7 @@ export interface DatabaseConfig {
   username: string;
   password?: string;
   options: Record<string, string>;
+  oracle_client?: string; // Oracle Instant Client folder: thick mode; empty: thin mode
   has_password?: boolean;
 }
 

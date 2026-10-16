@@ -7,6 +7,8 @@ from before the database could be chosen keep working on SQLite). Otherwise the 
 
 import json
 import os
+import sys
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -30,6 +32,9 @@ class DatabaseConfig:
     username: str = ""
     password: str = ""
     options: dict[str, str] = field(default_factory=dict)  # extra URL query parameters, e.g. sslmode=require
+    # Oracle only: an Oracle Instant Client folder, to connect in thick mode (e.g. for users whose passwords only have
+    # Oracle's old 10G verifier). Empty: thin mode, which needs no Oracle software.
+    oracle_client: str = ""
 
     def url(self) -> URL:
         if self.dialect not in DIALECTS:
@@ -109,8 +114,54 @@ class ConnectionFailed(RuntimeError):
     pass
 
 
-def test_connection(url: URL) -> str:
+_oracle_client: str | None = None  # the Instant Client folder thick mode was started with in this process
+_oracle_lock = threading.Lock()
+
+
+def use_oracle_client(folder: str | None) -> None:
+    """Switch python-oracledb to thick mode with the Oracle Instant Client in `folder` (or STUDIO_ORACLE_CLIENT_DIR).
+    Thick mode is per process: once on, it stays on until the studio restarts. No folder: thin mode."""
+    global _oracle_client
+    folder = (folder or os.environ.get("STUDIO_ORACLE_CLIENT_DIR") or "").strip()
+    if not folder:
+        return
+    with _oracle_lock:
+        if _oracle_client == folder:
+            return
+        if _oracle_client is not None:
+            raise ConnectionFailed(f"Oracle Instant Client is already loaded from {_oracle_client}; restart the studio "
+                                   "to use another folder")
+        if not Path(folder).is_dir():
+            raise ConnectionFailed(f"There is no Oracle Instant Client folder {folder}")
+        import oracledb
+        try:
+            # On Linux the library is found through LD_LIBRARY_PATH (or ldconfig), set before the studio starts.
+            oracledb.init_oracle_client(**({} if sys.platform.startswith("linux") else {"lib_dir": folder}))
+        except oracledb.Error as e:
+            raise ConnectionFailed(f"Could not load Oracle Instant Client from {folder}: {e}") from e
+        _oracle_client = folder
+
+
+def prepare_driver(url: URL, cfg: "DatabaseConfig | None" = None) -> None:
+    """Driver set-up a database needs before connecting (Oracle thick mode, when an Instant Client is configured)."""
+    if url.get_backend_name() == "oracle":
+        cfg = cfg if cfg is not None else load()
+        use_oracle_client(cfg.oracle_client if cfg and cfg.dialect == "oracle" else None)
+
+
+def _explain(message: str) -> str:
+    """The driver's message, with what to do for errors people hit when first connecting."""
+    if "DPY-3015" in message:
+        return (f"{message}. This database user's password only has Oracle's old 10G verifier, which thin mode can't "
+                "use. Ask the DBA to reset the password (with SQLNET.ALLOWED_LOGON_VERSION_SERVER of 11 or higher, so "
+                "a newer verifier is made), or install Oracle Instant Client and enter its folder below to connect "
+                "in thick mode.")
+    return message
+
+
+def test_connection(url: URL, cfg: "DatabaseConfig | None" = None) -> str:
     """Connect and return the server's version text. Raises ConnectionFailed with a readable reason."""
+    prepare_driver(url, cfg)
     engine = create_engine(url, poolclass=NullPool, connect_args=connect_args(url))
     try:
         with engine.connect() as conn:
@@ -120,6 +171,7 @@ def test_connection(url: URL) -> str:
         return f"{LABELS[name]} {version}".strip()
     except Exception as e:  # driver errors vary; show the driver's own message
         orig = getattr(e, "orig", None) or e
-        raise ConnectionFailed(str(orig).strip().splitlines()[0] if str(orig).strip() else type(orig).__name__) from e
+        message = str(orig).strip().splitlines()[0] if str(orig).strip() else type(orig).__name__
+        raise ConnectionFailed(_explain(message)) from e
     finally:
         engine.dispose()

@@ -20,6 +20,7 @@ SessionLocal = sessionmaker(expire_on_commit=False)
 
 
 def make_engine(url: URL) -> Engine:
+    db_config.prepare_driver(url)
     if url.get_backend_name() != "sqlite":
         # pre_ping replaces connections the server or a firewall dropped; the pool covers the runner's worker threads
         # (up to 16) plus the API's requests.

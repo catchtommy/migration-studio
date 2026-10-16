@@ -151,3 +151,26 @@ def test_database_status_and_connection_test(client, tmp_path):
     # Set by the environment (as in this test run): it can't be switched from the UI.
     r = client.post("/api/database", json={"config": {"dialect": "sqlite", "database": str(tmp_path / "t.db")}})
     assert r.status_code == 409
+
+
+def test_oracle_old_password_verifier_is_explained_and_thick_mode_can_be_configured(client, tmp_path):
+    from app.db import config as db_config
+
+    message = db_config._explain("DPY-3015: password verifier type 0x939 is not supported by python-oracledb in thin mode")
+    assert "reset the password" in message and "Instant Client" in message
+    assert db_config._explain("ORA-01017: invalid username/password") == "ORA-01017: invalid username/password"
+
+    # Saved settings from before the option still load; the folder is checked before connecting.
+    old = db_config.DatabaseConfig(**{"dialect": "oracle", "host": "db", "port": 1521, "database": "PDB",
+                                      "username": "u", "password": "p", "options": {}})
+    assert old.oracle_client == ""
+    r = client.post("/api/database/test", json={"dialect": "oracle", "host": "db.invalid", "database": "PDB",
+                                                "username": "u", "password": "p",
+                                                "oracle_client": str(tmp_path / "no-such-folder")})
+    assert r.status_code == 422 and "no Oracle Instant Client folder" in r.json()["detail"]
+
+
+def test_a_connection_string_in_the_host_field_is_refused_clearly(client):
+    r = client.post("/api/database/test", json={"dialect": "oracle", "host": "jdbc:oracle:thin:@//db:1521/PDB",
+                                                "database": "PDB", "username": "u", "password": "p"})
+    assert r.status_code == 422 and "only the server name" in r.json()["detail"]

@@ -26,6 +26,7 @@ class DatabaseIn(BaseModel):
     username: str = ""
     password: str = ""  # blank keeps the saved password for the same server and user
     options: dict[str, str] = {}
+    oracle_client: str = Field(default="", max_length=1000)  # Oracle Instant Client folder: thick mode
 
 
 class ConfigureIn(BaseModel):
@@ -41,6 +42,10 @@ def _config(body: DatabaseIn) -> db_config.DatabaseConfig:
                                               "service name", cfg.database), ("username", cfg.username)) if not value]
         if missing:
             raise HTTPException(422, f"Fill in the {', '.join(missing)}")
+        if any(c in cfg.host for c in "@/") or cfg.host.count(":") == 1 or cfg.host.lower().startswith("jdbc"):
+            raise HTTPException(422, "Enter only the server name or IP address as the host (e.g. db.example.com), "
+                                     "with the port and the " + ("service name" if cfg.dialect == "oracle" else
+                                                                 "database") + " in their own fields")
     saved = db_config.load()
     if not cfg.password and saved and (saved.dialect, saved.host, saved.port, saved.username) == \
             (cfg.dialect, cfg.host, cfg.port, cfg.username):
@@ -80,7 +85,8 @@ def setup_or_settings(request: Request) -> None:
 @router.post("/test", dependencies=[Depends(setup_or_settings)])
 def test(body: DatabaseIn) -> dict:
     try:
-        return {"ok": True, "version": db_config.test_connection(_config(body).url())}
+        cfg = _config(body)
+        return {"ok": True, "version": db_config.test_connection(cfg.url(), cfg)}
     except db_config.ConnectionFailed as e:
         raise HTTPException(422, f"Could not connect: {e}")
 
@@ -107,7 +113,7 @@ def configure(body: ConfigureIn) -> dict:
         cfg = _config(body.config)
         url = cfg.url()
         try:
-            db_config.test_connection(url)
+            db_config.test_connection(url, cfg)
         except db_config.ConnectionFailed as e:
             raise HTTPException(422, f"Could not connect: {e}")
         target = session.make_engine(url)

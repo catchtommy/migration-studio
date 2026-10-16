@@ -85,8 +85,16 @@ On first start the UI asks which database to use; change it later under **Settin
 | Choice | Use it for |
 |---|---|
 | **PostgreSQL** | Production and shared installations. Create an empty database with UTF8 encoding and a user that can create tables. |
-| **Oracle** 19c+ | Production, where Oracle is the standard. Give the service name of the pluggable database; the user needs `CREATE TABLE` and quota on its tablespace. Uses python-oracledb in thin mode, so no Oracle Client install is needed. |
+| **Oracle** 19c+ | Production, where Oracle is the standard. Give the service name of the pluggable database; the user needs `CREATE TABLE` and quota on its tablespace. Uses python-oracledb in thin mode, so no Oracle Client install is needed (see below for thick mode). |
 | **SQLite** | Local development and the test suite only: one writer at a time, on this server's disk. The UI shows a warning while it is in use. |
+
+**Oracle error DPY-3015 ("password verifier type 0x939 is not supported … in thin mode")**: the database user's
+password only has Oracle's old 10G verifier. Best fix: ask the DBA to reset the password, with
+`SQLNET.ALLOWED_LOGON_VERSION_SERVER` of 11 or higher in the server's `sqlnet.ora` (the default since 12c), so a newer
+verifier is created. Otherwise, use thick mode: download **Oracle Instant Client Basic** for your OS from oracle.com,
+unzip it, and enter its folder in **Oracle Instant Client folder** on the database form (or set
+`STUDIO_ORACLE_CLIENT_DIR`). On Linux, also add the folder to `LD_LIBRARY_PATH` before starting the studio. Thick mode
+stays on until the studio restarts.
 
 Everything the studio records lives in that database: settings, agents, workflows, domains, features, contracts, runs,
 every document agents write (md, yaml, contract specs) with reviewers' edits, each stage's diff, and the LangGraph
