@@ -111,10 +111,12 @@ project you work in (the choice is remembered per browser).
     Python or Go install). `run_command` puts the agent's toolchain first on `PATH` and sets `JAVA_HOME` or
     `DOTNET_ROOT` for Java and .NET.
   - The test database connection, self-check attempts and the cross-domain conventions.
-- **Agents and workflows** are a shared library used by every project. A project can **customise** one: saving with
-  *This project only* gives the project its own copy (marked *copy*), which other projects don't see; *Revert to
-  shared* drops it. Projects can also have agents and workflows of their own. Changing the shared library needs
-  *Manage agents* / *Manage workflows* as a global role; a project role only allows project copies.
+- **Workflows** start from the standard ones every project gets, and **changes always apply to the current project
+  only**: saving a standard workflow gives the project its own copy (marked *copy*), which other projects don't see,
+  and *Reset to standard* drops it. New workflows belong to the project they're made in.
+- **Agents** are a shared library used by every project. A project can **customise** one: saving with *This project
+  only* gives the project its own copy; *Revert to shared* drops it. Projects can also have agents of their own.
+  Changing the shared agents needs *Manage agents* as a global role; a project role only allows project copies.
 - The AI provider, Copilot sign-in, corporate network and database are global (**Settings**).
 - Data from before projects is in the **Default project**; its existing users became members.
 
@@ -318,9 +320,9 @@ commit in every repository it changed.
    project only** when the URLs are specific to a project.
 2. **Workflow → Git** sets whether runs end with a review and commit, and the **feature branch name**
    (`migration/{domain}/{feature}` by default; `{run}` and `{date}` also work).
-3. **New migration** lists the repositories the run will cut the feature branch in, the steps changing code in each,
-   and their base branches (editable). The monolith's base branch comes from the project. The feature branch name can
-   be changed too. Names a repository already has, or that another unfinished run uses there, are refused.
+3. **New migration** starts the run on a feature branch named by that pattern, in every repository it will change.
+   Names a repository already has, or that another unfinished run uses there, are refused. **Add / show entry
+   points** shows the feature's entry points, pre-filled, to change for this run, with notes for the agents.
 4. **Before a step changes code in a repository for the first time**, the run pauses as **Confirm branches**: the
    run page shows the repository, its base branch (editable while it isn't checked out yet) and the feature branch
    (renaming it renames it in every repository of the run). **Confirm and start** (needs *Run migrations*) checks the

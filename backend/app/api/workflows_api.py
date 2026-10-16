@@ -36,7 +36,7 @@ def list_workflows(db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=WorkflowOut, status_code=201, dependencies=[Depends(require("workflows.manage"))])
-def create_workflow(body: WorkflowCreate, library: Library = "shared", db: Session = Depends(get_db),
+def create_workflow(body: WorkflowCreate, library: Library = "project", db: Session = Depends(get_db),
                     access: ProjectAccess = Depends(project_context)):
     _check_library(library, access)
     scope = body.scope
@@ -65,7 +65,7 @@ def get_workflow(key: str, db: Session = Depends(get_db)):
 
 
 @router.put("/{key}", response_model=WorkflowOut, dependencies=[Depends(require("workflows.manage"))])
-def update_workflow(key: str, body: WorkflowIn, library: Library = "shared", db: Session = Depends(get_db),
+def update_workflow(key: str, body: WorkflowIn, library: Library = "project", db: Session = Depends(get_db),
                     access: ProjectAccess = Depends(project_context)):
     """Applies to runs started afterwards; runs in progress keep the workflow they started with. library=project
     changes this project's copy (made from the shared workflow if needed)."""
@@ -93,7 +93,7 @@ def revert_workflow(key: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/{key}", status_code=204, dependencies=[Depends(require("workflows.manage"))])
-def delete_workflow(key: str, library: Library = "shared", access: ProjectAccess = Depends(project_context)):
+def delete_workflow(key: str, library: Library = "project", access: ProjectAccess = Depends(project_context)):
     _check_library(library, access)
     try:
         workflow_store.delete(key, library)

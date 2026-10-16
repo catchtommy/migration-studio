@@ -664,12 +664,12 @@ export const api = {
   saveAgentMd: (key: string, content: string, scope: Library = "shared") =>
     request<{ agent: Agent; warnings: string[] }>(`/agents/${key}/agent-md?scope=${scope}`, json("PUT", { content })),
   workflows: () => request<Workflow[]>("/workflows"),
-  createWorkflow: (body: { key: string; name: string; description: string; scope?: Scope; copy_from?: string; steps?: WorkflowStep[] }, library: Library = "shared") =>
+  createWorkflow: (body: { key: string; name: string; description: string; scope?: Scope; copy_from?: string; steps?: WorkflowStep[] }, library: Library = "project") =>
     request<Workflow>(`/workflows?library=${library}`, json("POST", body)),
-  updateWorkflow: (key: string, body: { name?: string; description?: string; steps?: WorkflowStep[]; git?: WorkflowGit }, library: Library = "shared") =>
+  updateWorkflow: (key: string, body: { name?: string; description?: string; steps?: WorkflowStep[]; git?: WorkflowGit }, library: Library = "project") =>
     request<Workflow>(`/workflows/${key}?library=${library}`, json("PUT", body)),
   revertWorkflow: (key: string) => request<Workflow>(`/workflows/${key}/revert`, { method: "POST" }),
-  deleteWorkflow: (key: string, library: Library = "shared") => request<void>(`/workflows/${key}?library=${library}`, { method: "DELETE" }),
+  deleteWorkflow: (key: string, library: Library = "project") => request<void>(`/workflows/${key}?library=${library}`, { method: "DELETE" }),
   domains: () => request<DomainSummary[]>("/domains"),
   domain: (key: string) => request<Domain>(`/domains/${key}`),
   createDomain: (body: { key: string; name: string; description: string }) => request<Domain>("/domains", json("POST", body)),

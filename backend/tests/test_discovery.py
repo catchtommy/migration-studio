@@ -211,4 +211,4 @@ def test_workflow_scopes(client):
     r = start_run(client, {"domain": "loan", "operation": f"s{next(_ids)}", "workflow": copy["key"]})
     assert r.status_code == 422 and "not a migration workflow" in r.json()["detail"]
     assert client.delete(f"/api/workflows/{copy['key']}").status_code == 204
-    assert client.delete("/api/workflows/discover_bounded_contexts").status_code == 409  # the last of its kind
+    assert client.delete("/api/workflows/discover_bounded_contexts?library=shared").status_code == 409  # the last

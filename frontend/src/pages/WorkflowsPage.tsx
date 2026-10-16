@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, SCOPE_LABELS, type Agent, type Library, type Scope, type StepCode, type Workflow, type WorkflowGit, type WorkflowStep } from "../lib/api";
-import { useAgents, useCanGlobally, useDomains, useWorkflows } from "../lib/hooks";
-import { LibraryBadge, SaveTarget } from "../components/LibraryBadge";
+import { api, SCOPE_LABELS, type Agent, type Scope, type StepCode, type Workflow, type WorkflowGit, type WorkflowStep } from "../lib/api";
+import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
+import { LibraryBadge } from "../components/LibraryBadge";
 import { slug } from "../lib/slug";
 import { normalizeSteps, type EditableStep } from "../lib/workflowSteps";
 import { Field, inputClass } from "../components/Field";
@@ -29,9 +29,6 @@ function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[
   const [description, setDescription] = useState("");
   const [from, setFrom] = useState(workflows.find((w) => w.key === "standard")?.key ?? workflows[0]?.key ?? "");
   const [scope, setScope] = useState<Scope>("operation");
-  const canShared = useCanGlobally("workflows.manage");
-  const [libraryChoice, setLibrary] = useState<Library | null>(null);
-  const library: Library = libraryChoice ?? (canShared ? "shared" : "project");
   const key = slug(name, "-");
   const create = useMutation({
     mutationFn: () =>
@@ -42,7 +39,7 @@ function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[
           description,
           ...(from ? { copy_from: from } : { scope, steps: [{ kind: "agent", key: (agents.find((a) => a.key === FIRST_AGENT[scope]) ?? agents[0])?.key ?? "" }] }),
         },
-        library,
+        "project", // workflows belong to the project they're made in
       ),
     onSuccess: (w) => {
       queryClient.invalidateQueries({ queryKey: ["workflows"] });
@@ -89,7 +86,6 @@ function NewWorkflowForm({ workflows, agents, onCancel }: { workflows: Workflow[
         <textarea rows={2} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
       </Field>
       <div className="flex items-center gap-2">
-        <SaveTarget value={library} onChange={setLibrary} canShared={canShared} noun="new workflow" />
         <button type="submit" disabled={!key || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
           Create workflow
         </button>
@@ -383,17 +379,13 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
     description !== workflow.description ||
     JSON.stringify(toSteps(steps)) !== JSON.stringify(toSteps(editable(workflow.steps))) ||
     JSON.stringify(git) !== JSON.stringify(workflow.git);
-  const canShared = useCanGlobally("workflows.manage");
-  const [choice, setChoice] = useState<Library | null>(null); // null: the default below
-  const target: Library = workflow.library === "project" ? "project" : (choice ?? (canShared ? "shared" : "project"));
-  const setTarget = setChoice;
   const onSaved = (saved: Workflow) => queryClient.setQueryData<Workflow[]>(["workflows"], (prev) => prev?.map((w) => (w.key === saved.key ? saved : w)));
   const save = useMutation({
     mutationFn: () =>
-      api.updateWorkflow(workflow.key, { name: name.trim(), description, steps: toSteps(steps), ...(workflow.scope === "operation" ? { git } : {}) }, target),
+      api.updateWorkflow(workflow.key, { name: name.trim(), description, steps: toSteps(steps), ...(workflow.scope === "operation" ? { git } : {}) }, "project"), // changes apply to this project only
     onSuccess: onSaved,
   });
-  const revert = useMutation({ mutationFn: () => api.revertWorkflow(workflow.key), onSuccess: (w) => (onSaved(w), setTarget(null)) });
+  const revert = useMutation({ mutationFn: () => api.revertWorkflow(workflow.key), onSuccess: onSaved });
   const remove = useMutation({
     mutationFn: () => api.deleteWorkflow(workflow.key, workflow.library),
     onSuccess: () => {
@@ -503,15 +495,15 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         <button type="submit" disabled={!dirty || !name.trim() || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
           Save workflow
         </button>
-        {workflow.library === "shared" && <SaveTarget value={target} onChange={setTarget} canShared={canShared} noun="workflow" />}
+        <span className="text-xs text-subtle">Changes apply to this project only.</span>
         {workflow.customised && (
           <button
             type="button"
             className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
             disabled={revert.isPending}
-            onClick={() => window.confirm(`Drop this project's changes to ${workflow.name} and use the shared workflow again?`) && revert.mutate()}
+            onClick={() => window.confirm(`Drop this project's changes to ${workflow.name} and go back to the standard version?`) && revert.mutate()}
           >
-            Revert to shared
+            Reset to standard
           </button>
         )}
         {dirty && (
@@ -527,14 +519,14 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         )}
         {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
         {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
-        {!workflow.customised && (workflow.library === "project" || canShared) && (
+        {workflow.library === "project" && !workflow.customised && (
           <button
             type="button"
             className="ml-auto rounded-md px-3 py-1.5 text-sm text-bad hover:bg-bad/10 disabled:opacity-50"
             disabled={remove.isPending}
             onClick={() =>
               window.confirm(
-                `Delete the ${workflow.name} workflow${workflow.library === "shared" ? " from every project" : ""}?${defaultFor.length ? ` It is the default for ${defaultFor.map((d) => d.name).join(", ")}.` : ""} Runs that used it are not affected.`,
+                `Delete the ${workflow.name} workflow from this project?${defaultFor.length ? ` It is the default for ${defaultFor.map((d) => d.name).join(", ")}.` : ""} Runs that used it are not affected.`,
               ) && remove.mutate()
             }
           >

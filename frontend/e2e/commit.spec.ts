@@ -28,15 +28,13 @@ test("a finished run's code is reviewed, its conflict resolved, and the feature 
   const steps = wf.steps.map((st: { key: string }) => (st.key === firstAgent ? { ...st, code: { repository: "", base_branch: "" } } : st));
   await page.request.put("/api/workflows/standard?library=project", { data: { steps }, headers: project });
 
-  // Start from the New migration form in that project: the feature branch can be renamed before starting.
+  // Start from the New migration form in that project; the feature branch is renamed when confirming it.
   await page.goto("/");
   await page.getByRole("button", { name: "Switch project" }).click();
   await page.getByRole("option", { name: new RegExp(`Commit ${key}`) }).click();
-  const featureBranch = page.getByLabel("Feature branch");
-  await expect(featureBranch).toHaveValue("migration/loan/approve");
-  await featureBranch.fill("feature/e2e-approve");
+  await expect(page.getByLabel("Feature branch")).toHaveCount(0); // branches are confirmed on the run, not here
   await page.getByRole("button", { name: "Start migration" }).click();
-  await expect(page.getByText("feature/e2e-approve").first()).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toContainText("approve");
   const runId = page.url().split("/runs/")[1];
 
   // Approve every gate.
@@ -47,7 +45,8 @@ test("a finished run's code is reviewed, its conflict resolved, and the feature 
       run = await (await page.request.get(`/api/runs/${runId}`, { headers: project })).json();
     }
     if (run.status === "awaiting_branches") {
-      await page.request.post(`/api/runs/${runId}/branches`, { data: { feature_branch: run.branch }, headers: project });
+      expect(run.branch).toBe("migration/loan/approve");
+      await page.request.post(`/api/runs/${runId}/branches`, { data: { feature_branch: "feature/e2e-approve" }, headers: project });
       continue;
     }
     if (run.status === "awaiting_commit" && run.current_stage) {
@@ -114,12 +113,10 @@ test("a step that changes another repository: set on the step, cut on the same b
   await code.getByLabel("Changes code").check();
   await code.getByLabel("In another repository").check();
   await code.getByLabel("Step 2 code repository").fill(join(root, "{domain}-service"));
-  await page.getByText("This project only").click();
   await page.getByRole("button", { name: "Save workflow" }).click();
   await expect(page.getByText("Saved")).toBeVisible();
 
   await page.goto("/");
-  await expect(page.getByLabel("Base branch of loan-service")).toBeVisible();
   await page.getByRole("button", { name: "Start migration" }).click();
   await expect(page.getByText(/also in loan-service/)).toBeVisible();
   const runId = page.url().split("/runs/")[1];

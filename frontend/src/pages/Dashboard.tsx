@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, runSubject, type Run } from "../lib/api";
+import { api, runSubject, type AgentInputs, type Run } from "../lib/api";
 import { useDomains, useWorkflows } from "../lib/hooks";
-import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
+import { InputsEditor } from "../components/InputsEditor";
 import { ProgressStrip } from "../components/ProgressStrip";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { PageTitle } from "../components/PageTitle";
-import { ActivityIcon, BranchIcon, CheckIcon, ClockIcon, LayersIcon, MessageIcon } from "../components/icons";
+import { ActivityIcon, CheckIcon, ClockIcon, LayersIcon, MessageIcon } from "../components/icons";
 import { Guarded } from "../components/Guarded";
 
 /** emphasis: text colour for the count when something is waiting on a person. */
@@ -44,33 +44,17 @@ function NewRunForm() {
   const operation = chosenFeature && available.some((f) => f.key === chosenFeature) ? chosenFeature : (available[0]?.key ?? "");
   const feature = features?.find((f) => f.key === operation);
   const [showInputs, setShowInputs] = useState(false);
-  const [inputs, setInputs] = useState(EMPTY_INPUTS);
-  // Where the run works: the workflow's or project's repository and base branch, and a feature branch cut from it.
-  const { data: plan } = useQuery({
-    queryKey: ["gitPlan", domain, operation, workflow],
-    queryFn: () => api.gitPlan(domain, operation, workflow),
-    enabled: !!domain && !!operation && !!workflow,
-  });
-  const [branches, setBranches] = useState<{ for: string; bases: Record<string, string>; feature: string } | null>(null);
-  const planKey = `${domain}/${operation}/${workflow}`;
-  const edited = branches?.for === planKey ? branches : null;
-  const featureBranch = edited ? edited.feature : (plan?.feature_branch ?? "");
-  const baseOf = (key: string) => edited?.bases[key] ?? plan?.repositories.find((r) => r.key === key)?.base_branch ?? "";
-  const setFeature = (value: string) => setBranches({ for: planKey, bases: edited?.bases ?? {}, feature: value.trim() });
-  const setBase = (key: string, value: string) => setBranches({ for: planKey, bases: { ...edited?.bases, [key]: value.trim() }, feature: featureBranch });
+  // The agents' entry points and notes for this run: the feature's entry points until edited (per feature).
+  const [edited, setEdited] = useState<{ for: string; value: AgentInputs } | null>(null);
+  const defaults: AgentInputs = { paths: feature?.entry_points ?? [], notes: "" };
+  const inputs = edited?.for === operation ? edited.value : defaults;
+  const setInputs = (value: AgentInputs) => setEdited({ for: operation, value });
   const create = useMutation({
     mutationFn: () => {
       const paths = inputs.paths.map((p) => p.trim()).filter(Boolean);
       const notes = inputs.notes.trim();
-      return api.createRun({
-        domain,
-        operation,
-        workflow,
-        inputs: paths.length || notes ? { paths, notes } : undefined,
-        ...(plan?.repositories.length
-          ? { feature_branch: featureBranch, base_branches: Object.fromEntries(plan.repositories.map((r) => [r.key, baseOf(r.key)])) }
-          : {}),
-      });
+      const changed = notes || paths.join("\n") !== defaults.paths.join("\n"); // unchanged: the feature's own entry points
+      return api.createRun({ domain, operation, workflow, inputs: changed ? { paths, notes } : undefined });
     },
     onSuccess: (run) => {
       queryClient.invalidateQueries({ queryKey: ["runs"] });
@@ -155,75 +139,18 @@ function NewRunForm() {
           aria-expanded={showInputs}
           className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
         >
-          {showInputs ? "Hide agent inputs" : "Add entry points & notes"}
+          {showInputs ? "Hide entry points" : `Add / show entry points${defaults.paths.length ? ` (${defaults.paths.length})` : ""}`}
         </button>
         <button type="submit" disabled={!domain || !workflow || !operation || create.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
           Start migration
         </button>
-        {plan && plan.repositories.length > 0 && (
-          <div className="w-full space-y-2 rounded-md border border-border bg-bg/60 px-3 py-2 text-sm">
-            <label className="flex flex-wrap items-center gap-2">
-              <BranchIcon className="h-4 w-4 text-subtle" />
-              <span className="text-xs font-medium text-subtle">Feature branch</span>
-              <input
-                aria-label="Feature branch"
-                className="min-w-56 flex-1 rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs"
-                value={featureBranch}
-                onChange={(e) => setFeature(e.target.value)}
-              />
-            </label>
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-subtle">
-                  <th className="py-1 pr-3 font-medium">Cut in</th>
-                  <th className="py-1 pr-3 font-medium">from base branch</th>
-                  <th className="py-1 font-medium">Steps changing code there</th>
-                </tr>
-              </thead>
-              <tbody>
-                {plan.repositories.map((r) => (
-                  <tr key={r.key} className="align-top">
-                    <td className="py-1 pr-3">
-                      <span className="font-medium">{r.root ? "Monolith" : r.name}</span>
-                      <span className="block max-w-72 truncate font-mono text-subtle" title={r.url}>
-                        {r.url}
-                      </span>
-                    </td>
-                    <td className="py-1 pr-3">
-                      <input
-                        aria-label={`Base branch of ${r.root ? "the monolith" : r.name}`}
-                        className="w-36 rounded-md border border-border bg-surface px-2 py-1 font-mono"
-                        placeholder={r.default_branch ?? "default branch"}
-                        value={baseOf(r.key)}
-                        onChange={(e) => setBase(r.key, e.target.value)}
-                      />
-                      {!edited && r.base_branch_exists === false && <span className="block text-warn">No such branch</span>}
-                      {!edited && r.feature_branch_exists && <span className="block text-warn">Already has the feature branch</span>}
-                    </td>
-                    <td className="py-1 text-subtle">{r.steps.length ? r.steps.join(", ") : r.root ? "none (agents read it)" : ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="text-xs text-subtle">
-              {plan.commit
-                ? "When the workflow finishes, you review the code changes in each repository and commit them to the feature branch."
-                : "This workflow doesn't commit its changes to git."}
-            </p>
-          </div>
-        )}
-        {feature && feature.entry_points.length > 0 && (
-          <p className="w-full text-xs text-subtle">
-            Agents start from the feature's entry points: <span className="font-mono">{feature.entry_points.join(", ")}</span>
-            {showInputs ? ". Entry points you add below replace them." : "."}
-          </p>
-        )}
         {showInputs && (
           <div className="w-full">
             <InputsEditor
               value={inputs}
               onChange={setInputs}
               pathsLabel="Entry points and files for this feature"
+              pathsHint="The feature's entry points, one per line. Changes here apply to this run only."
               notesLabel="Notes for the agents"
               notesHint="Given to every agent in this run, alongside the domain's inputs."
             />

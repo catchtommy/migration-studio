@@ -28,9 +28,12 @@ test("domain inputs and operation entry points reach the agents and show up in t
   await page.getByRole("button", { name: "Save inputs" }).click();
   await expect(page.getByText("Saved")).toBeVisible();
 
-  await newMigration(page, domainKey, "valuePledge");
-  await page.getByRole("button", { name: "Add entry points & notes" }).click();
-  await page.getByLabel("Entry points and files for this feature").fill("CollateralController.value");
+  await newMigration(page, domainKey, "valuePledge", ["CollateralController.list", "CollateralService.value"]);
+  await expect(page.getByText("CollateralService.value")).toHaveCount(0); // not listed until asked for
+  await page.getByRole("button", { name: "Add / show entry points (2)" }).click();
+  const entryPoints = page.getByLabel("Entry points and files for this feature");
+  await expect(entryPoints).toHaveValue("CollateralController.list\nCollateralService.value"); // pre-filled
+  await entryPoints.fill("CollateralController.value");
   await page.getByRole("button", { name: "Start migration" }).click();
   await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible({ timeout: 30_000 });
 

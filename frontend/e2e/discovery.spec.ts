@@ -52,7 +52,8 @@ test("bounded contexts, then a domain's features, then migrating a feature", asy
   await page.getByRole("button", { name: "Add feature" }).click();
   await page.getByRole("row", { name: new RegExp(`Archive ${feature}`) }).getByRole("link", { name: "Migrate" }).click();
   await expect(page.getByLabel("Feature")).toHaveValue(feature);
-  await expect(page.getByText("ArchiveController.archive")).toBeVisible();
+  await page.getByRole("button", { name: /Add \/ show entry points \(1\)/ }).click();
+  await expect(page.getByLabel("Entry points and files for this feature")).toHaveValue(/ArchiveController\.archive/);
   await page.getByRole("button", { name: "Start migration" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toContainText(feature);
 });
