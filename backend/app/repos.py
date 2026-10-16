@@ -10,7 +10,6 @@ again when missing.
 
 import hashlib
 import re
-import shutil
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -166,4 +165,4 @@ def behind(project: str, url: str | None, base_branch: str | None, base_sha: str
 
 
 def remove(project: str) -> None:
-    shutil.rmtree(settings.repos_dir / project, ignore_errors=True)
+    git_ops.remove_tree(settings.repos_dir / project)

@@ -1,6 +1,5 @@
 """Domains of the monolith and the per-agent guidance attached to them."""
 
-import shutil
 from pathlib import Path
 
 from sqlalchemy import select
@@ -10,6 +9,7 @@ from app.db.models import (
     Approval, Artifact, AuditEvent, Contract, Dependency, Domain, Feature, Project, Question, Run, StageExecution,
 )
 from app.db.session import session_scope
+from app.tools import git_ops
 
 BUSY = ("running", "awaiting_input")  # a worker thread is using the run
 
@@ -70,5 +70,5 @@ def delete_with_runs(key: str) -> int:
     for run_id in ids:
         get_runner().forget(run_id)
     for ws in workspaces:
-        shutil.rmtree(Path(ws), ignore_errors=True)
+        git_ops.remove_tree(Path(ws))
     return len(ids)

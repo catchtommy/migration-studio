@@ -57,7 +57,7 @@ def check(workspace: Path, domain: str, service_dir: str, ownership: dict[str, d
 
     violations: list[Violation] = []
     for f in _files(root):
-        rel = str(f.relative_to(workspace))
+        rel = f.relative_to(workspace).as_posix()
         for n, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
             declaration = line.lstrip().startswith(DECLARATIONS)
             for pattern, rule, detail in rules:

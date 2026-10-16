@@ -131,7 +131,7 @@ class Toolbox:
         return p
 
     def _rel(self, p: Path) -> str:
-        return str(p.relative_to(self.root))
+        return p.relative_to(self.root).as_posix()
 
     def _git(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True)

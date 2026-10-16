@@ -57,9 +57,17 @@ workflow uses them.
 
 ## Run it
 
+macOS / Linux:
+
 ```bash
 ./dev.sh            # backend on :8000, UI on http://localhost:5173
 ```
+
+Windows: double-click **`dev.cmd`**, or run `.\dev.cmd` in PowerShell or a command prompt (`./dev.sh` won't run
+there: Windows doesn't know `.sh` files). The first run creates `backend\.venv`, installs the backend and the UI's
+packages, then starts both; Ctrl+C stops them. It needs **Python 3.12+** (python.org; tick *Add python.exe to PATH*),
+**Node.js 20+** (nodejs.org, LTS) and **Git for Windows**. Inside WSL (Linux on Windows), use `./dev.sh` as on
+Linux instead.
 
 First-time setup:
 

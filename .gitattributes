@@ -1,0 +1,4 @@
+# Windows scripts need Windows line endings, shell scripts Unix ones, whatever the checkout settings.
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf

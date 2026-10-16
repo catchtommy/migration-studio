@@ -2,8 +2,10 @@
 through GIT_ASKPASS so it never appears in a URL, a command line or a log. Without a token for the host (or for SSH
 URLs), git uses the server's own setup (SSH keys, credential helper)."""
 
+import os
 import re
 import stat
+import sys
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -43,12 +45,30 @@ def uses_https(url: str | None) -> bool:
     return bool(url) and urlsplit(url).scheme in ("http", "https")
 
 
-def _askpass() -> str:
-    path = settings.data_dir / "git-askpass.sh"
-    if not path.exists() or path.read_text() != _ASKPASS:
+_ASKPASS_PY = """import os, sys
+prompt = sys.argv[1] if len(sys.argv) > 1 else ""
+sys.stdout.write(os.environ.get("STUDIO_GIT_USERNAME" if prompt.startswith("Username") else "STUDIO_GIT_PASSWORD", ""))
+"""
+
+
+def _write(path, text: str, mode: int | None = None) -> None:
+    if not path.exists() or path.read_text() != text:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_ASKPASS)
-        path.chmod(stat.S_IRWXU)
+        path.write_text(text)
+        if mode is not None:
+            path.chmod(mode)
+
+
+def _askpass() -> str:
+    """The program git asks for the username and token: a shell script, or on Windows a .cmd running this Python."""
+    if os.name == "nt":
+        script = settings.data_dir / "git-askpass.py"
+        _write(script, _ASKPASS_PY)
+        wrapper = settings.data_dir / "git-askpass.cmd"
+        _write(wrapper, f'@"{sys.executable}" "{script}" %*\r\n')
+        return str(wrapper)
+    path = settings.data_dir / "git-askpass.sh"
+    _write(path, _ASKPASS, stat.S_IRWXU)
     return str(path)
 
 

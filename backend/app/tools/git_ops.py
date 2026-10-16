@@ -2,6 +2,8 @@
 
 import os
 import re
+import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,6 +16,16 @@ class GitError(RuntimeError):
 
 
 _BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")  # a plain ref name, never an option
+
+
+def remove_tree(path: Path) -> None:
+    """Delete a directory tree, including git's read-only object files (which Windows won't delete as they are)."""
+    def retry_writable(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+
+    if Path(path).exists():
+        shutil.rmtree(path, onexc=retry_writable)
 
 
 def valid_branch(name: str) -> bool:
@@ -82,11 +94,11 @@ def clone_mirror(url: str, path: Path, env: dict | None = None) -> None:
     """A bare mirror of a repository: every branch and tag, updated with fetch_mirror."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".partial")  # a failed or interrupted clone never looks like a mirror
-    subprocess.run(["rm", "-rf", str(tmp)], check=False)
+    remove_tree(tmp)
     proc = subprocess.run(["git", "clone", "--quiet", "--mirror", "--", url, str(tmp)], capture_output=True, text=True,
                           env={**os.environ, **env} if env else None)
     if proc.returncode != 0:
-        subprocess.run(["rm", "-rf", str(tmp)], check=False)
+        remove_tree(tmp)
         raise GitError(f"git clone {url} failed: {proc.stderr.strip()}")
     git(tmp, "config", "gc.auto", "0")  # never drop commits runs started from, even if upstream rewrites history
     tmp.rename(path)

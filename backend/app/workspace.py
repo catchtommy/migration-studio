@@ -6,7 +6,6 @@ commit the run started from, the diffs of the stages currently in effect are rep
 written from the database.
 """
 
-import shutil
 from pathlib import Path
 
 from sqlalchemy import select
@@ -61,7 +60,7 @@ def rebuild(run_id: str, before_stage: str | None = None) -> str:
         for stage, attempt, _ in chain:  # later stages win when they rewrote a document
             documents.update({a.path: a.content for a in artifacts if a.stage == stage and a.attempt == attempt})
 
-    shutil.rmtree(ws, ignore_errors=True)
+    git_ops.remove_tree(ws)
     git_ops.init_workspace(ws, repos.ensure(projects.current(), repository, started_by), branch, base_sha)
     missing = []
     for stage, attempt, diff in chain:

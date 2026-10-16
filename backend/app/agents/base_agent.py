@@ -91,7 +91,7 @@ class AgentContext:
         return d
 
     def rel(self, path: Path) -> str:
-        return str(path.relative_to(self.workspace))
+        return path.relative_to(self.workspace).as_posix()  # as git writes paths, on every OS
 
 
 DOCS_ROOT = ".migration"  # the studio's documents (each run's, and the contract catalogue) in a workspace
