@@ -46,10 +46,12 @@ def create_workflow(body: WorkflowCreate, library: Library = "shared", db: Sessi
         except KeyError:
             raise HTTPException(404, f"Workflow {body.copy_from} not found")
         steps, scope = source["steps"], source["scope"]  # a copy covers what the original covers
+        git = source["git"]
     else:
-        steps = [s.model_dump() for s in body.steps or []]
+        steps, git = [s.model_dump() for s in body.steps or []], None
     try:
-        return _with_runs(db, workflow_store.create(body.key, body.name, body.description, steps, scope, library))
+        return _with_runs(db, workflow_store.create(body.key, body.name, body.description, steps, scope, library,
+                                                    git))
     except WorkflowInvalid as e:
         raise HTTPException(422, str(e))
 

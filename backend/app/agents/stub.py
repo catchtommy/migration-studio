@@ -54,6 +54,7 @@ class StubAgent(StageAgent):
         artifacts += _sample_cross_domain_files(ctx)
         artifacts += _sample_api_files(ctx)
         artifacts += _sample_discovery_files(ctx)
+        _sample_code_change(ctx, stage)
         time.sleep(STUB_DELAY)
         ctx.log(f"[stub] wrote {', '.join(a.path for a in artifacts)}")
         return artifacts
@@ -470,3 +471,13 @@ def _sample_discovery_files(ctx: AgentContext) -> list[ArtifactOut]:
         f.write_text(content)
         written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
     return written
+
+
+def _sample_code_change(ctx: AgentContext, stage: StageDef) -> None:
+    """A step that changes code leaves a small file in its repository, so the review has something to show."""
+    if not stage.code:
+        return
+    code = ctx.workspace / ctx.code_dir / "studio-stub" / f"{ctx.stage}.txt"
+    code.parent.mkdir(parents=True, exist_ok=True)
+    code.write_text(f"{stage.title} for {ctx.domain}/{ctx.operation} (stub agent, attempt {ctx.attempt})\n")
+    ctx.log(f"[stub] changed code: {ctx.rel(code)}")

@@ -117,6 +117,20 @@ def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
     return [ArtifactOut(name=note.name, path=ctx.rel(note), kind="markdown")]
 
 
+def _code_dir(stage: StageDef, nested: list[dict], domain: str) -> str:
+    """Where the step changes code, relative to the workspace: the root (the monolith), or the run's checkout of the
+    repository the step names (see app/delivery.py)."""
+    repository = (stage.code or {}).get("repository")
+    if not repository:
+        return "."
+    url = repository.replace("{domain}", domain)
+    return next((r["path"] for r in nested if r["url"] == url), ".")
+
+
+def _repository_notes(nested: list[dict]) -> list[dict]:
+    return [{"key": r["key"], "url": r["url"], "path": r["path"], "base_branch": r.get("base_branch")} for r in nested]
+
+
 def make_agent_node(workflow: Workflow, stage: StageDef):
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
@@ -126,13 +140,25 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         refresh = stage.key in (state.get("refresh") or [])
         settings = get_settings()
 
+        # Before the first code change in a repository, a person confirms its base branch and the feature branch.
+        # (Everything before interrupt() runs again on resume, so nothing above has side effects.)
+        from app import delivery
+        proposal = delivery.confirmation_needed(run_id, stage.key)
+        if proposal:
+            answer = interrupt(proposal)  # the runner shows the run as awaiting_branches
+            delivery.apply_confirmation(run_id, proposal["repository"]["key"], answer,
+                                        lambda msg: emit(run_id, "log", msg, stage.key))
+
         with session_scope() as s:
             attempt = 1 + s.scalar(
                 select(func.count()).where(StageExecution.run_id == run_id, StageExecution.stage == stage.key)
             )
+            nested = [dict(r) for r in s.get(Run, run_id).repositories or [] if r.get("base_sha")]
             start_sha = git_ops.head(ws)
+            nested_starts = workspace.nested_heads(ws, nested)  # the run's other repositories, for rollbacks
             execution = StageExecution(run_id=run_id, stage=stage.key, attempt=attempt, status="running",
-                                       start_sha=start_sha, feedback=feedback, rerun=refresh or None)
+                                       start_sha=start_sha, feedback=feedback, rerun=refresh or None,
+                                       repos={k: {"start": v} for k, v in nested_starts.items()} or None)
             s.add(execution)
             s.flush()
             exec_id = execution.id
@@ -145,6 +171,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         except KeyError:
             config = None
         domain = state["domain"]
+        code_dir = _code_dir(stage, nested, domain)
         discovery = domain == discovery_store.MONOLITH or state["operation"] == discovery_store.FEATURES_OP
         if not discovery and contracts_store.export_specs(ws):
             emit(run_id, "log", f"Copied the contracts catalogue's specs to {contracts_store.CATALOGUE_DIR}/",
@@ -159,7 +186,8 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             catalogue=(discovery_store.domains_brief(domain) if discovery else
                        contracts_store.catalogue_brief(domain, settings)),
             ownership=_ownership(),
-            service_dir=settings["service_dir_pattern"].format(domain=domain),
+            service_dir=code_dir if code_dir != "." else settings["service_dir_pattern"].format(domain=domain),
+            code_dir=code_dir, repositories=_repository_notes(nested),
             ask=lambda question, options=None: questions.ask(run_id, stage.key, attempt, question, options),
             refresh=refresh, previous_outputs=_previous_outputs(run_id, stage.key) if refresh else [],
         )
@@ -172,15 +200,26 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             else:
                 outputs = get_agent(stage.key, config, settings["ai_provider"]).run(ctx)
         except Exception as e:
-            git_ops.reset_hard(ws, start_sha)  # leave a clean tree for the retry
+            git_ops.reset_hard(ws, start_sha)  # leave clean trees for the retry
+            for r in nested:
+                if r["key"] in nested_starts:
+                    git_ops.reset_hard(ws / r["path"], nested_starts[r["key"]])
             with session_scope() as s:
                 ex = s.get(StageExecution, exec_id)
                 ex.status, ex.error, ex.finished_at = "failed", str(e), utcnow()
             emit(run_id, "error", f"{stage.title} failed: {e}", stage.key)
             raise
 
-        end_sha = git_ops.commit_all(
-            ws, f"[{stage.key}] {discovery_store.subject(state['domain'], state['operation'])} attempt {attempt}")
+        message = f"[{stage.key}] {discovery_store.subject(state['domain'], state['operation'])} attempt {attempt}"
+        end_sha = git_ops.commit_all(ws, message)
+        nested_changes = {}
+        for r in nested:  # code changed in the run's other repositories: committed there, diff kept in the database
+            if r["key"] not in nested_starts:
+                continue
+            path, start = ws / r["path"], nested_starts[r["key"]]
+            end = git_ops.commit_all(path, message)
+            nested_changes[r["key"]] = {"start": start, **({"end": end, "diff": git_ops.diff(path, start, end, binary=True)}
+                                                          if end != start else {})}
         outputs = _documents(ws, outputs, docs_dir(domain, state["operation"]), start_sha, end_sha)
         with session_scope() as s:
             for out in outputs:
@@ -189,6 +228,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             ex = s.get(StageExecution, exec_id)
             ex.status, ex.end_sha, ex.finished_at = "completed", end_sha, utcnow()
             ex.diff = git_ops.diff(ws, start_sha, end_sha, binary=True)
+            ex.repos = nested_changes or None
         emit(run_id, "status", f"{stage.title} completed: {len(outputs)} artifact(s)", stage.key)
 
         remaining_feedback = {k: v for k, v in state.get("feedback", {}).items() if k != stage.key}
@@ -243,11 +283,32 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
     return node, [*gate.reviews, after]
 
 
+def make_commit_node(stage: StageDef):
+    """After a step that changes code: when it left changes not yet committed, the run waits for a person to review
+    and commit them (or go on without committing; they're offered again later)."""
+
+    def node(state: MigrationState) -> dict:
+        from app import delivery
+        projects.set_current(_project_of(state["run_id"]))
+        proposal = delivery.commit_needed(state["run_id"], stage.key)
+        if proposal:
+            interrupt(proposal)  # the runner shows the run as awaiting_commit; committing or going on resumes it
+        return {}
+
+    return node
+
+
+def commit_node_key(stage_key: str) -> str:
+    return f"{stage_key}__commit"
+
+
 def build_graph(workflow: Workflow, checkpointer):
     g = StateGraph(MigrationState)
     for stage in workflow.stages:
         if stage.kind == "agent":
             g.add_node(stage.key, make_agent_node(workflow, stage))
+            if stage.code:
+                g.add_node(commit_node_key(stage.key), make_commit_node(stage))
         else:
             node, targets = make_gate_node(workflow, stage)
             g.add_node(stage.key, node)
@@ -256,5 +317,10 @@ def build_graph(workflow: Workflow, checkpointer):
     g.add_edge(START, workflow.stages[0].key)
     for stage in workflow.stages:
         if stage.kind == "agent":
-            g.add_edge(stage.key, workflow.next_stage(stage.key) or END)
+            after = workflow.next_stage(stage.key) or END
+            if stage.code:
+                g.add_edge(stage.key, commit_node_key(stage.key))
+                g.add_edge(commit_node_key(stage.key), after)
+            else:
+                g.add_edge(stage.key, after)
     return g.compile(checkpointer=checkpointer)

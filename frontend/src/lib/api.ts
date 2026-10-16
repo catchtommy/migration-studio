@@ -1,4 +1,4 @@
-export type RunStatus = "pending" | "running" | "awaiting_input" | "awaiting_approval" | "changes_requested" | "completed" | "failed";
+export type RunStatus = "pending" | "running" | "awaiting_input" | "awaiting_approval" | "changes_requested" | "awaiting_branches" | "awaiting_commit" | "completed" | "failed";
 
 export interface StageDef {
   key: string;
@@ -8,6 +8,7 @@ export interface StageDef {
   reviews: string[];
   uses?: string[] | null;
   include_content?: boolean;
+  code?: StepCode | null;
 }
 
 export type Scope = "operation" | "domain" | "monolith";
@@ -30,10 +31,122 @@ export interface Run {
   workflow_stages: StageDef[];
   status: RunStatus;
   current_stage: string | null;
-  branch: string | null;
+  branch: string | null; // the feature branch
+  base_branch: string | null; // the branch it was cut from (null: the repository's default branch)
+  repository: string | null; // the monolith's, at the workspace root
+  repositories: { key: string; name: string; url: string; base_branch: string | null; path: string }[] | null; // the others
+  delivery: Delivery | null;
   error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Committing a run's code: whether it will be reviewed and committed, then what was committed to each repository. */
+export interface Delivery {
+  commit?: boolean;
+  repos?: Record<string, RepoDelivery>;
+}
+
+export interface RepoDelivery {
+  name?: string;
+  repository?: string;
+  status?: "pushed" | "skipped";
+  sha?: string;
+  branch?: string;
+  base_branch?: string;
+  files?: string[];
+  message?: string;
+  by?: string;
+  at?: string;
+  compare_url?: string | null;
+  history?: { sha: string; branch: string; at: string; by: string }[];
+}
+
+/** A step about to change code in a repository for the first time in the run: its branches to confirm. */
+export interface PendingBranches {
+  stage: string;
+  stage_title: string;
+  feature_branch: string;
+  repository: { key: string; name: string; url: string; base_branch: string | null; checked_out: boolean; default_branch: string | null };
+}
+
+/** Where a new migration works, for the New migration form: the feature branch, cut in each repository. */
+export interface GitPlan {
+  commit: boolean;
+  feature_branch: string;
+  repositories: PlanRepository[];
+}
+
+export interface PlanRepository {
+  key: string; // "monolith" for the project's monolith
+  name: string;
+  url: string;
+  root: boolean;
+  base_branch: string;
+  steps: string[]; // the steps that change code in it
+  default_branch: string | null;
+  feature_branch_exists: boolean | null;
+  base_branch_exists: boolean | null;
+}
+
+/** One of a finished run's repositories, for the review. */
+export interface RunRepository {
+  key: string;
+  name: string;
+  url: string;
+  base_branch: string | null;
+  root: boolean;
+  changed: boolean;
+  pending: boolean; // code changes not committed yet
+  delivery: RepoDelivery | null;
+}
+
+export type ConflictKind = "content" | "deleted_here" | "deleted_there" | "binary";
+
+export interface ChangedFile {
+  path: string;
+  status: "A" | "M" | "D" | string;
+  document: boolean;
+  binary: boolean;
+  upstream_changed: boolean;
+  conflict: ConflictKind | null;
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface RunChanges {
+  key: string;
+  name: string;
+  repository: string;
+  base_branch: string;
+  feature_branch: string;
+  base_sha: string;
+  head_sha: string;
+  latest_sha: string;
+  behind: number;
+  remote_branch: string | null;
+  previous: RepoDelivery | null;
+  warning: string | null;
+  message: string;
+  files: ChangedFile[];
+  conflicts: number;
+}
+
+export interface ChangedFileDetail extends ChangedFile {
+  too_large: boolean;
+  original: string | null; // where the run started
+  ours: string | null; // the run's version
+  theirs: string | null; // the latest base branch's, when it changed the file too
+  merged: string | null; // the merge of the two, with conflict markers when they conflict
+}
+
+export type Resolution = { content: string } | { use: "ours" | "theirs" } | { delete: true };
+
+export interface AccountGit {
+  name: string;
+  email: string;
+  default_name: string;
+  credentials: { id: number; host: string; username: string; updated_at: string }[];
 }
 
 export interface StageExecution {
@@ -71,6 +184,8 @@ export interface RunDetail extends Run {
   stages: StageExecution[];
   approvals: Approval[];
   pending_gate: { gate: string; reviews: string[] } | null;
+  pending_branches: PendingBranches | null; // awaiting_branches: confirm before a step changes code
+  pending_commit: { stage: string; stage_title: string; repository: { key: string; name: string; url: string } } | null; // awaiting_commit right after a step
   pending_rerun: { gate: string; target_stage: string; comments: string | null } | null; // rejection held for amendments
   base_sha: string | null; // the monolith commit the run started from
   monolith_behind: number | null; // commits the project's base branch has gained since (as last fetched)
@@ -163,6 +278,14 @@ export interface WorkflowStep {
   reviews?: string[];
   uses?: string[] | null; // agents: earlier agent steps whose output they get; null = all of them
   include_content?: boolean;
+  code?: StepCode | null; // agents: the step changes code, in this repository; null = documents only
+}
+
+/** Where an agent step changes code: the project's monolith (repository ""), or another repository whose URL can
+ * contain {domain} (e.g. each domain's microservice), from its base branch. */
+export interface StepCode {
+  repository: string;
+  base_branch: string;
 }
 
 export interface Workflow {
@@ -175,8 +298,15 @@ export interface Workflow {
   runs: number;
   library: Library;
   customised: boolean; // this project's copy of a shared workflow
+  git: WorkflowGit;
   created_at: string;
   updated_at: string;
+}
+
+/** A workflow's code changes: review and commit them at the end; where; the feature branch's name. */
+export interface WorkflowGit {
+  commit: boolean;
+  branch_pattern: string; // {domain} {feature} {run} {date}
 }
 
 export interface AgentCatalog {
@@ -482,7 +612,23 @@ const json = (method: string, body: unknown): RequestInit => ({ method, body: JS
 export const api = {
   runs: () => request<Run[]>("/runs"),
   run: (id: string) => request<RunDetail>(`/runs/${id}`),
-  createRun: (body: { domain: string; operation: string; workflow?: string; inputs?: AgentInputs }) => request<Run>("/runs", json("POST", body)),
+  createRun: (body: { domain: string; operation: string; workflow?: string; inputs?: AgentInputs; base_branches?: Record<string, string>; feature_branch?: string }) =>
+    request<Run>("/runs", json("POST", body)),
+  gitPlan: (domain: string, feature: string, workflow?: string) =>
+    request<GitPlan>(`/runs-git-plan?${new URLSearchParams({ domain, feature, ...(workflow ? { workflow } : {}) })}`),
+  runRepositories: (runId: string) => request<RunRepository[]>(`/runs/${runId}/repositories`),
+  runChanges: (runId: string, repo: string) => request<RunChanges>(`/runs/${runId}/changes?${new URLSearchParams({ repo })}`),
+  runChangeFile: (runId: string, repo: string, path: string, latest: string) =>
+    request<ChangedFileDetail>(`/runs/${runId}/changes/file?${new URLSearchParams({ repo, path, latest })}`),
+  commitRun: (runId: string, body: { repo: string; message: string; branch: string; files: string[]; resolutions: Record<string, Resolution>; latest_sha: string; head_sha: string }) =>
+    request<RepoDelivery>(`/runs/${runId}/commit`, json("POST", body)),
+  confirmBranches: (runId: string, body: { feature_branch: string; base_branch?: string }) => request<Run>(`/runs/${runId}/branches`, json("POST", body)),
+  finishRun: (runId: string) => request<void>(`/runs/${runId}/finish`, { method: "POST" }),
+  accountGit: () => request<AccountGit>("/account/git"),
+  setGitIdentity: (body: { name: string; email: string }) => request<AccountGit>("/account/git", json("PUT", body)),
+  setGitCredential: (body: { host: string; username: string; token: string }) => request<AccountGit>("/account/git/credentials", json("PUT", body)),
+  removeGitCredential: (id: number) => request<AccountGit>(`/account/git/credentials/${id}`, { method: "DELETE" }),
+  testGit: (project: string) => request<{ ok: boolean; repository: string; with_token: boolean; error: string | null }>("/account/git/test", json("POST", { project })),
   decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; rerun?: "now" | "later" }) =>
     request<Approval>(`/runs/${id}/decision`, json("POST", body)),
   rerun: (id: string, body: { comments?: string; target_stage?: string }) => request<Run>(`/runs/${id}/rerun`, json("POST", body)),
@@ -520,7 +666,7 @@ export const api = {
   workflows: () => request<Workflow[]>("/workflows"),
   createWorkflow: (body: { key: string; name: string; description: string; scope?: Scope; copy_from?: string; steps?: WorkflowStep[] }, library: Library = "shared") =>
     request<Workflow>(`/workflows?library=${library}`, json("POST", body)),
-  updateWorkflow: (key: string, body: { name?: string; description?: string; steps?: WorkflowStep[] }, library: Library = "shared") =>
+  updateWorkflow: (key: string, body: { name?: string; description?: string; steps?: WorkflowStep[]; git?: WorkflowGit }, library: Library = "shared") =>
     request<Workflow>(`/workflows/${key}?library=${library}`, json("PUT", body)),
   revertWorkflow: (key: string) => request<Workflow>(`/workflows/${key}/revert`, { method: "POST" }),
   deleteWorkflow: (key: string, library: Library = "shared") => request<void>(`/workflows/${key}?library=${library}`, { method: "DELETE" }),

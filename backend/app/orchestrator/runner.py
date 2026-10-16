@@ -11,15 +11,14 @@ from langgraph.types import Command
 
 from app.db.models import Run
 from app.db.session import emit, session_scope
-from app import projects, repos
+from app import delivery, projects, repos
 from app.orchestrator import questions
 from app.orchestrator.checkpointer import SqlAlchemySaver
 from app.orchestrator.graph import build_graph
 from app.orchestrator.stages import Workflow
-from app.settings_store import get as get_setting
 from app.tools import git_ops
 from app.workspace import ensure as ensure_workspace
-from app.workspace import start_fresh
+from app.workspace import exclude_nested, start_fresh
 
 log = logging.getLogger(__name__)
 
@@ -110,15 +109,24 @@ class Runner:
                 run = s.get(Run, run_id)
                 run.status, run.error = "running", None
                 domain, operation, workspace, branch = run.domain, run.operation, run.workspace, run.branch
+                repository, source_branch, started_by = delivery.run_repository(run), run.base_branch, run.started_by
                 projects.set_current(run.project)  # this worker thread now works for the run's project
             if initial:
-                source_branch = get_setting("monolith_branch") or None
-                emit(run_id, "status", f"Preparing workspace{f' from branch {source_branch}' if source_branch else ''}")
-                # The project's copy of the monolith, shared by its runs, fetched first so the run starts from the latest.
-                source = repos.latest_for_run(projects.current(), lambda m: emit(run_id, "log", m))
+                emit(run_id, "status", f"Preparing workspace: branch {branch}"
+                                       f"{f' from {source_branch}' if source_branch else ''}")
+                # The server's copy of the repository, shared by the project's runs, fetched first (as the user who
+                # started the run) so the run starts from the latest commit.
+                source = repos.latest_for_run(projects.current(), repository, started_by,
+                                              lambda m: emit(run_id, "log", m))
                 base_sha = git_ops.init_workspace(Path(workspace), source, branch, source_branch=source_branch)
                 with session_scope() as s:
-                    s.get(Run, run_id).base_sha = base_sha
+                    run = s.get(Run, run_id)
+                    run.base_sha = base_sha
+                    if source and not source_branch:  # the repository's default branch: record which it is
+                        run.base_branch = repos.default_branch(Path(source))
+                # The other repositories steps change code in are checked out when their branches are confirmed,
+                # just before the first such step (see app/delivery.py).
+                exclude_nested(Path(workspace))
                 inp = {"run_id": run_id, "domain": domain, "operation": operation, "workspace": workspace,
                        "feedback": {}, "stage_shas": {}}
             else:
@@ -137,16 +145,31 @@ class Runner:
             with self._lock:
                 self._active.discard(run_id)
 
+        review = error is None and not gate and delivery.wants_review(run_id)
         with session_scope() as s:
             run = s.get(Run, run_id)
             if error is not None:
                 run.status, run.error = "failed", str(error)
+            elif gate and gate.get("kind") == "branches":  # a step waits for its branches to be confirmed
+                run.status, run.current_stage = "awaiting_branches", gate["stage"]
+            elif gate and gate.get("kind") == "commit":  # a step's code changes wait to be reviewed and committed
+                run.status, run.current_stage = "awaiting_commit", gate["stage"]
             elif gate:
                 run.status, run.current_stage = "awaiting_approval", gate["gate"]
+            elif review:  # the workflow is done; a person reviews the code changes and commits them
+                run.status, run.current_stage = "awaiting_commit", None
             else:
                 run.status, run.current_stage = "completed", None
         if error is not None:
             emit(run_id, "error", f"Run failed: {error}")
+        elif gate and gate.get("kind") == "branches":
+            emit(run_id, "status", f"Confirm the branches for {gate['repository']['name']} before "
+                                   f"{gate['stage_title']} changes code", gate["stage"])
+        elif gate and gate.get("kind") == "commit":
+            emit(run_id, "status", f"Review the code {gate['stage_title']} changed in {gate['repository']['name']} "
+                                   "and commit it", gate["stage"])
+        elif review:
+            emit(run_id, "status", "Workflow finished: review the code changes and commit them to git")
         elif not gate:
             emit(run_id, "status", "Migration run completed")
 

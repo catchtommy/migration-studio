@@ -21,7 +21,7 @@ export function stageStatuses(stages: StageDef[], run: RunDetail): Map<string, {
 
 /** Coarse progress for list views, which only know the run's current stage. */
 export function progressIndex(stages: StageDef[], current: string | null, status: string): number {
-  if (status === "completed") return stages.length;
+  if (status === "completed" || status === "awaiting_commit") return stages.length;
   const i = stages.findIndex((s) => s.key === current);
   return i < 0 ? 0 : i;
 }

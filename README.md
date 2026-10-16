@@ -305,6 +305,61 @@ beyond that.
 - The Modulith design steps are added to an existing *Standard migration* workflow the same way: only if it still has
   the previous release's steps. A customised workflow keeps its steps; add the new agents to it on the Workflows page.
 
+## Committing code to git
+
+Agent steps can change code in different repositories: the monolith's changes go into the monolith repository, each
+domain's microservice into its own repository, the orchestrator into another. Each migration ends with a reviewed
+commit in every repository it changed.
+
+1. **Workflows → a migration workflow → each agent step → Changes code**: choose **In the project's monolith** or
+   **In another repository**, with its URL and base branch. The URL can contain `{domain}`, filled in per run, so one
+   step serves every domain's own repository, e.g. `https://github.com/acme/{domain}-service.git`. Steps without
+   *Changes code* write documents only. Steps sharing a repository must use the same base branch. Save for **This
+   project only** when the URLs are specific to a project.
+2. **Workflow → Git** sets whether runs end with a review and commit, and the **feature branch name**
+   (`migration/{domain}/{feature}` by default; `{run}` and `{date}` also work).
+3. **New migration** lists the repositories the run will cut the feature branch in, the steps changing code in each,
+   and their base branches (editable). The monolith's base branch comes from the project. The feature branch name can
+   be changed too. Names a repository already has, or that another unfinished run uses there, are refused.
+4. **Before a step changes code in a repository for the first time**, the run pauses as **Confirm branches**: the
+   run page shows the repository, its base branch (editable while it isn't checked out yet) and the feature branch
+   (renaming it renames it in every repository of the run). **Confirm and start** (needs *Run migrations*) checks the
+   names against the repository and starts the step.
+   The run checks out the monolith at the workspace root when it starts, and the other repositories inside it
+   (`.studio/repos/<name>`, kept out of the monolith's git) when they're confirmed, all on the same feature branch,
+   each cut from its own base branch. Agents can read
+   every repository and the documents. Each step changes code only in its own repository, and its commands run there.
+   Each step's changes are committed per repository and stored in the database, so rejections, restarts and workspace
+   rebuilds cover all of them.
+5. **Right after a step changes code**, the run waits as **Ready to commit** for that repository: review the step's
+   changes, edit the commit message and **Commit & push**, and the workflow goes on. **Continue without committing**
+   goes on too; the changes are offered again at the next commit of that repository or at the end.
+   When the workflow finishes with code changes still uncommitted, it waits again, with a tab per repository that has
+   them. Changes to the studio's documents alone don't need a commit. The review shows:
+   - every changed file, with a checkbox: code starts ticked, the studio's documents (`.migration/`, in the monolith's
+     tab) unticked;
+   - a side-by-side diff, what the base branch changed since the run started, and the merged result;
+   - **conflicts** with the latest base branch, to resolve per conflict (this run's side, the base branch's, or both)
+     or by editing the result. Files one side deleted, and binary files, are resolved by choosing a version.
+6. **Commit & push** (per repository, needs *Approve workflow runs*) makes one commit with the ticked files on top of
+   that repository's latest base branch (or of the commit pushed before), as you, and pushes the feature branch.
+   GitHub repositories then link to opening a pull request. At the end, the run is complete once nothing is left to
+   commit. **Finish without committing** completes it, leaving the rest out.
+
+Restarting a step picks up the workflow's current *Changes code* settings, so runs started before a step was set to
+change code (or before git support) ask for branches and end with the review too. Their monolith changes can only be
+committed if the run's workspace was cloned from the monolith; otherwise start a new run. Restarting a step after
+committing brings the run back to *Ready to commit*. The next commit goes on top of the one
+pushed before, with no force push. If someone else pushed to the feature branch, committing is refused; choose
+another branch name.
+
+**Git access is per user.** Under **My settings** (account menu), everyone sets the **name and email** their commits
+use, and an **access token per git host** (e.g. github.com, mycompany.ghe.com). Fetches and pushes over HTTPS use the
+acting user's token, given to git through `GIT_ASKPASS`, so it never appears in a URL, command line or log. Without
+a token for the host (or for SSH URLs), the server's own git setup is used. Tokens are encrypted with the key in
+`STUDIO_SECRET_KEY`, or else `backend/data/secret.key` (made on first use, mode 600). Every server sharing the
+database needs the same key, so back it up. If it's lost, users enter their tokens again.
+
 ## How it works
 
 - **Run** = one `(domain, feature)` through one workflow; one LangGraph thread, checkpointed in the studio database

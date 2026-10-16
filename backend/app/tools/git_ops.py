@@ -1,6 +1,9 @@
 """Thin wrapper over the git CLI. Every stage commits its output so it can be diffed and rolled back."""
 
+import os
+import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 _AUTHOR = ["-c", "user.name=Migration Studio", "-c", "user.email=studio@localhost"]
@@ -10,8 +13,40 @@ class GitError(RuntimeError):
     pass
 
 
-def git(repo: Path, *args: str, stdin: str | None = None) -> str:
-    proc = subprocess.run(["git", *_AUTHOR, *args], cwd=repo, capture_output=True, text=True, input=stdin)
+_BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")  # a plain ref name, never an option
+
+
+def valid_branch(name: str) -> bool:
+    """A branch or tag name safe to pass to git: no leading dash, spaces, '..', '//', or trailing '/' or '.lock'."""
+    return (isinstance(name, str) and bool(_BRANCH.match(name)) and ".." not in name and "//" not in name
+            and not name.endswith(("/", ".lock", ".")))
+
+
+def read_blob(repo: Path, rev: str, path: str) -> bytes | None:
+    """A file's bytes at a commit (None when it doesn't exist there)."""
+    proc = subprocess.run(["git", "cat-file", "blob", f"{rev}:{path}"], cwd=repo, capture_output=True)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def merge_file(ours: bytes, base: bytes, theirs: bytes, labels: tuple[str, str, str]) -> tuple[bytes, int]:
+    """Three-way merge of one file's contents: (result, number of conflicts; the result then has conflict markers)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        files = []
+        for name, content in (("ours", ours), ("base", base), ("theirs", theirs)):
+            f = Path(tmp) / name
+            f.write_bytes(content)
+            files.append(str(f))
+        proc = subprocess.run(["git", "merge-file", "-p", "-L", labels[0], "-L", labels[1], "-L", labels[2], *files],
+                              capture_output=True)
+    if proc.returncode < 0 or proc.returncode > 127:
+        raise GitError(f"git merge-file failed: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout, proc.returncode
+
+
+def git(repo: Path, *args: str, stdin: str | None = None, env: dict | None = None) -> str:
+    """Run git in `repo`. `env` adds environment variables (e.g. a user's credentials, see app/git_auth.py)."""
+    proc = subprocess.run(["git", *_AUTHOR, *args], cwd=repo, capture_output=True, text=True, input=stdin,
+                          env={**os.environ, **env} if env else None)
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
@@ -43,12 +78,13 @@ def init_workspace(path: Path, source_repo: str | None, branch: str, base_sha: s
     return head(path)
 
 
-def clone_mirror(url: str, path: Path) -> None:
+def clone_mirror(url: str, path: Path, env: dict | None = None) -> None:
     """A bare mirror of a repository: every branch and tag, updated with fetch_mirror."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".partial")  # a failed or interrupted clone never looks like a mirror
     subprocess.run(["rm", "-rf", str(tmp)], check=False)
-    proc = subprocess.run(["git", "clone", "--quiet", "--mirror", "--", url, str(tmp)], capture_output=True, text=True)
+    proc = subprocess.run(["git", "clone", "--quiet", "--mirror", "--", url, str(tmp)], capture_output=True, text=True,
+                          env={**os.environ, **env} if env else None)
     if proc.returncode != 0:
         subprocess.run(["rm", "-rf", str(tmp)], check=False)
         raise GitError(f"git clone {url} failed: {proc.stderr.strip()}")
@@ -56,11 +92,11 @@ def clone_mirror(url: str, path: Path) -> None:
     tmp.rename(path)
 
 
-def fetch_mirror(path: Path, url: str) -> None:
+def fetch_mirror(path: Path, url: str, env: dict | None = None) -> None:
     """Bring the mirror up to date with the repository (at `url`, which may have changed since it was cloned)."""
     if git(path, "config", "--get", "remote.origin.url") != url:
         git(path, "remote", "set-url", "origin", url)
-    git(path, "fetch", "--quiet", "--prune", "--tags", "origin")
+    git(path, "fetch", "--quiet", "--prune", "--tags", "origin", env=env)
 
 
 def commit_info(repo: Path, ref: str) -> dict | None:

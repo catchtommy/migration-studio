@@ -73,6 +73,10 @@ class AgentContext:
     catalogue: str = ""  # cross-domain ownership, conventions and contracts (markdown)
     ownership: dict = field(default_factory=dict)  # domain key -> {"tables": [...], "packages": [...]}
     service_dir: str = ""  # this domain's microservice directory, relative to the workspace
+    # Where this step changes code, relative to the workspace: "." (the monolith at the root) or the run's checkout of
+    # another repository; and the run's other repositories ([{"key", "url", "path", "base_branch"}]).
+    code_dir: str = "."
+    repositories: list[dict] = field(default_factory=list)
     # A restart from a completed stage: update this stage's previous documents (paths below) instead of starting over.
     refresh: bool = False
     previous_outputs: list[str] = field(default_factory=list)
@@ -90,9 +94,12 @@ class AgentContext:
         return str(path.relative_to(self.workspace))
 
 
+DOCS_ROOT = ".migration"  # the studio's documents (each run's, and the contract catalogue) in a workspace
+
+
 def docs_dir(domain: str, operation: str) -> str:
     """The run's documents folder, relative to its workspace."""
-    return f".migration/{domain}/{operation}"
+    return f"{DOCS_ROOT}/{domain}/{operation}"
 
 
 class StageAgent(ABC):

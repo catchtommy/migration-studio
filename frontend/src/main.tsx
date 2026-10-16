@@ -20,12 +20,13 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { CreateAdminPage, SignInPage } from "./pages/SignInPage";
 import { UsersPage } from "./pages/UsersPage";
+import { AccountPage } from "./pages/AccountPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import "./index.css";
 
 // Cached project data is kept per project: the current project is part of its cache key, so switching projects can
 // never show another project's data. Data that isn't about a project is cached once.
-const GLOBAL_QUERIES = new Set(["me", "projects", "database", "settings", "copilotStatus", "users", "roles", "permissions", "agentCatalog"]);
+const GLOBAL_QUERIES = new Set(["me", "accountGit", "projects", "database", "settings", "copilotStatus", "users", "roles", "permissions", "agentCatalog"]);
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -183,6 +184,7 @@ function NoProjectShell({ user, sqlite }: { user: Me; sqlite: boolean }) {
           />
           {canGlobally("users.manage") && <Route path="/users" element={<UsersPage />} />}
           {canGlobally("settings.manage") && <Route path="/settings" element={<SettingsPage />} />}
+          <Route path="/account" element={<AccountPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
@@ -259,6 +261,7 @@ function Shell({ user, project, projects, sqlite, onSwitch }: { user: Me; projec
           <Route path="/project" element={<ProjectSettingsPage />} />
           {canGlobally("settings.manage") && <Route path="/settings" element={<SettingsPage />} />}
           {canManageUsers && <Route path="/users" element={<UsersPage />} />}
+          <Route path="/account" element={<AccountPage />} />
           {/* Pages the user may not open (or that don't exist) lead back to the start. */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

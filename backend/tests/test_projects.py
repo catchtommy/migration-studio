@@ -1,4 +1,5 @@
 import itertools
+import secrets
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -14,7 +15,7 @@ _ids = itertools.count()
 
 
 def new_project(client, **settings) -> str:
-    key = f"proj-{next(_ids)}"
+    key = f"proj-{next(_ids)}-{secrets.token_hex(3)}"  # unique even if this module is imported twice
     r = client.post("/api/projects", json={"key": key, "name": key.title(), "settings": settings})
     assert r.status_code == 201, r.text
     return key
@@ -312,7 +313,7 @@ def test_a_project_keeps_one_copy_of_its_monolith_and_fetches_the_latest_on_requ
     from app.db.session import session_scope
     with session_scope() as s:
         log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == third["id"])))
-    assert "Could not fetch the latest monolith changes" in log
+    assert "Could not fetch the latest changes" in log
 
     viewer = make_user(client, ["viewer"])
     client.put(f"/api/projects/{key}/members/{viewer['id']}", json={"role": "viewer"})

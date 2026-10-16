@@ -78,7 +78,7 @@ def create_project(body: ProjectCreate, user: CurrentUser = Depends(require_glob
                 s.query(Project).filter(Project.key == key).delete()
             raise HTTPException(422, str(e))
         if body.settings.get("monolith_repo"):
-            repos.fetch_in_background(key)  # cloned to the server now, so the first run doesn't wait for it
+            repos.fetch_in_background(key, user.id)  # cloned to the server now, so the first run doesn't wait for it
     return get_project(key, user)
 
 
@@ -138,7 +138,7 @@ def fetch_repository(key: str, user: CurrentUser = Depends(current_user)) -> dic
         raise HTTPException(403, "Fetching the repository needs Manage project or Run migrations")
     if not settings_store.get_project(key)["monolith_repo"]:
         raise HTTPException(422, "Set the project's monolith repository first")
-    repos.fetch_in_background(key)
+    repos.fetch_in_background(key, user.id)
     return repos.status(key)
 
 
@@ -159,7 +159,7 @@ def update_settings(key: str, values: dict[str, Any], user: CurrentUser = Depend
     if saved["monolith_repo"] and saved["monolith_repo"] != before:
         # A new repository: clone it to the server now (in the background), which also shows at once on the Project
         # page whether the URL and credentials work, and the first run doesn't wait for the clone.
-        repos.fetch_in_background(key)
+        repos.fetch_in_background(key, user.id)
     return saved
 
 

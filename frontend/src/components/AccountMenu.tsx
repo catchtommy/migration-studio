@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { api, type Me } from "../lib/api";
 import { Field, inputClass as input } from "./Field";
 
@@ -86,6 +87,9 @@ export function AccountMenu({ user }: { user: Me }) {
             </button>
           )}
           {change.isSuccess && !changing && <p className="text-xs text-ok">Password changed.</p>}
+          <Link to="/account" onClick={() => setOpen(false)} className="block w-full rounded-md px-2 py-1.5 text-left hover:bg-muted">
+            My settings (git access)
+          </Link>
           <button className="block w-full rounded-md px-2 py-1.5 text-left text-bad hover:bg-bad/10" onClick={() => signOut.mutate()}>
             Sign out
           </button>

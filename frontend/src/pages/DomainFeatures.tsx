@@ -65,7 +65,7 @@ function ListingSetup({ domain, onStarted, onCancel }: { domain: Domain; onStart
 }
 
 const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
-const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "failed"];
+const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "failed"];
 
 /** A link to start migrating a feature: the New migration form, with the domain and feature chosen. */
 export const migrateUrl = (domain: string, feature: string) => `/?domain=${encodeURIComponent(domain)}&feature=${encodeURIComponent(feature)}`;

@@ -34,12 +34,22 @@ class Run(Base):
     project: Mapped[str] = mapped_column(String(64), index=True)
     domain: Mapped[str] = mapped_column(String(64), index=True)
     operation: Mapped[str] = mapped_column(String(128))
-    # pending | running | awaiting_input | awaiting_approval | changes_requested | completed | failed
+    # pending | running | awaiting_input | awaiting_approval | changes_requested | awaiting_commit | completed | failed
+    # (awaiting_commit: the workflow finished; a person reviews the code changes and commits them, see app/delivery.py)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     current_stage: Mapped[str | None] = mapped_column(String(64))
     workspace: Mapped[str | None] = mapped_column(Text)
     branch: Mapped[str | None] = mapped_column(String(255))
     base_sha: Mapped[str | None] = mapped_column(String(64))  # monolith commit the run branch started from
+    repository: Mapped[str | None] = mapped_column(Text)  # git URL or path the run works on (None: blank workspace)
+    base_branch: Mapped[str | None] = mapped_column(String(255))  # the branch `branch` was cut from (None: default)
+    started_by: Mapped[int | None] = mapped_column(Integer)  # user id; their git credentials fetch the repository
+    # The other repositories agent steps change code in, each checked out inside the workspace on the same feature
+    # branch: [{"key", "name", "url", "base_branch", "path", "base_sha"}]. The workspace root is `repository`.
+    repositories: Mapped[list | None] = mapped_column(JSONText)
+    # Committing the code: {"commit": bool (review and commit at the end)} at start, then per repository once
+    # committed: {"repos": {key: {"status": "pushed" | "skipped", "sha", "branch", "files", "by", "at", ...}}}
+    delivery: Mapped[dict | None] = mapped_column(JSONText)
     error: Mapped[str | None] = mapped_column(Text)
     # Operation-specific guidance for every agent: {"paths": [...], "notes": "..."}
     inputs: Mapped[dict | None] = mapped_column(JSONText)
@@ -78,6 +88,9 @@ class StageExecution(Base):
     feedback: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     diff: Mapped[str | None] = mapped_column(Text)  # git diff of the attempt, kept so it outlives the workspace
+    # The run's other repositories (Run.repositories): {key: {"start": sha, "end": sha, "diff": text}}; every
+    # repository's start is recorded, end and diff only where the attempt changed something.
+    repos: Mapped[dict | None] = mapped_column(JSONText)
     # A restart from a completed stage: the attempt updated the previous documents in place instead of starting over.
     rerun: Mapped[bool | None] = mapped_column(Boolean)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
@@ -194,6 +207,9 @@ class WorkflowDef(Base):
     # What one run covers: operation (None; a migration of one feature), domain (discovering a domain's features)
     # or monolith (discovering the bounded contexts).
     scope: Mapped[str | None] = mapped_column(String(16))
+    # Code changes: {"commit": bool, "repository": "", "base_branch": "", "branch_pattern": ""}; empty values use the
+    # project's repository and base branch and the default pattern. None: the defaults (see app/delivery.py).
+    git: Mapped[dict | None] = mapped_column(JSONText)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
@@ -325,6 +341,23 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    git_name: Mapped[str | None] = mapped_column(String(128))  # author of the commits they make; display name if unset
+    git_email: Mapped[str | None] = mapped_column(String(255))
+
+
+class GitCredential(Base):
+    """A user's access token for one git host, used when they fetch or push. The token is encrypted (app/secret_box)."""
+
+    __tablename__ = "git_credentials"
+    __table_args__ = (UniqueConstraint("user_id", "host"),)
+
+    id: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    host: Mapped[str] = mapped_column(String(255))  # e.g. github.com, mycompany.ghe.com
+    username: Mapped[str] = mapped_column(String(255))
+    token: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
 
 class Role(Base):

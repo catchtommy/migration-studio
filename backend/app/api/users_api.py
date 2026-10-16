@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app import auth
 from app.auth import ADMIN, PERMISSIONS, CurrentUser, require_global
-from app.db.models import Project, ProjectMember, Role, User
+from app.db.models import GitCredential, Project, ProjectMember, Role, User
 from app.db.session import session_scope
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_global("users.manage"))])
@@ -171,6 +171,7 @@ def delete_user(user_id: int, me: CurrentUser = Depends(auth.current_user)):
         if user is None:
             raise HTTPException(404, "User not found")
         s.query(ProjectMember).filter(ProjectMember.user_id == user_id).delete()
+        s.query(GitCredential).filter(GitCredential.user_id == user_id).delete()
         s.delete(user)
         s.flush()
         _admins_remain(s)

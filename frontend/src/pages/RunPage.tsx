@@ -9,6 +9,8 @@ import { ApprovalPanel } from "../components/ApprovalPanel";
 import { QuestionPanel } from "../components/QuestionPanel";
 import { StageDetail } from "../components/StageDetail";
 import { StageTimeline } from "../components/StageTimeline";
+import { CommitReview, DeliverySummary } from "../components/CommitReview";
+import { BranchConfirmation } from "../components/BranchConfirmation";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 
@@ -63,6 +65,8 @@ export function RunPage() {
         </div>
         <p className="mt-1 text-xs text-subtle">
           <span className="font-mono">{run.branch}</span>
+          {run.repository && run.base_branch && <span className="font-mono"> ← {run.base_branch}</span>}
+          {!!run.repositories?.length && <> · also in {run.repositories.map((r) => r.name).join(", ")}</>}
           {workflowName && <> · {workflowName} workflow</>}
           {run.base_sha && (
             <>
@@ -71,7 +75,7 @@ export function RunPage() {
             </>
           )}
         </p>
-        {!!run.monolith_behind && (
+        {!!run.monolith_behind && run.status !== "awaiting_commit" && !run.delivery?.repos?.monolith && (
           <p className="mt-2 rounded-md bg-warn/10 px-3 py-1.5 text-sm text-warn">
             The monolith has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"} on the project's base branch since this run started. This run keeps
             working on the commit it started from; a new run starts from the latest.
@@ -99,6 +103,10 @@ export function RunPage() {
       {run.status === "awaiting_approval" && run.pending_gate && (
         <ApprovalPanel key={run.pending_gate.gate + run.stages.length} runId={run.id} gate={run.pending_gate} stages={stages} />
       )}
+
+      {run.status === "awaiting_branches" && run.pending_branches && <BranchConfirmation key={run.pending_branches.repository.key} runId={run.id} pending={run.pending_branches} />}
+      {run.status === "awaiting_commit" && <CommitReview run={run} />}
+      {run.status === "completed" && <DeliverySummary run={run} />}
 
       {run.status === "changes_requested" && run.pending_rerun && <AmendPanel key={run.pending_rerun.gate + run.stages.length} run={run} />}
 

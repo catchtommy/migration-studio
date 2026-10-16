@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, SCOPE_LABELS, type Agent, type Library, type Scope, type Workflow, type WorkflowStep } from "../lib/api";
+import { api, SCOPE_LABELS, type Agent, type Library, type Scope, type StepCode, type Workflow, type WorkflowGit, type WorkflowStep } from "../lib/api";
 import { useAgents, useCanGlobally, useDomains, useWorkflows } from "../lib/hooks";
 import { LibraryBadge, SaveTarget } from "../components/LibraryBadge";
 import { slug } from "../lib/slug";
@@ -14,7 +14,9 @@ let nextUid = 1;
 const editable = (steps: WorkflowStep[]): EditableStep[] => steps.map((s) => ({ ...s, uid: nextUid++ }));
 const toSteps = (steps: EditableStep[]): WorkflowStep[] =>
   steps.map(({ uid: _uid, ...s }) =>
-    s.kind === "agent" ? { kind: "agent", key: s.key, uses: s.uses ?? null, include_content: s.include_content ?? false } : { kind: "gate", key: s.key, title: s.title ?? "", description: s.description ?? "", reviews: s.reviews ?? [] },
+    s.kind === "agent"
+      ? { kind: "agent", key: s.key, uses: s.uses ?? null, include_content: s.include_content ?? false, code: s.code ?? null }
+      : { kind: "gate", key: s.key, title: s.title ?? "", description: s.description ?? "", reviews: s.reviews ?? [] },
   );
 
 /** The agent a new single-step workflow starts with, by what each run covers. */
@@ -163,7 +165,69 @@ function StepInputs({ label, step, earlierAgents, title, onChange }: {
   );
 }
 
-function StepRow({ step, index, steps, agents, onChange, onMove, onRemove, onInsert }: {
+/** Whether an agent step changes code, and where: the project's monolith, or another repository (e.g. each domain's
+ * microservice, with {domain} in its URL, or the orchestrator) from its base branch. */
+function StepCodeSettings({ label, step, onChange }: { label: string; step: EditableStep; onChange: (step: EditableStep) => void }) {
+  const code = step.code ?? null;
+  const other = code !== null && code.repository !== "";
+  const [otherUrl, setOtherUrl] = useState(other ? code!.repository : "");
+  const set = (next: Partial<StepCode> | null) => onChange({ ...step, code: next === null ? null : { repository: "", base_branch: "", ...code, ...next } });
+  return (
+    <fieldset className="w-full rounded-md border border-dashed border-border p-2 text-sm" aria-label={label}>
+      <legend className="sr-only">{label}</legend>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <label className="flex items-center gap-1.5">
+          <input type="checkbox" checked={code !== null} onChange={(e) => set(e.target.checked ? { repository: "", base_branch: "" } : null)} />
+          <span className="font-medium">Changes code</span>
+        </label>
+        {code !== null && (
+          <>
+            <label className="flex items-center gap-1.5">
+              <input type="radio" checked={!other} onChange={() => set({ repository: "", base_branch: "" })} />
+              In the project's monolith
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input type="radio" checked={other} onChange={() => set({ repository: otherUrl || "https://", base_branch: code.base_branch })} />
+              In another repository
+            </label>
+          </>
+        )}
+        {code === null && <span className="text-xs text-subtle">Writes documents only.</span>}
+      </div>
+      {other && (
+        <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_12rem]">
+          <label className="text-xs">
+            <span className="mb-0.5 block font-medium text-subtle">Repository</span>
+            <input
+              aria-label={`${label} repository`}
+              className={`${inputClass} font-mono text-xs`}
+              placeholder="https://github.com/acme/{domain}-service.git"
+              value={code!.repository}
+              onChange={(e) => {
+                setOtherUrl(e.target.value.trim());
+                set({ repository: e.target.value.trim() });
+              }}
+            />
+            <span className="mt-0.5 block text-subtle">{"{domain}"} is filled in per run, so one step serves each domain's own repository.</span>
+          </label>
+          <label className="text-xs">
+            <span className="mb-0.5 block font-medium text-subtle">Base branch</span>
+            <input
+              aria-label={`${label} base branch`}
+              className={`${inputClass} font-mono text-xs`}
+              placeholder="default branch"
+              value={code!.base_branch}
+              onChange={(e) => set({ base_branch: e.target.value.trim() })}
+            />
+          </label>
+        </div>
+      )}
+    </fieldset>
+  );
+}
+
+function StepRow({ step, index, steps, agents, codeSteps, onChange, onMove, onRemove, onInsert }: {
+  codeSteps?: boolean;
   step: EditableStep;
   index: number;
   steps: EditableStep[];
@@ -242,6 +306,7 @@ function StepRow({ step, index, steps, agents, onChange, onMove, onRemove, onIns
               </Link>
               <p className="w-full text-xs text-subtle">{agents.find((a) => a.key === step.key)?.description}</p>
               {earlierAgents.length > 0 && <StepInputs label={`Step ${index + 1} inputs`} step={step} earlierAgents={earlierAgents} title={title} onChange={onChange} />}
+              {codeSteps && <StepCodeSettings label={`Step ${index + 1} code`} step={step} onChange={onChange} />}
             </div>
           )}
         </div>
@@ -269,6 +334,34 @@ function StepRow({ step, index, steps, agents, onChange, onMove, onRemove, onIns
   );
 }
 
+/** Where a migration's code changes go: the repository, the base branch the feature branch is cut from, the feature
+ * branch's name, and whether the run ends with a review and commit. */
+function GitSettings({ value, onChange }: { value: WorkflowGit; onChange: (git: WorkflowGit) => void }) {
+  const set = (field: keyof WorkflowGit, v: string | boolean) => onChange({ ...value, [field]: v });
+  return (
+    <section className="space-y-3">
+      <h2 className="font-semibold">Git</h2>
+      <label className="flex items-start gap-2 text-sm">
+        <input type="checkbox" className="mt-0.5" checked={value.commit} onChange={(e) => set("commit", e.target.checked)} />
+        <span>
+          Review and commit the code changes when the run finishes
+          <span className="block text-xs text-subtle">
+            The run waits as <em>Ready to commit</em>: someone reviews every changed file, resolves conflicts with the latest base branch, and pushes the feature branch with
+            their own git access.
+          </span>
+        </span>
+      </label>
+      <p className="text-sm text-subtle">
+        Which repository each step changes is set on the step (<em>Changes code</em>). A run cuts the same feature branch in every repository its steps change, each from
+        that repository's base branch (the monolith's is the project's base branch).
+      </p>
+      <Field label="Feature branch name" hint="{domain}, {feature}, {run} (short run id) and {date} are filled in. It can be changed when starting a run.">
+        <input className={`${inputClass} max-w-md font-mono`} value={value.branch_pattern} onChange={(e) => set("branch_pattern", e.target.value.trim())} />
+      </Field>
+    </section>
+  );
+}
+
 function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agent[] }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -277,21 +370,27 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
   const [name, setName] = useState(workflow.name);
   const [description, setDescription] = useState(workflow.description);
   const [steps, setSteps] = useState(() => editable(workflow.steps));
+  const [git, setGit] = useState<WorkflowGit>(workflow.git);
   useEffect(() => {
     setName(workflow.name);
     setDescription(workflow.description);
     setSteps(editable(workflow.steps));
+    setGit(workflow.git);
   }, [workflow]);
 
   const dirty =
-    name !== workflow.name || description !== workflow.description || JSON.stringify(toSteps(steps)) !== JSON.stringify(toSteps(editable(workflow.steps)));
+    name !== workflow.name ||
+    description !== workflow.description ||
+    JSON.stringify(toSteps(steps)) !== JSON.stringify(toSteps(editable(workflow.steps))) ||
+    JSON.stringify(git) !== JSON.stringify(workflow.git);
   const canShared = useCanGlobally("workflows.manage");
   const [choice, setChoice] = useState<Library | null>(null); // null: the default below
   const target: Library = workflow.library === "project" ? "project" : (choice ?? (canShared ? "shared" : "project"));
   const setTarget = setChoice;
   const onSaved = (saved: Workflow) => queryClient.setQueryData<Workflow[]>(["workflows"], (prev) => prev?.map((w) => (w.key === saved.key ? saved : w)));
   const save = useMutation({
-    mutationFn: () => api.updateWorkflow(workflow.key, { name: name.trim(), description, steps: toSteps(steps) }, target),
+    mutationFn: () =>
+      api.updateWorkflow(workflow.key, { name: name.trim(), description, steps: toSteps(steps), ...(workflow.scope === "operation" ? { git } : {}) }, target),
     onSuccess: onSaved,
   });
   const revert = useMutation({ mutationFn: () => api.revertWorkflow(workflow.key), onSuccess: (w) => (onSaved(w), setTarget(null)) });
@@ -374,6 +473,7 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
               index={i}
               steps={steps}
               agents={agents}
+              codeSteps={workflow.scope === "operation"}
               onChange={(s) => update(steps.map((x) => (x.uid === s.uid ? s : x)))}
               onMove={(delta) => move(i, delta)}
               onRemove={() => update(steps.filter((x) => x.uid !== step.uid))}
@@ -397,6 +497,8 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         </div>
       </section>
 
+      {workflow.scope === "operation" && <GitSettings value={git} onChange={setGit} />}
+
       <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t border-border bg-bg py-3">
         <button type="submit" disabled={!dirty || !name.trim() || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
           Save workflow
@@ -417,6 +519,7 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
               setName(workflow.name);
               setDescription(workflow.description);
               setSteps(editable(workflow.steps));
+              setGit(workflow.git);
             }}
           >
             Discard changes

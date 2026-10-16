@@ -49,6 +49,24 @@ def project_brief(ctx: AgentContext) -> str:
             "toolchain.")
 
 
+def repository_brief(ctx: AgentContext) -> str:
+    """Where this step changes code, when the run works on more than the monolith (or the step changes code)."""
+    code = (ctx.stage_def.code if ctx.stage_def else None)
+    if not ctx.repositories and not code:
+        return ""
+    lines = ["## Repositories",
+             "The workspace root is the monolith's checkout; the studio's documents are under `.migration/`."]
+    for r in ctx.repositories:
+        lines.append(f"- `{r['path']}/`: {r['url']} (branch cut from {r.get('base_branch') or 'its default branch'})")
+    if code:
+        target = "the monolith (the workspace root)" if ctx.code_dir == "." else f"`{ctx.code_dir}/`"
+        lines.append(f"This step changes code in {target}; commands you run start there. Read the other repositories "
+                     "and the documents as you need, but change code only in it.")
+    else:
+        lines.append("This step writes documents only; don't change code in any repository.")
+    return "\n".join(lines)
+
+
 def kind(path: str) -> str:
     suffix = Path(path).suffix.lower()
     if suffix == ".md":
@@ -110,6 +128,9 @@ def brief(ctx: AgentContext) -> str:
         project_brief(ctx),
         where,
     ]
+    repos = repository_brief(ctx)
+    if repos:
+        parts.append(repos)
     if ctx.refresh:
         parts.append(refresh_brief(ctx))
     if ctx.previous_artifacts:

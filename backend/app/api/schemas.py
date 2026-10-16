@@ -20,6 +20,7 @@ class StageDefOut(BaseModel):
     reviews: list[str]
     uses: list[str] | None = None
     include_content: bool = False
+    code: dict | None = None  # agents only: the step changes code ({"repository", "base_branch"})
 
 
 DOMAIN_KEY = r"^[a-z][a-z0-9_-]*$"
@@ -37,6 +38,9 @@ class RunCreate(BaseModel):
     operation: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]*$", max_length=128)
     inputs: AgentInputsIn | None = None
     workflow: str | None = None  # defaults to the domain's default workflow
+    base_branch: str | None = Field(default=None, max_length=255)  # the monolith's; default: the project's
+    base_branches: dict[str, str] = {}  # per repository key (see the git plan); defaults: the steps' settings
+    feature_branch: str | None = Field(default=None, max_length=255)  # defaults to the workflow's branch pattern
 
 
 class StageExecutionOut(ORM):
@@ -73,6 +77,10 @@ class RunOut(ORM):
     status: str
     current_stage: str | None
     branch: str | None
+    base_branch: str | None = None
+    repository: str | None = None
+    repositories: list[dict] | None = None
+    delivery: dict | None = None
     error: str | None
     created_at: datetime
     updated_at: datetime
@@ -90,6 +98,8 @@ class RunDetail(RunOut):
     stages: list[StageExecutionOut]
     approvals: list[ApprovalOut]
     pending_gate: dict | None = None
+    pending_branches: dict | None = None  # awaiting_branches: what to confirm before a step changes code
+    pending_commit: dict | None = None  # awaiting_commit right after a step: the step and repository to commit
     base_sha: str | None = None  # the monolith commit the run started from
     monolith_behind: int | None = None  # commits the project's base branch has gained since (as last fetched)
 
@@ -247,6 +257,11 @@ class OperationDocs(BaseModel):
     artifacts: list[ArtifactSummary]  # latest attempt of each stage
 
 
+class StepCode(BaseModel):
+    repository: str = Field(default="", max_length=1000)  # empty: the project's monolith; {domain} is filled in
+    base_branch: str = Field(default="", max_length=255)  # for other repositories; empty: their default branch
+
+
 class WorkflowStep(BaseModel):
     kind: Literal["agent", "gate"]
     key: str = ""  # agent key for agent steps; gates get one from their title when blank
@@ -255,12 +270,22 @@ class WorkflowStep(BaseModel):
     reviews: list[str] = []  # gates only: agent steps this gate reviews
     uses: list[str] | None = None  # agents only: earlier agent steps whose output it gets; None = all of them
     include_content: bool = False  # agents only: include those documents' contents in the prompt
+    code: StepCode | None = None  # agents only: the step changes code, in this repository
+
+
+
+class WorkflowGit(BaseModel):
+    """Code changes (the repositories are on the steps that change code): review and commit them when the run
+    finishes, and the feature branch's name ({domain}, {feature}, {run}, {date})."""
+    commit: bool = True
+    branch_pattern: str = Field(default="", max_length=255)
 
 
 class WorkflowIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = None
     steps: list[WorkflowStep] | None = None
+    git: WorkflowGit | None = None
 
 
 Scope = Literal["operation", "domain", "monolith"]
@@ -285,6 +310,7 @@ class WorkflowOut(BaseModel):
     runs: int = 0
     library: str = "shared"  # shared (every project) | project (this project's own or copy)
     customised: bool = False  # a project copy of a shared workflow
+    git: WorkflowGit
     created_at: datetime
     updated_at: datetime
 

@@ -1,7 +1,6 @@
 """Runtime settings editable from the UI, persisted in the `settings` table: global ones (AI provider, network) and
 each project's own (its monolith, stack, toolchains, conventions)."""
 
-import re
 from typing import Any
 
 from sqlalchemy import select
@@ -9,6 +8,7 @@ from sqlalchemy import select
 from app import projects
 from app.db.models import GLOBAL, Setting
 from app.db.session import session_scope
+from app.tools.git_ops import valid_branch
 
 GLOBAL_DEFAULTS: dict[str, Any] = {
     "ai_provider": "copilot",  # copilot | claude: who runs agents in AI mode
@@ -40,7 +40,6 @@ PROJECT_DEFAULTS: dict[str, Any] = {
 }
 DEFAULTS = {**GLOBAL_DEFAULTS, **PROJECT_DEFAULTS}
 NETWORK_KEYS = {"https_proxy", "no_proxy", "extra_ca_file", "copilot_cli_path", "copilot_disable_websockets"}
-BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")  # a plain git ref name (never an option)
 LANGUAGES = {"java": "Java", "csharp": "C# / .NET", "typescript": "TypeScript / Node.js", "python": "Python",
              "go": "Go", "other": "Other"}
 
@@ -79,8 +78,7 @@ def _check(values: dict[str, Any], allowed: dict[str, Any], kind: str) -> None:
     if "language" in values and values["language"] not in LANGUAGES:
         raise KeyError(f"language must be one of {', '.join(LANGUAGES)}")
     branch = values.get("monolith_branch")
-    if branch is not None and branch != "" and not (isinstance(branch, str) and BRANCH.match(branch)
-                                                    and ".." not in branch and not branch.endswith((".lock", "/"))):
+    if branch is not None and branch != "" and not valid_branch(branch):
         raise KeyError("The base branch must be a git branch or tag name, e.g. main or release/2.4")
 
 

@@ -11,6 +11,7 @@ dependencies = [
   "alembic>=1.14",
   "psycopg[binary]>=3.2",  # PostgreSQL
   "oracledb>=2.5",  # Oracle 19c+, thin mode: no Oracle Client install needed
+  "cryptography>=43",  # encrypts users' git access tokens (app/secret_box.py)
   "github-copilot-sdk>=1.0.16",
   "truststore>=0.10",
   "pyyaml>=6",

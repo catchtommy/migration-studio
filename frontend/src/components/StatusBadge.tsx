@@ -4,6 +4,8 @@ const STYLES: Record<string, string> = {
   awaiting_input: "bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-300",
   awaiting_approval: "bg-warn/15 text-warn",
   changes_requested: "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+  awaiting_branches: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+  awaiting_commit: "bg-violet-500/15 text-violet-700 dark:text-violet-300",
   completed: "bg-ok/15 text-ok",
   approved: "bg-ok/15 text-ok",
   failed: "bg-bad/15 text-bad",
@@ -14,6 +16,8 @@ const LABELS: Record<string, string> = {
   awaiting_approval: "Awaiting approval",
   changes_requested: "Changes requested",
   awaiting_input: "Needs input",
+  awaiting_commit: "Ready to commit",
+  awaiting_branches: "Confirm branches",
 };
 
 export function StatusBadge({ status }: { status: string }) {

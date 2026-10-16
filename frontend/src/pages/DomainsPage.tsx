@@ -14,7 +14,7 @@ import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { AgentModeNote } from "../components/AgentModeNote";
 import { Guarded } from "../components/Guarded";
 
-const ACTIVE = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested"];
+const ACTIVE = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches"];
 const isActive = (run: RunBrief | null) => !!run && ACTIVE.includes(run.status);
 const unfinished = (run: RunBrief | null) => !!run && run.status !== "completed";
 

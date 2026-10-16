@@ -121,7 +121,8 @@ def validate(steps: list[dict]) -> list[dict]:
             agents_so_far.append(key)
             keys.add(key)
             out.append({"kind": "agent", "key": key, "uses": uses,
-                        "include_content": bool(step.get("include_content"))})
+                        "include_content": bool(step.get("include_content")),
+                        "code": _code(step.get("code"), i, agents[key][0])})
         elif kind == "gate":
             title = (step.get("title") or "").strip()
             if not title:
@@ -148,7 +149,30 @@ def validate(steps: list[dict]) -> list[dict]:
             raise WorkflowInvalid(f"Step {i}: kind must be 'agent' or 'gate'")
     if not agents_so_far:
         raise WorkflowInvalid("A workflow needs at least one agent step")
+    bases: dict[str, str] = {}
+    for step in out:  # steps sharing a repository share its checkout, so they need the same base branch
+        code = step.get("code")
+        if code and code["repository"]:
+            if bases.setdefault(code["repository"], code["base_branch"]) != code["base_branch"]:
+                raise WorkflowInvalid(f"Steps working in {code['repository']} must use the same base branch")
     return out
+
+
+def _code(code: dict | None, i: int, title: str) -> dict | None:
+    """A step's code settings, cleaned: None (documents only) or {"repository", "base_branch"}."""
+    if not code:
+        return None
+    from app.tools.git_ops import valid_branch
+    repository = str(code.get("repository") or "").strip()
+    base = str(code.get("base_branch") or "").strip()
+    if repository.startswith("-") or any(c.isspace() for c in repository):
+        raise WorkflowInvalid(f"Step {i}: {title!r} needs a git URL or path for its repository")
+    unknown = set(re.findall(r"{(\w+)}", repository)) - {"domain"}
+    if unknown:
+        raise WorkflowInvalid(f"Step {i}: unknown placeholder {{{sorted(unknown)[0]}}} in the repository; use {{domain}}")
+    if base and not valid_branch(base):
+        raise WorkflowInvalid(f"Step {i}: {base!r} isn't a valid base branch name")
+    return {"repository": repository, "base_branch": base if repository else ""}
 
 
 def resolve(steps: list[dict]) -> Workflow:
@@ -160,7 +184,7 @@ def resolve(steps: list[dict]) -> Workflow:
             title, description = agents.get(step["key"], (step["key"], ""))
             uses = step.get("uses")
             stages.append(StageDef(step["key"], title, "agent", description, uses=None if uses is None else tuple(uses),
-                                   include_content=bool(step.get("include_content"))))
+                                   include_content=bool(step.get("include_content")), code=step.get("code") or None))
         else:
             stages.append(StageDef(step["key"], step["title"], "gate", step.get("description", ""),
                                    tuple(step["reviews"])))
@@ -168,10 +192,12 @@ def resolve(steps: list[dict]) -> Workflow:
 
 
 def _as_dict(row: WorkflowDef, customised: bool = False) -> dict[str, Any]:
-    return {"key": row.key, "name": row.name, "description": row.description, "steps": row.steps,
-            "scope": row.scope or "operation", "library": "shared" if row.project == SHARED else "project",
-            "customised": customised, "stages": resolve(row.steps).to_dicts(), "created_at": row.created_at,
-            "updated_at": row.updated_at}
+    from app.delivery import git_settings
+    out = {"key": row.key, "name": row.name, "description": row.description, "steps": row.steps,
+           "scope": row.scope or "operation", "library": "shared" if row.project == SHARED else "project",
+           "customised": customised, "stages": resolve(row.steps).to_dicts(), "created_at": row.created_at,
+           "updated_at": row.updated_at}
+    return {**out, "git": git_settings({"scope": out["scope"], "git": row.git})}
 
 
 def _effective_rows(s, project: str | None) -> list[tuple[WorkflowDef, bool]]:
@@ -207,14 +233,14 @@ def _target(library: str) -> str:
 
 
 def create(key: str, name: str, description: str, steps: list[dict], scope: str = "operation",
-           library: str = "shared") -> dict[str, Any]:
+           library: str = "shared", git: dict | None = None) -> dict[str, Any]:
     steps = validate(steps)
     target = _target(library)
     with session_scope() as s:
         if s.get(WorkflowDef, (SHARED, key)) is not None or s.get(WorkflowDef, (target, key)) is not None:
             raise WorkflowInvalid(f"A workflow with key {key} already exists")
         s.add(WorkflowDef(project=target, key=key, name=name, description=description, steps=steps,
-                          scope=None if scope == "operation" else scope))
+                          scope=None if scope == "operation" else scope, git=git))
     return get(key)
 
 
@@ -228,10 +254,16 @@ def update(key: str, values: dict[str, Any], library: str = "shared") -> dict[st
             if shared is None:
                 raise KeyError(key)
             row = WorkflowDef(project=target, key=key, name=shared.name, description=shared.description,
-                              steps=shared.steps, scope=shared.scope)
+                              steps=shared.steps, scope=shared.scope, git=shared.git)
             s.add(row)
         if values.get("steps") is not None:
             row.steps = validate(values["steps"])
+        if values.get("git") is not None:
+            from app.delivery import validate_git
+            try:
+                row.git = validate_git(values["git"])
+            except ValueError as e:
+                raise WorkflowInvalid(str(e)) from e
         for field in ("name", "description"):
             if values.get(field) is not None:
                 setattr(row, field, values[field])

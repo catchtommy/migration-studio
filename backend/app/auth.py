@@ -10,6 +10,7 @@ import re
 import secrets
 import threading
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -240,7 +241,16 @@ async def project_context(request: Request, user: CurrentUser = Depends(current_
     if permissions is None:
         raise HTTPException(403, "You don't have access to this project. Ask its admin to add you.")
     projects.set_current(key)  # for this request (each request runs in its own context)
+    _acting.set(user.id)
     return ProjectAccess(user=user, project=key, permissions=permissions)
+
+
+_acting: ContextVar[int | None] = ContextVar("acting_user", default=None)
+
+
+def acting_user_id() -> int | None:
+    """The signed-in user of the current project request (e.g. whose git credentials a new run fetches with)."""
+    return _acting.get()
 
 
 def _refuse(permission: str) -> HTTPException:

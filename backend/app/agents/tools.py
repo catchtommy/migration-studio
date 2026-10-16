@@ -50,7 +50,7 @@ SCHEMAS: dict[str, dict] = {
         "input_schema": _obj({"path": _STR, "old_text": _STR, "new_text": _STR}, ["path", "old_text", "new_text"]),
     },
     "run_command": {
-        "description": "Run a shell command from the workspace root, e.g. a build or test run (Maven, Gradle, dotnet, "
+        "description": "Run a shell command from where this step changes code (the workspace root unless it works in another repository), e.g. a build or test run (Maven, Gradle, dotnet, "
                        "npm, pytest, go test, ...). The toolchain configured for this stage comes first on PATH "
                        "(and JAVA_HOME / DOTNET_ROOT are set for Java / .NET projects). Returns the exit code and "
                        "the last 20,000 characters of combined output.",
@@ -136,8 +136,21 @@ class Toolbox:
     def _git(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True)
 
+    def _repos(self) -> list[tuple[str, Path]]:
+        """(prefix, checkout) of the workspace root and the run's other repositories inside it."""
+        out = [("", self.root)]
+        for r in self.ctx.repositories:
+            path = self.root / r["path"]
+            if (path / ".git").exists():
+                out.append((r["path"] + "/", path))
+        return out
+
     def list_files(self, pattern: str) -> str:
-        files = self._git("ls-files", "--cached", "--others", "--exclude-standard").stdout.splitlines()
+        files = []
+        for prefix, repo in self._repos():
+            proc = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=repo,
+                                  capture_output=True, text=True)
+            files += [prefix + f for f in proc.stdout.splitlines()]
         bare = pattern.removeprefix("**/")
         matched = sorted({f for f in files if fnmatch(f, pattern) or fnmatch(f, bare)})
         if not matched:
@@ -160,12 +173,14 @@ class Toolbox:
         args = ["grep", "-n", "-I", "-E", "--untracked", "-e", pattern]
         if glob:
             args += ["--", glob]
-        proc = self._git(*args)
-        if proc.returncode == 1:
+        lines = []
+        for prefix, repo in self._repos():
+            proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+            if proc.returncode not in (0, 1):
+                raise ToolError(proc.stderr.strip())
+            lines += [prefix + line for line in proc.stdout.splitlines()]
+        if not lines:
             return "No matches."
-        if proc.returncode != 0:
-            raise ToolError(proc.stderr.strip())
-        lines = proc.stdout.splitlines()
         more = f"\n… and {len(lines) - MAX_SEARCH_LINES} more matches; narrow the search." \
             if len(lines) > MAX_SEARCH_LINES else ""
         return "\n".join(lines[:MAX_SEARCH_LINES]) + more
@@ -195,7 +210,8 @@ class Toolbox:
         env = toolchain_env(dict(os.environ), self.toolchain_home, self.ctx.settings.get("language") or "java")
         self.ctx.log(f"$ {command}")
         try:
-            proc = subprocess.run(command, shell=True, cwd=self.root, env=env, capture_output=True, text=True,
+            proc = subprocess.run(command, shell=True, cwd=self._resolve(self.ctx.code_dir), env=env,
+                                  capture_output=True, text=True,
                                   timeout=max(1, min(timeout_seconds, 3600)))
         except subprocess.TimeoutExpired:
             raise ToolError(f"Command timed out after {timeout_seconds}s")

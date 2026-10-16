@@ -131,3 +131,12 @@ export const FolderIcon = (p: IconProps) => (
     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
   </Svg>
 );
+
+export const BranchIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="6" cy="5" r="2" />
+    <circle cx="6" cy="19" r="2" />
+    <circle cx="18" cy="7" r="2" />
+    <path d="M6 7v10M18 9c0 5-6 4-12 8" />
+  </Svg>
+);

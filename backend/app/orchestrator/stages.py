@@ -20,6 +20,9 @@ class StageDef:
     # Agents only: earlier agent stages whose documents this stage receives. None = all earlier agent stages.
     uses: tuple[str, ...] | None = None
     include_content: bool = False  # agents only: put those documents' contents in the prompt, not just their paths
+    # Agents only: the step changes code, in {"repository": "" (the project's monolith) | git URL ({domain} filled
+    # in), "base_branch": ""}. None: it writes documents only (it still reads the monolith).
+    code: dict | None = field(default=None, hash=False, compare=False)
 
     def to_dict(self) -> dict:
         return {**asdict(self), "reviews": list(self.reviews),
@@ -30,7 +33,7 @@ class StageDef:
         uses = d.get("uses")
         return cls(key=d["key"], title=d["title"], kind=d["kind"], description=d.get("description", ""),
                    reviews=tuple(d.get("reviews") or ()), uses=None if uses is None else tuple(uses),
-                   include_content=bool(d.get("include_content")))
+                   include_content=bool(d.get("include_content")), code=d.get("code") or None)
 
 
 class Workflow:

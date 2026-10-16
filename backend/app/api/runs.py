@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
@@ -14,7 +15,7 @@ from app.api.schemas import (
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import contracts_store, discovery_store, projects, repos, workflow_store, workspace
+from app import auth, contracts_store, delivery, discovery_store, projects, repos, settings_store, workflow_store, workspace
 from app.auth import CurrentUser, require
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
@@ -40,7 +41,8 @@ SCOPE_LABELS = {"operation": "migration", "domain": "feature listing", "monolith
 
 
 def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key: str | None,
-              inputs: dict | None = None) -> Run:
+              inputs: dict | None = None, base_branches: dict | None = None,
+              feature_branch: str | None = None) -> Run:
     """Create a run of a workflow of the given scope and start it."""
     try:
         workflow = workflow_store.get(workflow_key or "")
@@ -54,10 +56,27 @@ def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key
                                          Run.status != "completed"))
     if active:
         raise HTTPException(409, f"{discovery_store.subject(domain, operation)} already has an unfinished run")
-    branch = (f"migration/{domain}/{operation}" if scope == "operation" else
-              "discovery/bounded-contexts" if scope == "monolith" else f"discovery/{domain}/features")
+    if scope == "operation":  # a migration: its repository, base branch and feature branch (see app/delivery.py)
+        git = delivery.plan(projects.current(), workflow, domain, operation, base_branches, feature_branch)
+        try:
+            delivery.check_branches(projects.current(), git)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        branch = git["feature_branch"]
+        root = next((r for r in git["repositories"] if r["root"]), None)
+        repository, base_branch = (root["url"], root["base_branch"] or None) if root else ("", None)
+        nested = [{"key": r["key"], "name": r["name"], "url": r["url"], "base_branch": r["base_branch"] or None,
+                   "path": f"{delivery.NESTED_DIR}/{r['key']}", "base_sha": None}
+                  for r in git["repositories"] if not r["root"]]
+        commit = git["commit"]
+    else:
+        repository = repos.project_repository(projects.current())
+        base_branch, nested, commit = settings_store.get("monolith_branch") or None, [], False
+        branch = "discovery/bounded-contexts" if scope == "monolith" else f"discovery/{domain}/features"
     run = Run(project=projects.current(), domain=domain, operation=operation, branch=branch, inputs=inputs, scope=scope,
-              workflow=workflow["key"], workflow_stages=workflow["stages"])
+              workflow=workflow["key"], workflow_stages=workflow["stages"], repository=repository or "",
+              base_branch=base_branch, repositories=nested or None, started_by=auth.acting_user_id(),
+              delivery={"commit": commit})
     db.add(run)
     db.flush()
     run.workspace = str(settings.workspaces_dir / run.id)
@@ -84,7 +103,20 @@ def create_run(body: RunCreate, db: Session = Depends(get_db)):
         inputs["paths"] = feature["entry_points"]
     return start_run(db, body.domain, body.operation, "operation",
                      body.workflow or workflow_store.default_for(domain),
-                     inputs if inputs["paths"] or inputs["notes"] else None)
+                     inputs if inputs["paths"] or inputs["notes"] else None,
+                     {**body.base_branches, **({delivery.ROOT: body.base_branch} if body.base_branch else {})},
+                     body.feature_branch)
+
+
+@router.get("/runs-git-plan")
+def git_plan(domain: str, feature: str, workflow: str | None = None, db: Session = Depends(get_db)):
+    """Where a new migration would work (repository, base and feature branch), for the New migration form."""
+    domain_row = db.get(Domain, (projects.current(), domain))
+    try:
+        wf = workflow_store.get(workflow or workflow_store.default_for(domain_row) or "")
+    except KeyError:
+        raise HTTPException(404, "Workflow not found")
+    return delivery.plan(projects.current(), wf, domain, feature)
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
@@ -92,9 +124,13 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id)
     detail = RunDetail.model_validate(run)
     if run.scope == "operation":
-        detail.monolith_behind = repos.behind(run.project, run.base_sha)
+        detail.monolith_behind = repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha)
     if run.status in ("awaiting_approval", "changes_requested"):
         detail.pending_gate = get_runner().pending_gate(run_id)
+    if run.status == "awaiting_branches":
+        detail.pending_branches = get_runner().pending_gate(run_id)
+    if run.status == "awaiting_commit" and run.current_stage:
+        detail.pending_commit = get_runner().pending_gate(run_id)
     return detail
 
 
@@ -150,6 +186,7 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
                                  "the amendments are made", gate["gate"])
         return approval
     db.commit()
+    delivery.refresh_code_settings(run_id)  # steps still to run use the current code settings
     try:
         runner.resume(run_id, body.model_dump())
     except RunBusyError as e:
@@ -191,6 +228,7 @@ def rerun(run_id: str, body: Rerun, db: Session = Depends(get_db)):
     db.commit()
     emit(run_id, "approval", f"Amendments done: re-running from {_stage_title(run, pending['target_stage'])}",
          pending["gate"])
+    delivery.refresh_code_settings(run_id)
     try:
         get_runner().resume(run_id, {"decision": "reject", "target_stage": pending["target_stage"],
                                      "comments": pending["comments"]})
@@ -227,7 +265,7 @@ def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db
     return get_run(run_id, db)
 
 
-RESTARTABLE = ("completed", "failed", "awaiting_approval", "changes_requested")
+RESTARTABLE = ("completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches")
 
 
 @router.post("/runs/{run_id}/restart", response_model=RunOut)
@@ -258,6 +296,8 @@ def restart(run_id: str, body: Restart, db: Session = Depends(get_db),
            "documents are updated with the agents' current settings")
     emit(run_id, "status", f"{user.display_name} re-ran the workflow from {step['title']}"
                            + (f" and the {later} step(s) after it" if later else "") + f": {how}", body.stage)
+    delivery.refresh_code_settings(run_id)  # the workflow's current code settings (which steps change code, where)
+    db.refresh(run)
     try:
         get_runner().restart(run_id, body.stage, body.notes, fresh=body.fresh)
     except RunBusyError as e:
@@ -273,6 +313,7 @@ def retry(run_id: str, db: Session = Depends(get_db)):
     if run.status != "failed":
         raise HTTPException(409, "Only failed runs can be retried")
     emit(run_id, "status", "Retrying")
+    delivery.refresh_code_settings(run_id)
     try:
         get_runner().retry(run_id)
     except RunBusyError as e:
@@ -371,3 +412,127 @@ async def events(run_id: str, request: Request, after: int = 0):
             await asyncio.sleep(0.5)
 
     return EventSourceResponse(stream())
+
+
+# --- reviewing and committing the code changes (app/delivery.py) ---------------------------------------------------
+
+class CommitIn(BaseModel):
+    repo: str = delivery.ROOT  # which of the run's repositories (see /runs/{id}/repositories)
+    message: str = Field(min_length=1, max_length=10_000)
+    branch: str = Field(min_length=1, max_length=255)
+    files: list[str] = Field(min_length=1)
+    resolutions: dict[str, dict] = {}  # path: {"content": str} | {"use": "ours" | "theirs"} | {"delete": true}
+    latest_sha: str = Field(pattern=r"^[0-9a-f]{40}$")  # the base branch commit the review showed
+    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")  # the run's commit the review showed
+
+
+def _deliverable(db: Session, run_id: str) -> Run:
+    run = _run_or_404(db, run_id)
+    if run.scope not in (None, "operation") or not delivery.run_repos(run):
+        raise HTTPException(409, "This run doesn't work on a repository")
+    return run
+
+
+@router.get("/runs/{run_id}/repositories")
+def run_repositories(run_id: str, db: Session = Depends(get_db)):
+    """The repositories the run works on: which it changed, and what was committed to each."""
+    _deliverable(db, run_id)
+    db.close()
+    try:
+        return delivery.repositories(run_id)
+    except (delivery.DeliveryError, git_ops.GitError) as e:
+        raise HTTPException(409, str(e))
+
+
+@router.get("/runs/{run_id}/changes")
+def run_changes(run_id: str, repo: str = delivery.ROOT, db: Session = Depends(get_db),
+                user: CurrentUser = Depends(auth.current_user)):
+    """The files the run changed in one repository, and how they merge with its latest base branch (fetched now, as
+    the user)."""
+    _deliverable(db, run_id)
+    if get_runner().is_active(run_id):
+        raise HTTPException(409, "The run is working; review its changes when it stops")
+    db.close()
+    try:
+        return delivery.changes(run_id, repo, user.id)
+    except (delivery.DeliveryError, git_ops.GitError) as e:
+        raise HTTPException(409, str(e))
+
+
+@router.get("/runs/{run_id}/changes/file")
+def run_change_file(run_id: str, path: str, latest: str, repo: str = delivery.ROOT, db: Session = Depends(get_db)):
+    _deliverable(db, run_id)
+    db.close()
+    try:
+        return delivery.file_detail(run_id, repo, path, latest)
+    except (delivery.DeliveryError, git_ops.GitError) as e:
+        raise HTTPException(409, str(e))
+
+
+@router.post("/runs/{run_id}/commit")
+def commit_changes(run_id: str, body: CommitIn, db: Session = Depends(get_db),
+                   user: CurrentUser = Depends(require("runs.approve"))):
+    """Commit the chosen files on the feature branch, as the user, and push it with their git credentials."""
+    run = _deliverable(db, run_id)
+    if run.status != "awaiting_commit":
+        raise HTTPException(409, "The run isn't waiting for its changes to be committed")
+    after_step = run.current_stage is not None
+    db.close()  # pushing can take a while; don't hold a connection
+    try:
+        result = delivery.commit(run_id, body.repo, user.id, body.message, body.branch.strip(), body.files,
+                                 body.resolutions, body.latest_sha, body.head_sha)
+    except (delivery.DeliveryError, git_ops.GitError) as e:
+        raise HTTPException(409, str(e))
+    if after_step:
+        _go_on(run_id)  # committed right after the step: the workflow continues
+    return result
+
+
+def _go_on(run_id: str) -> None:
+    """Resume a run that waits right after a step for its code to be committed."""
+    with session_scope() as s:
+        s.get(Run, run_id).status = "running"
+    get_runner().resume(run_id, {"go_on": True})
+
+
+@router.post("/runs/{run_id}/finish", status_code=204)
+def finish_without_commit(run_id: str, db: Session = Depends(get_db),
+                          user: CurrentUser = Depends(require("runs.approve"))):
+    run = _run_or_404(db, run_id)
+    if run.status != "awaiting_commit":
+        raise HTTPException(409, "The run isn't waiting for its changes to be committed")
+    after_step, stage = run.current_stage is not None, run.current_stage
+    db.close()
+    if after_step:  # right after a step: go on without committing; the changes are offered again later
+        emit(run_id, "status", f"{user.display_name} went on without committing yet", stage)
+        _go_on(run_id)
+    else:
+        delivery.finish_without_commit(run_id, user.id)
+
+
+class BranchesIn(BaseModel):
+    feature_branch: str = Field(min_length=1, max_length=255)
+    base_branch: str | None = Field(default=None, max_length=255)  # for a repository not checked out yet
+
+
+@router.post("/runs/{run_id}/branches", response_model=RunOut)
+def confirm_branches(run_id: str, body: BranchesIn, db: Session = Depends(get_db),
+                     user: CurrentUser = Depends(require("runs.start"))):
+    """Confirm (or change) the branches a step is about to change code on; the step then starts."""
+    run = _run_or_404(db, run_id)
+    pending = get_runner().pending_gate(run_id) if run.status == "awaiting_branches" else None
+    if not pending or pending.get("kind") != "branches":
+        raise HTTPException(409, "The run isn't waiting for branches to be confirmed")
+    key = pending["repository"]["key"]
+    db.close()
+    try:
+        delivery.check_confirmation(run_id, key, body.feature_branch.strip(), body.base_branch, user.id)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    emit(run_id, "status", f"{user.display_name} confirmed branch {body.feature_branch.strip()} for "
+                           f"{pending['repository']['name']}", pending["stage"])
+    get_runner().resume(run_id, {"feature_branch": body.feature_branch.strip(), "base_branch": body.base_branch,
+                                 "user_id": user.id})
+    with session_scope() as s:
+        out = RunOut.model_validate(s.get(Run, run_id))
+    return out
