@@ -3,7 +3,7 @@ from pathlib import Path
 
 from app.agents import stub
 from app.tools import git_ops
-from tests.conftest import start_run, wait_for
+from tests.conftest import document, start_run, wait_for
 
 GATES = ["gate_analysis", "gate_design", "gate_tests", "gate_release"]
 _ids = itertools.count()
@@ -41,8 +41,7 @@ def test_happy_path_runs_every_stage_and_gate(client):
     names = [a["name"] for a in client.get(f"/api/runs/{run_id}/artifacts").json()]
     assert len([n for n in names if n.endswith(".md")]) == 12  # one document per agent stage
     assert {"cross-domain.yaml", "domain-dependencies.yaml", "integration-decisions.yaml"} <= set(names)
-    ws = Path(run["workspace"])
-    assert git_ops.git(ws, "rev-parse", "--abbrev-ref", "HEAD") == run["branch"]
+    assert not Path(run["workspace"]).exists()  # a completed run's workspace is removed from the server
 
 
 def test_reject_rolls_back_and_reruns_target_with_feedback(client):
@@ -62,7 +61,7 @@ def test_reject_rolls_back_and_reruns_target_with_feedback(client):
     assert [a["attempt"] for a in executions(run, "orchestrator_design")] == [1, 2]  # later steps re-run too
     assert attempts[1]["start_sha"] == design_start  # workspace was rolled back before the re-run
     assert attempts[1]["feedback"] == "Split payments tables out"
-    content = (Path(run["workspace"]) / ".migration/customer" / run["operation"] / "domain_dependencies.md").read_text()
+    content = document(run, "domain_dependencies").read_text()
     assert "Split payments tables out" in content
     assert [g["status"] for g in executions(run, "gate_design")] == ["rejected", "awaiting_approval"]
 
@@ -105,6 +104,7 @@ def test_failed_stage_can_be_retried(client, monkeypatch):
     failed = executions(run, "deep_dive")[0]
     assert failed["status"] == "failed"
     assert not (Path(run["workspace"]) / ".migration/customer" / run["operation"] / "partial.txt").exists()
+    assert not document(run, "deep_dive", "partial.txt").exists()
 
     assert client.post(f"/api/runs/{run_id}/retry").status_code == 200
     run = wait_for(client, run_id, {"awaiting_approval"})
@@ -112,16 +112,16 @@ def test_failed_stage_can_be_retried(client, monkeypatch):
     assert len(executions(run, "as_is_doc")) == 1  # completed stages are not repeated
 
 
-def test_manual_artifact_edit_is_committed(client):
+def test_manual_artifact_edit_is_what_later_stages_get(client):
     run_id = new_run(client)
     run = wait_for(client, run_id, {"awaiting_approval"})
     art = next(a for a in client.get(f"/api/runs/{run_id}/artifacts").json() if a["stage"] == "deep_dive")
     r = client.put(f"/api/artifacts/{art['id']}", json={"content": "# Edited by reviewer\n"})
     assert r.status_code == 200
+    assert document(run, "deep_dive").read_text() == "# Edited by reviewer\n"
     ws = Path(run["workspace"])
-    assert (ws / art["path"]).read_text() == "# Edited by reviewer\n"
+    assert not (ws / ".migration").exists()  # documents live in the database, not on the server's disk
     assert git_ops.git(ws, "status", "--porcelain") == ""
-    assert "[manual edit]" in git_ops.git(ws, "log", "-1", "--format=%s")
 
 
 def test_duplicate_unfinished_run_is_refused(client):

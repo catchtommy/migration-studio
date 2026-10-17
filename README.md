@@ -367,9 +367,10 @@ commit in every repository it changed.
 Restarting a step picks up the workflow's current *Changes code* settings, so runs started before a step was set to
 change code (or before git support) ask for branches and end with the review too. Their monolith changes can only be
 committed if the run's workspace was cloned from the monolith; otherwise start a new run. Restarting a step after
-committing brings the run back to *Ready to commit*. The next commit goes on top of the one
-pushed before, with no force push. If someone else pushed to the feature branch, committing is refused; choose
-another branch name.
+committing checks the repository out from the feature branch it pushed (with anything others pushed there since), and
+the run comes back to *Ready to commit* with the new changes, committed on top. The studio's documents aren't
+committed: they stay in its database. Commits never force-push. If someone pushes to the feature branch while the
+run is checked out, committing is refused (re-run a step to pick their commits up, or choose another branch name).
 
 **Git access is per user.** Under **My settings** (account menu), everyone sets the **name and email** their commits
 use, and an **access token per git host** (e.g. github.com, mycompany.ghe.com). Fetches and pushes over HTTPS use the
@@ -397,12 +398,25 @@ database needs the same key, so back it up. If it's lost, users enter their toke
   log. Runs already started keep the commit they started from, and their page says how many newer commits there are.
   **Fetch latest** on the Project page shows what's new without starting a run (needs *Manage project* or *Run
   migrations*). Like workspaces, the mirror is a cache and is cloned again if it's missing.
-- **Workspace**: each run makes a local clone of the project's mirror (no network; git hard-links the objects, so
-  it costs little more than the checked-out files), at the project's base branch, into `backend/data/workspaces/<run id>`
-  on branch `migration/<domain>/<operation>`. Every stage commits its output, so each attempt has a reviewable diff.
-  The workspace is only a working copy: each stage's diff and documents are stored in the database, and a missing
-  workspace is rebuilt from them (`app/workspace.py`) — re-cloned at the run's starting commit, the stages' code
-  changes replayed, the documents (with reviewers' edits) written back.
+- **Legacy code (read-only, shared)**: runs whose steps don't change the monolith don't check it out. Each project
+  keeps **one** read-only copy of its base branch at a fixed commit, `backend/data/repos/<project>/legacy/<commit>/`
+  (a git worktree of the mirror, so the history isn't duplicated; its files are read-only on disk). Agents read it at
+  its usual paths (`src/...`) through their file tools, and commands can read it under `$STUDIO_LEGACY_DIR`; writing
+  to it is refused. **Fetch now** (Project page) makes the latest commit the copy new runs read. Runs in progress keep
+  the copy they started with, and copies no unfinished run reads are deleted at the next fetch. A run's page shows the
+  commit it reads.
+- **Workspace**: a run's own folder, `backend/data/workspaces/<run id>`. For a run that only reads the monolith it
+  holds just the run's documents (`.migration/`) and the other repositories its steps change, so it stays small. A run
+  with a step that changes the monolith gets its own local clone of the mirror (git hard-links the objects, so it costs
+  about its checked-out files), on its feature branch. Every stage commits its output, so each attempt has a
+  reviewable diff. **Documents are not kept on disk**: they live in the database; a step gets the documents in
+  effect written to `.migration/` when it starts, its new or changed ones are stored, and the folder is cleared when it
+  ends (reviewers' edits go straight to the database; the Changes tab works out document diffs from the stored
+  versions). **A finished run's workspace is deleted**: everything is in the database or pushed. When a step is re-run
+  later, or a workspace is missing, it is rebuilt (`app/workspace.py`): a repository whose changes were pushed is
+  checked out **from its feature branch** (including anything others pushed there since) and only later changes are
+  replayed; other repositories are re-cloned at the run's starting commit (or left blank when the run reads the shared
+  copy) with the stages' code changes replayed
 - **Gates** pause the graph with `interrupt()`. *Approve* continues. Rejecting requires comments, and has two forms:
   - *Reject & re-run now*: the workspace is reset to where the chosen stage started, and the stage re-runs straight
     away with the comments as feedback.

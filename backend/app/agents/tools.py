@@ -114,6 +114,8 @@ class Toolbox:
     def __init__(self, ctx: AgentContext, toolchain_home: str | None):
         self.ctx = ctx
         self.root = ctx.workspace.resolve()
+        # The shared read-only monolith, overlaid on the workspace: paths not in the workspace are read from it.
+        self.legacy = ctx.legacy_dir.resolve() if ctx.legacy_dir else None
         self.toolchain_home = toolchain_home
         self.written: set[str] = set()  # workspace-relative paths written by this agent
 
@@ -128,6 +130,23 @@ class Toolbox:
             raise ToolError(f"{path} is outside the workspace")
         if ".git" in p.relative_to(self.root).parts:
             raise ToolError("The .git directory is off limits")
+        return p
+
+    def _read_path(self, path: str) -> Path:
+        """Where to read `path`: the workspace, else the shared legacy copy (read-only)."""
+        p = self._resolve(path)
+        if p.exists() or self.legacy is None:
+            return p
+        q = (self.legacy / path).resolve()
+        if q.is_relative_to(self.legacy) and ".git" not in q.relative_to(self.legacy).parts and q.exists():
+            return q
+        return p
+
+    def _write_path(self, path: str) -> Path:
+        p = self._resolve(path)
+        if self.legacy is not None and not p.exists() and (self.legacy / path).exists():
+            raise ToolError(f"{path} is the monolith's code, which is read-only in this run: write documents under "
+                            ".migration/ and code only in the repository this step changes")
         return p
 
     def _rel(self, p: Path) -> str:
@@ -151,6 +170,9 @@ class Toolbox:
             proc = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=repo,
                                   capture_output=True, text=True)
             files += [prefix + f for f in proc.stdout.splitlines()]
+        if self.legacy is not None:
+            proc = subprocess.run(["git", "ls-files", "--cached"], cwd=self.legacy, capture_output=True, text=True)
+            files += proc.stdout.splitlines()
         bare = pattern.removeprefix("**/")
         matched = sorted({f for f in files if fnmatch(f, pattern) or fnmatch(f, bare)})
         if not matched:
@@ -159,7 +181,7 @@ class Toolbox:
         return "\n".join(matched[:MAX_LIST]) + more
 
     def read_file(self, path: str, start_line: int = 1, end_line: int | None = None) -> str:
-        p = self._resolve(path)
+        p = self._read_path(path)
         if not p.is_file():
             raise ToolError(f"{path} is not a file")
         lines = p.read_text(errors="replace").splitlines()
@@ -174,7 +196,8 @@ class Toolbox:
         if glob:
             args += ["--", glob]
         lines = []
-        for prefix, repo in self._repos():
+        sources = self._repos() + ([("", self.legacy)] if self.legacy is not None else [])
+        for prefix, repo in sources:
             proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
             if proc.returncode not in (0, 1):
                 raise ToolError(proc.stderr.strip())
@@ -186,7 +209,7 @@ class Toolbox:
         return "\n".join(lines[:MAX_SEARCH_LINES]) + more
 
     def write_file(self, path: str, content: str) -> str:
-        p = self._resolve(path)
+        p = self._write_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         self.written.add(self._rel(p))
@@ -194,7 +217,7 @@ class Toolbox:
         return f"Wrote {len(content.splitlines())} lines to {self._rel(p)}"
 
     def edit_file(self, path: str, old_text: str, new_text: str) -> str:
-        p = self._resolve(path)
+        p = self._write_path(path)
         if not p.is_file():
             raise ToolError(f"{path} is not a file")
         text = p.read_text()
@@ -208,6 +231,8 @@ class Toolbox:
 
     def run_command(self, command: str, timeout_seconds: int = 600) -> str:
         env = toolchain_env(dict(os.environ), self.toolchain_home, self.ctx.settings.get("language") or "java")
+        if self.legacy is not None:
+            env["STUDIO_LEGACY_DIR"] = str(self.legacy)  # the read-only monolith, for commands that read it
         self.ctx.log(f"$ {command}")
         try:
             proc = subprocess.run(command, shell=True, cwd=self._resolve(self.ctx.code_dir), env=env,

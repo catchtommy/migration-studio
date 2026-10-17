@@ -74,6 +74,12 @@ export function RunPage() {
               · from monolith commit <span className="font-mono">{run.base_sha.slice(0, 10)}</span>
             </>
           )}
+          {run.legacy && (
+            <span title="Shared by the project's runs; never changed">
+              {" "}
+              · reads the monolith (read-only) at <span className="font-mono">{run.legacy.sha.slice(0, 10)}</span>
+            </span>
+          )}
         </p>
         {!!run.monolith_behind && run.status !== "awaiting_commit" && !run.delivery?.repos?.monolith && (
           <p className="mt-2 rounded-md bg-warn/10 px-3 py-1.5 text-sm text-warn">

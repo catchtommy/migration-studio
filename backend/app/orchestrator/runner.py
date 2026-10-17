@@ -11,14 +11,14 @@ from langgraph.types import Command
 
 from app.db.models import Run
 from app.db.session import emit, session_scope
-from app import delivery, projects, repos
+from app import delivery, legacy, projects, repos
 from app.orchestrator import questions
 from app.orchestrator.checkpointer import SqlAlchemySaver
 from app.orchestrator.graph import build_graph
 from app.orchestrator.stages import Workflow
 from app.tools import git_ops
 from app.workspace import ensure as ensure_workspace
-from app.workspace import exclude_nested, start_fresh
+from app.workspace import exclude_nested, release_workspace, start_fresh
 
 log = logging.getLogger(__name__)
 
@@ -110,8 +110,23 @@ class Runner:
                 run.status, run.error = "running", None
                 domain, operation, workspace, branch = run.domain, run.operation, run.workspace, run.branch
                 repository, source_branch, started_by = delivery.run_repository(run), run.base_branch, run.started_by
+                own_checkout = delivery.changes_monolith(run.stage_defs)
                 projects.set_current(run.project)  # this worker thread now works for the run's project
-            if initial:
+            if initial and repository and not own_checkout:
+                # Nothing in this run changes the monolith: it reads the project's shared read-only copy, and its
+                # own workspace holds only documents (and other repositories it changes).
+                shared = legacy.snapshot(projects.current(), started_by)
+                git_ops.init_workspace(Path(workspace), None, branch)
+                with session_scope() as s:
+                    run = s.get(Run, run_id)
+                    run.legacy, run.repository, run.base_branch = shared, "", None
+                exclude_nested(Path(workspace))
+                emit(run_id, "status", f"Reading the monolith from the shared read-only copy of "
+                                       f"{shared['branch'] or 'its default branch'} at {shared['sha'][:10]}"
+                                       f"{': ' + shared['subject'] if shared.get('subject') else ''}")
+                inp = {"run_id": run_id, "domain": domain, "operation": operation, "workspace": workspace,
+                       "feedback": {}, "stage_shas": {}}
+            elif initial:
                 emit(run_id, "status", f"Preparing workspace: branch {branch}"
                                        f"{f' from {source_branch}' if source_branch else ''}")
                 # The server's copy of the repository, shared by the project's runs, fetched first (as the user who
@@ -146,6 +161,10 @@ class Runner:
                 self._active.discard(run_id)
 
         review = error is None and not gate and delivery.wants_review(run_id)
+        if error is None and not gate and not review:
+            # Finished: nothing on disk is needed any more (documents and diffs are in the database, commits
+            # pushed). Removed before the run shows as completed, so a completed run never still has a workspace.
+            release_workspace(run_id)
         with session_scope() as s:
             run = s.get(Run, run_id)
             if error is not None:

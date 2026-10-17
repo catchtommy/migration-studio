@@ -35,6 +35,7 @@ export interface Run {
   base_branch: string | null; // the branch it was cut from (null: the repository's default branch)
   repository: string | null; // the monolith's, at the workspace root
   repositories: { key: string; name: string; url: string; base_branch: string | null; path: string }[] | null; // the others
+  legacy: { url: string; branch: string; sha: string; subject?: string } | null; // the shared read-only monolith it reads
   delivery: Delivery | null;
   error: string | null;
   created_at: string;
@@ -201,6 +202,7 @@ export interface RepositoryStatus {
   default_branch: string | null;
   head: { sha: string; subject: string; author: string; date: string } | null;
   error: string | null;
+  legacy: { sha: string; branch: string; subject: string; at: string } | null; // the shared read-only copy new runs read
 }
 
 export interface ArtifactSummary {

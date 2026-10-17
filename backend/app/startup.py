@@ -6,6 +6,7 @@ from sqlalchemy import URL
 
 from app import agent_store, auth, domain_store, projects, workflow_store
 from app.db import session, transfer
+from app import workspace
 from app.orchestrator.runner import get_runner
 
 log = logging.getLogger(__name__)
@@ -21,4 +22,10 @@ def open_database(url: URL) -> None:
     domain_store.seed()
     workflow_store.seed()
     get_runner().recover_interrupted()
+    try:  # finished runs need nothing on disk (their documents and diffs are in the database)
+        removed = workspace.release_completed()
+        if removed:
+            log.info("Removed the workspaces of %d completed run(s)", removed)
+    except OSError:
+        log.exception("Could not remove completed runs' workspaces")
     log.info("Using %s database", url.get_backend_name())

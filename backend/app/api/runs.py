@@ -12,6 +12,7 @@ from app.api.schemas import (
     AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, Decision, EventOut, QuestionOut,
     RunCreate, RunDetail, RunOut, Rerun, Restart,
 )
+from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
@@ -124,7 +125,9 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id)
     detail = RunDetail.model_validate(run)
     if run.scope == "operation":
-        detail.monolith_behind = repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha)
+        detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
+                                  if run.legacy else
+                                  repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha))
     if run.status in ("awaiting_approval", "changes_requested"):
         detail.pending_gate = get_runner().pending_gate(run_id)
     if run.status == "awaiting_branches":
@@ -361,16 +364,13 @@ def get_artifact(artifact_id: int, db: Session = Depends(get_db)):
 @router.put("/artifacts/{artifact_id}", response_model=ArtifactOut)
 def edit_artifact(artifact_id: int, body: ArtifactUpdate, db: Session = Depends(get_db),
                   user: CurrentUser = Depends(require("runs.edit"))):
-    """Manual edit before approval: written to the workspace and committed so later stages build on it."""
+    """Manual edit before approval: stored, so later stages (which get documents from the database) build on it."""
     artifact = db.get(Artifact, artifact_id)
     if artifact is None:
         raise HTTPException(404, "Artifact not found")
     run = _run_or_404(db, artifact.run_id)
     if run.status not in ("awaiting_approval", "changes_requested"):
         raise HTTPException(409, "Artifacts can only be edited while the run is waiting for approval or amendments")
-    ws = workspace.ensure(run.id)
-    (ws / artifact.path).write_text(body.content)
-    git_ops.commit_all(ws, f"[manual edit] {artifact.path}")
     artifact.content = body.content
     db.commit()
     emit(run.id, "artifact", f"Artifact edited by {user.display_name}: {artifact.path}", artifact.stage)
@@ -381,14 +381,38 @@ def edit_artifact(artifact_id: int, body: ArtifactUpdate, db: Session = Depends(
 def stage_diff(run_id: str, execution_id: int, db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id)
     ex = db.get(StageExecution, execution_id)
-    if ex is None or ex.run_id != run_id or not (ex.start_sha and ex.end_sha):
+    if ex is None or ex.run_id != run_id:
         raise HTTPException(404, "No diff for this stage execution")
-    if ex.diff is not None or ex.start_sha == ex.end_sha:
-        return {"diff": ex.diff or ""}
-    try:  # attempts from before diffs were stored
-        return {"diff": git_ops.diff(Path(run.workspace), ex.start_sha, ex.end_sha)}
-    except git_ops.GitError:
-        raise HTTPException(410, "This attempt was rolled back and its commits are no longer available")
+    code = ex.diff
+    if code is None and ex.start_sha and ex.end_sha and ex.start_sha != ex.end_sha:
+        try:  # attempts from before diffs were stored
+            code = git_ops.diff(Path(run.workspace), ex.start_sha, ex.end_sha)
+        except git_ops.GitError:
+            raise HTTPException(410, "This attempt was rolled back and its commits are no longer available")
+    nested = "".join((c or {}).get("diff") or "" for c in (ex.repos or {}).values())
+    # Documents live in the database, so their changes are worked out from the versions stored there (attempts
+    # from when documents were in git already have them in the code diff).
+    docs = "" if code and f"a/{DOCS_ROOT}/" in code else _document_diff(db, ex)
+    return {"diff": "".join(part for part in (code or "", nested, docs) if part)}
+
+
+def _document_diff(db: Session, ex: StageExecution) -> str:
+    import difflib
+    out = []
+    mine = db.scalars(select(Artifact).where(Artifact.run_id == ex.run_id, Artifact.stage == ex.stage,
+                                             Artifact.attempt == ex.attempt).order_by(Artifact.id)).all()
+    for a in mine:
+        before = db.scalar(select(Artifact).where(Artifact.run_id == ex.run_id, Artifact.path == a.path,
+                                                  Artifact.id < a.id).order_by(Artifact.id.desc()).limit(1))
+        old = before.content if before is not None else ""
+        if old == a.content:
+            continue
+        lines = list(difflib.unified_diff(old.splitlines(keepends=True), a.content.splitlines(keepends=True),
+                                          "/dev/null" if before is None else f"a/{a.path}", f"b/{a.path}"))
+        if lines:
+            header = f"diff --git a/{a.path} b/{a.path}\n" + ("new file mode 100644\n" if before is None else "")
+            out.append(header + "".join(line if line.endswith("\n") else line + "\n" for line in lines))
+    return "".join(out)
 
 
 @router.get("/runs/{run_id}/events")
@@ -485,6 +509,8 @@ def commit_changes(run_id: str, body: CommitIn, db: Session = Depends(get_db),
         raise HTTPException(409, str(e))
     if after_step:
         _go_on(run_id)  # committed right after the step: the workflow continues
+    else:
+        workspace.release_if_completed(run_id)  # the last commit finished the run
     return result
 
 
@@ -508,6 +534,7 @@ def finish_without_commit(run_id: str, db: Session = Depends(get_db),
         _go_on(run_id)
     else:
         delivery.finish_without_commit(run_id, user.id)
+        workspace.release_if_completed(run_id)
 
 
 class BranchesIn(BaseModel):

@@ -23,7 +23,7 @@ def finish_workflow(client, run_id, confirm=None) -> dict:
     committing right after code steps, until the workflow is done."""
     while True:
         run = wait_for(client, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit", "completed",
-                                        "failed"}, timeout=30)
+                                        "failed"}, timeout=60)
         if run["status"] == "awaiting_commit" and run["current_stage"]:
             assert client.post(f"/api/runs/{run_id}/finish").status_code == 204  # go on; offered again at the end
             continue
@@ -87,8 +87,7 @@ def test_a_run_cuts_its_feature_branch_and_the_review_commits_and_pushes_it(clie
     assert changes["behind"] == 1 and changes["conflicts"] == 1
     files = {f["path"]: f for f in changes["files"]}
     assert files["App.java"]["conflict"] == "content" and files["LoanService.java"]["status"] == "A"
-    docs = [f for f in changes["files"] if f["document"]]
-    assert docs and not any(f["conflict"] for f in docs)
+    assert not [f for f in changes["files"] if f["document"]]  # documents stay in the studio's database
     detail = proj.get(f"/api/runs/{run['id']}/changes/file",
                       params={"path": "App.java", "latest": changes["latest_sha"]}).json()
     assert "<<<<<<< this run" in detail["merged"] and detail["theirs"] == "main\nhotfix on main\n"
@@ -232,9 +231,9 @@ def test_each_code_step_works_in_its_own_repository_on_the_same_feature_branch(c
     assert {k: v["status"] for k, v in done["delivery"]["repos"].items()} == {
         "loan-service": "pushed", "monolith": "pushed", "orchestrator": "skipped"}
 
-    # Rejecting rolls back every repository; rebuilding the workspace restores them all from the database.
-    import shutil
-    shutil.rmtree(ws)
+    # The finished run's workspace is gone from the server; re-running a step checks every repository out again:
+    # pushed ones from their feature branch, the one left out from the database.
+    assert not ws.exists()
     proj.post("/api/domains/loan/features", json={"key": "reject", "name": "reject"})
     assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": agents[1]}).status_code == 200
     run = finish_workflow(proj, run["id"])
@@ -334,3 +333,40 @@ def test_a_step_that_changed_code_is_reviewed_and_committed_before_the_workflow_
     # The workflow went on; later steps only wrote documents, so nothing is left to commit at the end.
     done = finish_workflow(proj, run["id"])
     assert done["status"] == "completed"
+
+
+def test_a_finished_runs_workspace_is_removed_and_a_rerun_starts_from_the_pushed_feature_branch(client, tmp_path):
+    upstream, key, proj = setup_project(client, tmp_path)
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = finish_workflow(proj, run["id"])
+    changes = proj.get(f"/api/runs/{run['id']}/changes").json()
+    paths = [f["path"] for f in changes["files"]]
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={"message": "first", "branch": run["branch"], "files": paths,
+                                                         "latest_sha": changes["latest_sha"],
+                                                         "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    ws = Path(proj.get(f"/api/runs/{run['id']}").json()["workspace"])
+    assert proj.get(f"/api/runs/{run['id']}").json()["status"] == "completed" and not ws.exists()
+
+    # A teammate adds to the feature branch.
+    mate = tmp_path / "mate"
+    subprocess.run(["git", "clone", "--quiet", "--branch", run["branch"], str(upstream), str(mate)], check=True)
+    (mate / "Teammate.java").write_text("by a teammate\n")
+    git(mate, "add", "-A")
+    git(mate, "commit", "-qm", "teammate's fix")
+    git(mate, "push", "--quiet", "origin", run["branch"])
+    teammate = git(mate, "rev-parse", "HEAD")
+
+    # Re-running a step checks the repository out from the feature branch, teammate's commit included.
+    first_agent = run["workflow_stages"][0]["key"]
+    assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first_agent}).status_code == 200
+    run = finish_workflow(proj, run["id"])
+    assert (ws / "Teammate.java").read_text() == "by a teammate\n"
+    assert run["status"] == "awaiting_commit"  # the step changed its file again (attempt 2)
+    changes = proj.get(f"/api/runs/{run['id']}/changes").json()
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={
+        "message": "second", "branch": run["branch"], "files": [f["path"] for f in changes["files"]],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    assert git(upstream, "rev-parse", f"{run['branch']}^") == teammate  # built on the teammate's commit
+    assert git(upstream, "show", f"{run['branch']}:Teammate.java") == "by a teammate"

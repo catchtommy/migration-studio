@@ -141,13 +141,20 @@ function RepositoryNote({ project }: { project: string }) {
       ) : data.cloned ? (
         <>
           On the server{data.fetched_at && <>, fetched {new Date(data.fetched_at).toLocaleString()}</>}
-          {data.head && (
+          {data.legacy ? (
             <>
               {" "}
-              · latest <code>{data.head.sha.slice(0, 8)}</code> {data.head.subject}
+              · agents read one shared, read-only copy at <code>{data.legacy.sha.slice(0, 8)}</code> {data.legacy.subject}
             </>
+          ) : (
+            data.head && (
+              <>
+                {" "}
+                · latest <code>{data.head.sha.slice(0, 8)}</code> {data.head.subject}
+              </>
+            )
           )}
-          . Each new run fetches the latest first.{" "}
+          . Fetch to give new runs the latest; runs in progress keep theirs.{" "}
           <button type="button" onClick={() => fetchLatest.mutate()} className="text-accent hover:underline">
             Fetch now
           </button>

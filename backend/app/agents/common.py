@@ -50,12 +50,19 @@ def project_brief(ctx: AgentContext) -> str:
 
 
 def repository_brief(ctx: AgentContext) -> str:
-    """Where this step changes code, when the run works on more than the monolith (or the step changes code)."""
+    """Where the monolith is, and where this step changes code (when it does, or the run has other repositories)."""
     code = (ctx.stage_def.code if ctx.stage_def else None)
-    if not ctx.repositories and not code:
+    if ctx.legacy_dir is not None:
+        lines = ["## Repositories",
+                 f"The monolith's code ({(ctx.legacy or {}).get('branch') or 'default branch'} at "
+                 f"{(ctx.legacy or {}).get('sha', '')[:10]}) is read-only in this run: read it at its usual paths "
+                 "(e.g. `src/...`) with the file tools; commands can read it under $STUDIO_LEGACY_DIR. Never change "
+                 "it. The studio's documents are under `.migration/`."]
+    elif not ctx.repositories and not code:
         return ""
-    lines = ["## Repositories",
-             "The workspace root is the monolith's checkout; the studio's documents are under `.migration/`."]
+    else:
+        lines = ["## Repositories",
+                 "The workspace root is the monolith's checkout; the studio's documents are under `.migration/`."]
     for r in ctx.repositories:
         lines.append(f"- `{r['path']}/`: {r['url']} (branch cut from {r.get('base_branch') or 'its default branch'})")
     if code:

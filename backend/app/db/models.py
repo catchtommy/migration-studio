@@ -47,6 +47,9 @@ class Run(Base):
     # The other repositories agent steps change code in, each checked out inside the workspace on the same feature
     # branch: [{"key", "name", "url", "base_branch", "path", "base_sha"}]. The workspace root is `repository`.
     repositories: Mapped[list | None] = mapped_column(JSONText)
+    # A run that only reads the monolith uses the project's shared read-only copy instead of its own checkout:
+    # {"url", "branch", "sha"} (see app/legacy.py). None: the workspace root is its own checkout (or blank).
+    legacy: Mapped[dict | None] = mapped_column(JSONText)
     # Committing the code: {"commit": bool (review and commit at the end)} at start, then per repository once
     # committed: {"repos": {key: {"status": "pushed" | "skipped", "sha", "branch", "files", "by", "at", ...}}}
     delivery: Mapped[dict | None] = mapped_column(JSONText)

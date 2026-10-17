@@ -252,17 +252,19 @@ def test_the_base_branch_must_be_a_branch_name(client):
     assert client.put(f"/api/projects/{key}/settings", json={"monolith_branch": ""}).status_code == 200
 
 
-def test_a_project_keeps_one_copy_of_its_monolith_and_fetches_the_latest_on_request(client, tmp_path):
+def test_runs_that_only_read_the_monolith_share_one_read_only_copy(client, tmp_path):
+    import os
     import time
 
-    from app import repos
+    from app import legacy
+    from app.agents.base_agent import AgentContext
+    from app.agents.tools import Toolbox, ToolError
     from app.tools import git_ops
 
     upstream = tmp_path / "monolith"
     commit = make_monolith(upstream)
     key = new_project(client)
     proj = as_project(client, key)
-    assert proj.get(f"/api/projects/{key}/repository").json()["cloned"] is False
     assert proj.put(f"/api/projects/{key}/settings", json={"monolith_repo": str(upstream)}).status_code == 200
     for _ in range(100):  # saving a new repository clones it to the server in the background
         status = proj.get(f"/api/projects/{key}/repository").json()
@@ -271,50 +273,81 @@ def test_a_project_keeps_one_copy_of_its_monolith_and_fetches_the_latest_on_requ
         time.sleep(0.05)
     assert status["cloned"] and status["error"] is None
     proj.post("/api/domains", json={"key": "d", "name": "D", "description": ""})
-    for f in ("one", "two"):
+    for f in ("one", "two", "three"):
         proj.post("/api/domains/d/features", json={"key": f, "name": f})
 
     first = proj.post("/api/runs", json={"domain": "d", "operation": "one"}).json()
     wait_for(proj, first["id"], {"awaiting_approval"})
-    mirror = repos.mirror_dir(key)
-    ws = proj.get(f"/api/runs/{first['id']}").json()["workspace"]
-    assert git_ops.git(Path(ws), "config", "--get", "remote.origin.url") == str(mirror)  # cloned from the copy
-    status = proj.get(f"/api/projects/{key}/repository").json()
-    assert status["cloned"] and status["head"]["subject"] == "main" and status["default_branch"] == "main"
-
-    (upstream / "App.java").write_text("main v2")
-    commit("commit", "--quiet", "-am", "v2")
     second = proj.post("/api/runs", json={"domain": "d", "operation": "two"}).json()
     wait_for(proj, second["id"], {"awaiting_approval"})
-    detail = proj.get(f"/api/runs/{second['id']}").json()
-    assert (Path(detail["workspace"]) / "App.java").read_text() == "main v2"  # a new run fetches the latest first
-    assert detail["monolith_behind"] == 0
-    assert proj.get(f"/api/projects/{key}/repository").json()["head"]["subject"] == "v2"
-    assert proj.get(f"/api/runs/{first['id']}").json()["monolith_behind"] == 1  # runs keep their commit
+    runs = [proj.get(f"/api/runs/{r['id']}").json() for r in (first, second)]
+    assert runs[0]["legacy"]["sha"] == runs[1]["legacy"]["sha"]  # one shared copy
+    shared = legacy.copy_dir(key, runs[0]["legacy"]["sha"])
+    assert (shared / "App.java").read_text() == "main"
+    assert not os.access(shared / "App.java", os.W_OK)  # read-only on disk
+    for r in runs:
+        assert not (Path(r["workspace"]) / "App.java").exists()  # not checked out per run
 
-    commit("commit", "--quiet", "--allow-empty", "-m", "v3")
-    assert proj.post(f"/api/projects/{key}/repository/fetch").status_code == 202  # or on request
+    # Agents read it at its usual paths, and can't change it.
+    ctx = AgentContext(run_id=first["id"], domain="d", operation="one", stage="as_is_doc", attempt=1,
+                       workspace=Path(runs[0]["workspace"]), feedback=None, settings={}, log=lambda m: None,
+                       config={"tools": ["list_files", "read_file", "search_code", "write_file"]}, legacy_dir=shared)
+    box = Toolbox(ctx, None)
+    assert "main" in box.run("read_file", {"path": "App.java"})
+    assert "App.java" in box.run("list_files", {"pattern": "*.java"})
+    assert "App.java" in box.run("search_code", {"pattern": "main"})
+    try:
+        box.run("write_file", {"path": "App.java", "content": "changed"})
+        raise AssertionError("writing the legacy code should be refused")
+    except ToolError as e:
+        assert "read-only" in str(e)
+    assert box.run("write_file", {"path": ".migration/d/one/note.md", "content": "ok"}).startswith("Wrote")
+
+    # Fetching the latest makes a new copy current for new runs; runs keep theirs.
+    (upstream / "App.java").write_text("main v2")
+    commit("commit", "--quiet", "-am", "v2")
+    assert proj.post(f"/api/projects/{key}/repository/fetch").status_code == 202
     for _ in range(100):
         status = proj.get(f"/api/projects/{key}/repository").json()
         if not status["fetching"]:
             break
         time.sleep(0.05)
-    assert status["error"] is None and status["head"]["subject"] == "v3"
-
-    # When the repository can't be reached, a new run goes on with the copy on the server and says so.
-    upstream.rename(tmp_path / "gone")
-    proj.post("/api/domains/d/features", json={"key": "three", "name": "three"})
+    assert status["error"] is None and status["legacy"]["subject"] == "v2"
     third = proj.post("/api/runs", json={"domain": "d", "operation": "three"}).json()
     wait_for(proj, third["id"], {"awaiting_approval"})
-    assert (Path(proj.get(f"/api/runs/{third['id']}").json()["workspace"]) / "App.java").read_text() == "main v2"
-    from sqlalchemy import select
+    newer = legacy.copy_dir(key, proj.get(f"/api/runs/{third['id']}").json()["legacy"]["sha"])
+    assert (newer / "App.java").read_text() == "main v2"
+    assert shared.exists()  # still read by unfinished runs
+    assert proj.get(f"/api/runs/{first['id']}").json()["monolith_behind"] == 1
 
-    from app.db.models import AuditEvent
+    # A copy no unfinished run reads is deleted at the next fetch; a missing copy is made again when needed.
+    from app.db.models import Run
     from app.db.session import session_scope
     with session_scope() as s:
-        log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == third["id"])))
-    assert "Could not fetch the latest changes" in log
+        for r in (first, second):
+            s.get(Run, r["id"]).status = "completed"
+    legacy.refresh(key)
+    assert not shared.exists() and newer.exists()
+    assert (legacy.path_for(key, runs[0]["legacy"]) / "App.java").read_text() == "main"
 
     viewer = make_user(client, ["viewer"])
     client.put(f"/api/projects/{key}/members/{viewer['id']}", json={"role": "viewer"})
     assert signed_in(viewer["username"], key).post(f"/api/projects/{key}/repository/fetch").status_code == 403
+    assert git_ops  # imported for symmetry with the other repository tests
+
+
+def test_a_run_whose_steps_change_the_monolith_gets_its_own_checkout(client, tmp_path):
+    upstream = tmp_path / "monolith"
+    make_monolith(upstream)
+    key = new_project(client, monolith_repo=str(upstream))
+    proj = as_project(client, key)
+    proj.post("/api/domains", json={"key": "d", "name": "D", "description": ""})
+    proj.post("/api/domains/d/features", json={"key": "f", "name": "f"})
+    wf = proj.get("/api/workflows/standard").json()
+    first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
+    steps = [{**st, "code": {"repository": ""}} if st.get("key") == first else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    run = proj.post("/api/runs", json={"domain": "d", "operation": "f"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    detail = proj.get(f"/api/runs/{run['id']}").json()
+    assert detail["legacy"] is None and (Path(detail["workspace"]) / "App.java").read_text() == "main"

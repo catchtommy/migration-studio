@@ -111,6 +111,9 @@ def fetch_in_background(project: str, user_id: int | None = None) -> bool:
     def work():
         try:
             fetch(project, url, user_id)
+            _fetching.add(path)  # still busy until the shared copy is refreshed too
+            from app import legacy
+            legacy.refresh(project)  # new runs read the latest; copies no unfinished run reads are deleted
         except Exception as e:  # noqa: BLE001 - kept for the status
             _errors[path] = git_auth.scrub(str(e))
         finally:
@@ -124,8 +127,9 @@ def status(project: str) -> dict:
     """What the server has of the project's monolith: when it was fetched and the base branch's latest commit."""
     cfg = settings_store.get_project(project)
     url, branch = cfg["monolith_repo"], cfg["monolith_branch"]
+    from app import legacy
     out = {"url": url, "branch": branch, "fetching": False, "error": None, "cloned": False, "fetched_at": None,
-           "head": None, "default_branch": None}
+           "head": None, "default_branch": None, "legacy": legacy.current(project)}
     if not url:
         return out
     path = mirror_dir(project, url)
@@ -165,4 +169,8 @@ def behind(project: str, url: str | None, base_branch: str | None, base_sha: str
 
 
 def remove(project: str) -> None:
+    import os
+    import stat
+    for dirpath, _dirs, _files in os.walk(settings.repos_dir / project):  # the legacy copies are read-only
+        os.chmod(dirpath, stat.S_IRWXU)
     git_ops.remove_tree(settings.repos_dir / project)

@@ -52,11 +52,11 @@ def test_every_document_and_the_stage_diff_are_stored(client, monkeypatch):
     run = wait_for(client, run_id, {"awaiting_approval"})
     docs = stored_documents(run_id)
     ws = Path(run["workspace"])
-    for path, content in docs.items():
-        assert (ws / path).read_text() == content
+    assert docs and not (ws / ".migration").exists()  # documents are in the database only
     ex = next(s for s in run["stages"] if s["stage"] == "deep_dive")
     diff = client.get(f"/api/runs/{run_id}/stages/{ex['id']}/diff").json()["diff"]
     assert "src/deep_dive.java" in diff
+    assert f"b/.migration/loan/{run['operation']}/deep_dive.md" in diff  # document changes, from the stored versions
 
     shutil.rmtree(ws)  # the diff is served from the database, not the workspace
     assert client.get(f"/api/runs/{run_id}/stages/{ex['id']}/diff").json()["diff"] == diff
@@ -80,10 +80,9 @@ def test_lost_workspace_is_rebuilt_for_a_rejection(client, monkeypatch):
     # Code from the stages before the target was replayed; the re-run stages wrote theirs again.
     assert (ws / "src" / "as_is_doc.java").read_text() == "class as_is_doc { int attempt = 1; }\n"
     assert (ws / "src" / "domain_dependencies.java").read_text() == "class domain_dependencies { int attempt = 2; }\n"
-    docs = stored_documents(run_id)
-    for path, content in docs.items():
-        assert (ws / path).read_text() == content
-    assert "Rebuild me" in docs[f".migration/loan/{run['operation']}/domain_dependencies.md"]
+    from app.workspace import effective_documents
+    assert "Rebuild me" in effective_documents(run_id)[f".migration/loan/{run['operation']}/domain_dependencies.md"]
+    assert not (ws / ".migration").exists()
 
 
 def test_reviewer_edit_survives_a_rebuild(client):
@@ -94,9 +93,22 @@ def test_reviewer_edit_survives_a_rebuild(client):
     ws = Path(run["workspace"])
     shutil.rmtree(ws)
 
-    decide(client, run_id, decision="approve")  # the next stage starts from a rebuilt workspace
-    wait_for(client, run_id, {"awaiting_approval"})
-    assert (ws / art["path"]).read_text() == "# Edited\n"
+    seen = {}
+    real_run = stub.StubAgent.run
+
+    def run_and_look(self, ctx):  # what the next stage finds in its workspace
+        seen.setdefault(ctx.stage, (ctx.workspace / art["path"]).read_text())
+        return real_run(self, ctx)
+
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    mp.setattr(stub.StubAgent, "run", run_and_look)
+    try:
+        decide(client, run_id, decision="approve")  # the next stage starts from a rebuilt workspace
+        wait_for(client, run_id, {"awaiting_approval"}, timeout=60)
+    finally:
+        mp.undo()
+    assert set(seen.values()) == {"# Edited\n"}  # the edited document, from the database
 
 
 def test_checkpoints_are_in_the_database_and_deleted_with_the_run(client):

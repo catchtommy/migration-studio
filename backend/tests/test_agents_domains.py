@@ -12,7 +12,7 @@ from app.agents.defaults import default_config
 from app.agents.tools import ToolError, Toolbox
 from app.config import settings
 from app.tools import git_ops
-from tests.conftest import start_run, wait_for
+from tests.conftest import document, start_run, wait_for
 
 _ids = itertools.count()
 
@@ -102,9 +102,9 @@ def test_agent_question_pauses_the_run_until_answered(client, monkeypatch):
     client.post(f"/api/questions/{q2['id']}/answer", json={"answer": "", "answered_by": "tester"})  # skip
     run = wait_for(client, run_id, {"awaiting_approval"})
 
-    content = (Path(run["workspace"]) / ".migration/loan" / run["operation"] / "as_is_doc.md").read_text()
+    content = document(run, "as_is_doc").read_text()
     assert "Also check the nightly batch" in content
-    deep = (Path(run["workspace"]) / ".migration/loan" / run["operation"] / "deep_dive.md").read_text()
+    deep = document(run, "deep_dive").read_text()
     assert "Use your best judgement" in deep
     events = [e for e in client.get(f"/api/runs/{run_id}/questions").json()]
     assert [e["status"] for e in events] == ["answered", "answered"]

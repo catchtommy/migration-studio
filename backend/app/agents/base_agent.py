@@ -77,6 +77,10 @@ class AgentContext:
     # another repository; and the run's other repositories ([{"key", "url", "path", "base_branch"}]).
     code_dir: str = "."
     repositories: list[dict] = field(default_factory=list)
+    # The project's shared read-only copy of the monolith, when the run reads it instead of checking it out: its
+    # files appear at the same paths as in a checkout, through the file tools ({"branch", "sha"} describes it).
+    legacy_dir: Path | None = None
+    legacy: dict | None = None
     # A restart from a completed stage: update this stage's previous documents (paths below) instead of starting over.
     refresh: bool = False
     previous_outputs: list[str] = field(default_factory=list)

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from app.db.models import StageExecution
 from app.workspace import _effective
-from tests.conftest import start_run, wait_for
+from tests.conftest import document, start_run, wait_for
 from tests.test_auth import make_user, signed_in
 
 GATES = ["gate_analysis", "gate_design", "gate_tests", "gate_release"]
@@ -25,7 +25,7 @@ def attempts(run, stage):
 
 
 def doc(run, stage):
-    return Path(run["workspace"]) / ".migration" / run["domain"] / run["operation"] / f"{stage}.md"
+    return document(run, stage)
 
 
 def completed_run(client):

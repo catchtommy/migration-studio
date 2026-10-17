@@ -80,6 +80,7 @@ class RunOut(ORM):
     base_branch: str | None = None
     repository: str | None = None
     repositories: list[dict] | None = None
+    legacy: dict | None = None  # the shared read-only copy of the monolith the run reads ({"url", "branch", "sha"})
     delivery: dict | None = None
     error: str | None
     created_at: datetime

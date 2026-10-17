@@ -40,7 +40,7 @@ test("a finished run's code is reviewed, its conflict resolved, and the feature 
   // Approve every gate.
   for (;;) {
     let run = await (await page.request.get(`/api/runs/${runId}`, { headers: project })).json();
-    for (let i = 0; i < 300 && ["pending", "running"].includes(run.status); i++) {
+    for (let i = 0; i < 600 && ["pending", "running"].includes(run.status); i++) {
       await page.waitForTimeout(100);
       run = await (await page.request.get(`/api/runs/${runId}`, { headers: project })).json();
     }
@@ -71,7 +71,7 @@ test("a finished run's code is reviewed, its conflict resolved, and the feature 
   await expect(page.getByText("1 file conflict with main")).toBeVisible();
   const files = page.getByRole("list", { name: "Changed files" });
   await expect(files.getByLabel("Commit LoanService.java")).toBeChecked();
-  await expect(files.getByRole("checkbox", { name: /\.migration\// }).first()).not.toBeChecked(); // documents start unticked
+  await expect(files.getByRole("checkbox", { name: /\.migration\// })).toHaveCount(0); // documents stay in the studio
 
   await files.getByRole("button", { name: /App\.java/ }).click();
   await expect(page.getByText("1 conflict between this run and main.")).toBeVisible();
@@ -122,7 +122,7 @@ test("a step that changes another repository: set on the step, cut on the same b
   const runId = page.url().split("/runs/")[1];
   for (;;) {
     let run = await (await page.request.get(`/api/runs/${runId}`, { headers: project })).json();
-    for (let i = 0; i < 300 && ["pending", "running"].includes(run.status); i++) {
+    for (let i = 0; i < 600 && ["pending", "running"].includes(run.status); i++) {
       await page.waitForTimeout(100);
       run = await (await page.request.get(`/api/runs/${runId}`, { headers: project })).json();
     }

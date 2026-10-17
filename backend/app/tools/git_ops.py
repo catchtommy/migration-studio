@@ -19,9 +19,12 @@ _BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")  # a plain ref nam
 
 
 def remove_tree(path: Path) -> None:
-    """Delete a directory tree, including git's read-only object files (which Windows won't delete as they are)."""
+    """Delete a directory tree, including read-only files and folders (git's object files, which Windows won't delete
+    as they are, and the shared legacy copies, made read-only on purpose)."""
     def retry_writable(func, p, _exc):
-        os.chmod(p, stat.S_IWRITE)
+        os.chmod(os.path.dirname(p), stat.S_IRWXU)  # deleting needs a writable folder (off Windows)
+        if os.path.lexists(p) and not os.path.islink(p):
+            os.chmod(p, stat.S_IRWXU if os.path.isdir(p) else stat.S_IREAD | stat.S_IWRITE)
         func(p)
 
     if Path(path).exists():

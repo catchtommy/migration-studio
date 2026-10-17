@@ -19,11 +19,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import git_auth, repos, settings_store, workspace
 from app.agents.base_agent import DOCS_ROOT
-from app.db.models import Run, User
+from app.db.models import Run, StageExecution, User
 from app.db.session import emit, session_scope
 from app.tools import git_ops
 
@@ -147,6 +147,11 @@ def check_branches(project: str, info: dict) -> None:
             raise ValueError(f"{where} has no branch or tag {r['base_branch'] or r['default_branch']}")
         if r["url"] in busy:
             raise ValueError(f"Another unfinished run works on branch {feature} in {where}; choose another name")
+
+
+def changes_monolith(stages: list[dict]) -> bool:
+    """Whether any step of a workflow changes the monolith's code (so a run needs its own checkout of it)."""
+    return any(st.get("kind") == "agent" and st.get("code") and not st["code"].get("repository") for st in stages)
 
 
 def run_repository(run: Run) -> str | None:
@@ -414,9 +419,11 @@ def _sync(run_id: str, key: str, user_id: int | None) -> dict:
         remote_feature = git_ops.git(ws, "rev-parse", "refs/studio/feature")
     latest = git_ops.git(ws, "rev-parse", "refs/studio/base")
     try:
-        merge_base = git_ops.git(ws, "merge-base", base_sha, latest)
+        # Where the run's work and the base branch part: the run's starting commit, or (when the checkout was
+        # restored from the feature branch it pushed) the base branch commit last merged into it.
+        merge_base = git_ops.git(ws, "merge-base", "HEAD", latest)
     except git_ops.GitError:
-        raise DeliveryError(f"The run's starting commit is no longer in {base_branch}'s history (was it rewritten?)")
+        raise DeliveryError(f"The run's work no longer shares history with {base_branch} (was it rewritten?)")
     return {"ws": ws, "key": key, "name": repo["name"], "url": url, "project": project, "base_sha": base_sha,
             "base_branch": base_branch, "feature": feature, "latest": latest, "merge_base": merge_base,
             "head": git_ops.head(ws), "remote_feature": remote_feature, "delivery": delivery, "warning": warning,
@@ -457,9 +464,9 @@ def changes(run_id: str, key: str, user_id: int | None) -> dict:
     ws = ctx["ws"]
     upstream = set() if ctx["latest"] == ctx["merge_base"] else set(
         git_ops.changed_files(ws, ctx["merge_base"], ctx["latest"]))
-    stats = _numstat(ws, ctx["base_sha"], ctx["head"])
+    stats = _numstat(ws, ctx["merge_base"], ctx["head"])
     files = []
-    for status, path in _name_status(ws, ctx["base_sha"], ctx["head"]):
+    for status, path in _name_status(ws, ctx["merge_base"], ctx["head"]):
         state = _file_state(ctx, status, path, upstream)
         added, deleted = stats.get(path, (None, None))
         state.pop("merged")
@@ -484,11 +491,12 @@ def file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
     root = workspace.ensure(run_id)
     with session_scope() as s:
         repo = _repo_of(s.get(Run, run_id), key)
-    ws, base_sha = root / repo["path"], repo["base_sha"]
+    ws = root / repo["path"]
     if not git_ops.has_commit(ws, latest_sha):
         raise DeliveryError("Reload the changes: the base branch was fetched again")
+    base_sha = git_ops.git(ws, "merge-base", "HEAD", latest_sha)
     ctx = {"ws": ws, "head": git_ops.head(ws), "latest": latest_sha, "base_branch": repo["base_branch"] or "base branch",
-           "merge_base": git_ops.git(ws, "merge-base", base_sha, latest_sha),
+           "merge_base": base_sha,
            "doc_prefix": DOCS_ROOT + "/" if repo["root"] else None}
     run_files = dict((p, st) for st, p in _name_status(ws, base_sha, ctx["head"]))
     if path not in run_files:
@@ -541,15 +549,17 @@ def commit(run_id: str, key: str, user_id: int, message: str, branch: str, files
         raise DeliveryError("Reload the changes: the base branch was fetched again")
     if not git_ops.valid_branch(branch) or branch == ctx["base_branch"]:
         raise DeliveryError("Choose a valid feature branch name, different from the base branch")
-    merge_base = git_ops.git(ws, "merge-base", ctx["base_sha"], latest_sha)
+    merge_base = git_ops.git(ws, "merge-base", "HEAD", latest_sha)
     upstream = set(git_ops.changed_files(ws, merge_base, latest_sha)) if merge_base != latest_sha else set()
-    run_files = dict((p, st) for st, p in _name_status(ws, ctx["base_sha"], ctx["head"]))
+    run_files = dict((p, st) for st, p in _name_status(ws, merge_base, ctx["head"]))
     unknown = [f for f in files if f not in run_files]
     if unknown:
         raise DeliveryError(f"The run didn't change {unknown[0]}")
 
     # The branch on the remote: ours from an earlier commit of this run (continue it), or someone else's (refuse).
-    previous = ctx["delivery"].get("sha") if ctx["delivery"].get("branch") == branch else None
+    # (or, when the checkout was restored from the feature branch, that branch's commit it started from)
+    previous = ((ctx["delivery"].get("restored_sha") or ctx["delivery"].get("sha"))
+                if ctx["delivery"].get("branch") == branch else None)
     remote = ctx["remote_feature"] if branch == ctx["feature"] else _remote_head(ctx, branch)
     if remote and remote != previous:
         raise DeliveryError(f"The repository's branch {branch} has commits this run didn't make. Choose another "
@@ -598,6 +608,9 @@ def commit(run_id: str, key: str, user_id: int, message: str, branch: str, files
         before = done.get(key) or {}
         result = {"status": "pushed", "sha": sha, "branch": branch, "base_branch": ctx["base_branch"],
                   "head_sha": ctx["head"],  # the run's commit this was made from: later changes are new
+                  # the stages this push covers: a restored checkout replays only stages after it
+                  "exec_id": s.scalar(select(func.max(StageExecution.id)).where(StageExecution.run_id == run_id,
+                                                                               StageExecution.status == "completed")),
                   "repository": ctx["url"], "name": ctx["name"], "latest_sha": latest_sha, "files": sorted(files),
                   "message": message.strip(), "by": user.display_name, "by_id": user_id,
                   "at": datetime.now(UTC).isoformat(), "compare_url": _compare_url(ctx["url"], ctx["base_branch"], branch),

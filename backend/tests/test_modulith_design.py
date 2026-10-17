@@ -159,8 +159,8 @@ def test_a_run_goes_through_the_sub_flow_and_leaves_the_documents_for_later_step
     for stage in ("domain_dependencies", "linked_domain_contracts", "domain_design"):
         assert f"{stage}.md`" in orchestrator
     assert "deep_dive.md`" not in orchestrator and "as_is_doc.md`" not in orchestrator
-    ws = Path(run["workspace"])
-    assert (ws / by_stage["domain_dependencies"]["path"]).is_file()
+    from app.workspace import effective_documents
+    assert by_stage["domain_dependencies"]["path"] in effective_documents(run["id"])  # left for later steps
 
 
 # --- upgrades ------------------------------------------------------------------------------------------------------

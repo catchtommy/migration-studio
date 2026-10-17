@@ -1,9 +1,13 @@
 """Run workspaces are working copies; the database holds what they contain.
 
-Each completed stage stores its git diff (StageExecution.diff) and its documents (Artifact rows, including reviewers'
-edits). When a workspace is missing (another server, a cleared disk), it is rebuilt: the monolith is cloned at the
-commit the run started from, the diffs of the stages currently in effect are replayed (code), and the documents are
-written from the database.
+Each completed stage stores its git diffs (StageExecution.diff, and .repos for the run's other repositories) and its
+documents (Artifact rows, including reviewers' edits). Documents are not kept on disk: a step gets the documents in
+effect written to `.migration/` when it starts (materialize_documents), and the folder is cleared again when it ends
+(its new or changed documents are stored first). A finished run's workspace is deleted (release_if_completed).
+
+When a workspace is missing, it is rebuilt: each repository is checked out where the run left it and the code changes
+of the stages in effect are replayed. A repository whose changes were committed and pushed is checked out from its
+feature branch (with anything else pushed there since), and only later changes are replayed on it.
 """
 
 from pathlib import Path
@@ -11,7 +15,7 @@ from pathlib import Path
 from sqlalchemy import select
 
 from app import projects, repos
-from app.agents.base_agent import docs_dir
+from app.agents.base_agent import DOCS_ROOT
 from app.db.models import Artifact, Run, StageExecution
 from app.db.session import emit, session_scope
 from app.tools import git_ops
@@ -40,60 +44,172 @@ def _effective(executions: list[StageExecution], stage_defs: list[dict],
     return chain
 
 
+def _chain(s, run: Run, before_stage: str | None) -> list[StageExecution]:
+    executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run.id)).all()
+    return _effective(executions, run.stage_defs, before_stage)
+
+
+def effective_documents(run_id: str, before_stage: str | None = None) -> dict[str, str]:
+    """The run's documents in effect (path: content): the latest version each stage in effect wrote, later stages
+    winning, with reviewers' edits."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        chain = [(ex.stage, ex.attempt) for ex in _chain(s, run, before_stage)]
+        artifacts = s.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
+        documents: dict[str, str] = {}
+        for stage, attempt in chain:
+            documents.update({a.path: a.content for a in artifacts if a.stage == stage and a.attempt == attempt})
+        return documents
+
+
+def materialize_documents(run_id: str, ws: Path) -> int:
+    """Write the documents in effect into the workspace for a step (they live in the database)."""
+    documents = effective_documents(run_id)
+    for path, content in documents.items():
+        f = ws / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+    return len(documents)
+
+
+def snapshot_documents(ws: Path) -> dict[str, str]:
+    """The documents folder's files and their content hashes, to see what a step changed."""
+    import hashlib
+    root = ws / DOCS_ROOT
+    if not root.exists():
+        return {}
+    return {f.relative_to(ws).as_posix(): hashlib.sha256(f.read_bytes()).hexdigest()
+            for f in root.rglob("*") if f.is_file()}
+
+
+def clear_documents(ws: Path) -> None:
+    git_ops.remove_tree(ws / DOCS_ROOT)
+
+
+def untrack_documents(ws: Path) -> None:
+    """Workspaces from before documents left the disk tracked them in git: stop tracking (once)."""
+    if git_ops.git(ws, "ls-files", "--", DOCS_ROOT):
+        git_ops.git(ws, "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", DOCS_ROOT)
+        git_ops.git(ws, "commit", "--quiet", "-m", "[studio] documents are kept in the database")
+
+
+def _restore(path: Path, project: str, url: str | None, branch: str, base_sha: str | None, pushed: dict | None,
+             diffs: list[tuple[int, str, int, str | None]], user_id: int | None, exclude: str | None,
+             log) -> str | None:
+    """Check out one repository of the run and replay its code changes. A pushed repository starts from its feature
+    branch on the remote (the commit pushed, or what is there now); only changes after that push are replayed.
+    Returns the commit it started from when that is the feature branch."""
+    restored = None
+    if url and pushed and pushed.get("status") == "pushed" and pushed.get("sha"):
+        try:
+            mirror = repos.fetch(project, url, user_id)
+        except git_ops.GitError:
+            mirror = Path(repos.ensure(project, url, user_id))
+        remote = git_ops.commit_info(mirror, f"refs/heads/{pushed.get('branch') or branch}")
+        restored = remote["sha"] if remote else pushed["sha"]
+        git_ops.init_workspace(path, str(mirror), branch, restored)
+        log(f"Checked out {url} from its feature branch {pushed.get('branch') or branch} at {restored[:10]}")
+        diffs = [d for d in diffs if d[0] > (pushed.get("exec_id") or 0)]
+    else:
+        git_ops.init_workspace(path, repos.ensure(project, url, user_id) if url else None, branch, base_sha)
+    for _id, stage, attempt, diff in diffs:
+        if not diff:
+            continue
+        try:
+            git_ops.apply(path, diff, exclude=exclude)
+        except git_ops.GitError as e:
+            raise git_ops.GitError(f"Could not replay {stage} (attempt {attempt}) onto {path.name}: {e}") from e
+    git_ops.commit_all(path, "[restore] code changes from the database")
+    return restored
+
+
 def rebuild(run_id: str, before_stage: str | None = None) -> str:
     """Recreate the run's workspace from the database, as it was after the stages in effect (only those before
-    `before_stage`, when given). Returns the new HEAD."""
+    `before_stage`, when given). Returns the new HEAD of the workspace root."""
     with session_scope() as s:
         run = s.get(Run, run_id)
         ws, branch, base_sha = Path(run.workspace), run.branch, run.base_sha
         repository, started_by = (run.repository if run.repository is not None else
                                   repos.project_repository(run.project)) or None, run.started_by
-        docs = docs_dir(run.domain, run.operation)
-        executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run_id)).all()
-        effective = _effective(executions, run.stage_defs, before_stage)
-        chain = [(ex.stage, ex.attempt, ex.diff) for ex in effective]
-        nested_diffs = [(ex.stage, ex.attempt, ex.repos or {}) for ex in effective]
+        effective = _chain(s, run, before_stage)
+        root_diffs = [(ex.id, ex.stage, ex.attempt, ex.diff) for ex in effective]
+        nested_changes = [(ex.id, ex.stage, ex.attempt, ex.repos or {}) for ex in effective]
+        missing = [ex.stage for ex in effective if ex.diff is None and repository]
         nested = [dict(r) for r in run.repositories or []]
-        project = run.project
-        artifacts = s.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
-        documents = {}
-        for stage, attempt, _ in chain:  # later stages win when they rewrote a document
-            documents.update({a.path: a.content for a in artifacts if a.stage == stage and a.attempt == attempt})
+        project, pushed = run.project, dict((run.delivery or {}).get("repos") or {})
 
+    log = lambda msg: emit(run_id, "log", msg)  # noqa: E731
     git_ops.remove_tree(ws)
-    git_ops.init_workspace(ws, repos.ensure(projects.current(), repository, started_by), branch, base_sha)
-    missing = []
-    for stage, attempt, diff in chain:
-        if diff is None:
-            missing.append(stage)  # completed before diffs were stored; only its documents can be restored
-            continue
-        try:
-            git_ops.apply(ws, diff, exclude=f"{docs}/*")
-        except git_ops.GitError as e:
-            raise git_ops.GitError(f"Could not replay {stage} (attempt {attempt}) onto the workspace: {e}") from e
-    for path, content in documents.items():
-        f = ws / path
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(content)
-    sha = git_ops.commit_all(ws, f"[restore] {len(chain)} stage(s) from the database")
+    restored = {}
+    sha_root = _restore(ws, project, repository, branch, base_sha, pushed.get("monolith") if base_sha else None,
+                        root_diffs, started_by, f"{DOCS_ROOT}/*", log)
+    if sha_root:
+        restored["monolith"] = sha_root
+    sha = git_ops.head(ws)
     exclude_nested(ws)
-    for repo in nested:  # the run's other repositories: cloned at their starting commit, code changes replayed
+    for repo in nested:
         if not repo.get("base_sha"):
             continue
-        path = ws / repo["path"]
-        git_ops.init_workspace(path, repos.ensure(project, repo["url"], started_by), branch, repo["base_sha"])
-        for stage, attempt, changes in nested_diffs:
-            diff = (changes.get(repo["key"]) or {}).get("diff")
-            if diff:
-                try:
-                    git_ops.apply(path, diff)
-                except git_ops.GitError as e:
-                    raise git_ops.GitError(f"Could not replay {stage} (attempt {attempt}) onto {repo['key']}: {e}") from e
-        git_ops.commit_all(path, f"[restore] {repo['key']} from the database")
+        diffs = [(i, st, at, (changes.get(repo["key"]) or {}).get("diff")) for i, st, at, changes in nested_changes]
+        got = _restore(ws / repo["path"], project, repo["url"], branch, repo["base_sha"], pushed.get(repo["key"]),
+                       diffs, started_by, None, log)
+        if got:
+            restored[repo["key"]] = got
+    if restored:  # later commits build on the feature branch as it is now; only new changes count as uncommitted
+        with session_scope() as s:
+            run = s.get(Run, run_id)
+            delivery = dict(run.delivery or {})
+            done = dict(delivery.get("repos") or {})
+            for key, start in restored.items():
+                done[key] = {**done.get(key, {}), "restored_sha": start, "head_sha": start}
+            run.delivery = {**delivery, "repos": done}
     note = f"; code changes of {', '.join(missing)} were not stored and are missing" if missing else ""
-    emit(run_id, "log", f"Workspace rebuilt from the database: {len(chain)} stage(s), "
-                        f"{len(documents)} document(s){note}")
+    emit(run_id, "log", f"Workspace rebuilt from the database: {len(effective)} stage(s){note}")
     return sha
+
+
+def release_workspace(run_id: str) -> None:
+    """Delete a run's workspace (it is being completed)."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        ws = Path(run.workspace) if run and run.workspace else None
+    if ws is not None and ws.exists():
+        git_ops.remove_tree(ws)
+        emit(run_id, "log", "Workspace removed from the server now the run is complete (everything is in the "
+                            "database or pushed)")
+
+
+def release_if_completed(run_id: str) -> bool:
+    """A finished run's workspace is deleted: its documents and diffs are in the database and its commits pushed;
+    re-running a step checks it out again (from the feature branches it pushed)."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        if run is None or run.status != "completed" or not run.workspace:
+            return False
+        ws = Path(run.workspace)
+    if ws.exists():
+        git_ops.remove_tree(ws)
+        emit(run_id, "log", "Workspace removed from the server now the run is complete (everything is in the "
+                            "database or pushed)")
+    return True
+
+
+def release_completed() -> int:
+    """Delete the workspaces of every completed run (e.g. at startup, for runs finished before this was done)."""
+    with session_scope() as s:
+        # Not runs with stage changes the database doesn't have (from before diffs were stored): only their
+        # workspace has those.
+        unstored = set(s.scalars(select(StageExecution.run_id).where(
+            StageExecution.status == "completed", StageExecution.diff.is_(None),
+            StageExecution.start_sha.is_not(None), StageExecution.start_sha != StageExecution.end_sha)))
+        done = [(r.id, r.workspace) for r in s.scalars(select(Run).where(Run.status == "completed"))
+                if r.workspace and r.id not in unstored]
+    count = 0
+    for _run_id, path in done:
+        if Path(path).exists():
+            git_ops.remove_tree(Path(path))
+            count += 1
+    return count
 
 
 def exclude_nested(ws: Path) -> None:
@@ -101,8 +217,9 @@ def exclude_nested(ws: Path) -> None:
     exclude = ws / ".git" / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
     text = exclude.read_text() if exclude.exists() else ""
-    if "/.studio/" not in text.splitlines():
-        exclude.write_text(text + ("" if text.endswith("\n") or not text else "\n") + "/.studio/\n")
+    missing = [line for line in ("/.studio/", f"/{DOCS_ROOT}/") if line not in text.splitlines()]
+    if missing:  # also the studio's documents, which live in the database
+        exclude.write_text(text + ("" if text.endswith("\n") or not text else "\n") + "\n".join(missing) + "\n")
 
 
 def nested_heads(ws: Path, nested: list[dict]) -> dict[str, str]:

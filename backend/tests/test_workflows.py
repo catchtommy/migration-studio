@@ -117,8 +117,8 @@ def test_domain_default_workflow_is_used_and_cleared_on_delete(client):
 
 
 def _doc(run, stage):
-    from pathlib import Path
-    return (Path(run["workspace"]) / ".migration" / run["domain"] / run["operation"] / f"{stage}.md").read_text()
+    from tests.conftest import document
+    return document(run, stage).read_text()
 
 
 def test_steps_receive_only_the_outputs_they_use(client):

@@ -12,7 +12,7 @@ from langgraph.types import interrupt
 from sqlalchemy import func, select
 
 from app import agent_store, contracts_store, discovery_store, modulith_scope
-from app import projects, workspace
+from app import legacy, projects, workspace
 from app.agents import get_agent
 from app.agents.base_agent import AgentContext, AgentInputs, ArtifactOut, PriorDocument, docs_dir
 from app.agents.common import kind
@@ -91,12 +91,13 @@ def _previous_outputs(run_id: str, stage: str) -> list[str]:
                                                                  Artifact.attempt == latest).order_by(Artifact.id))]
 
 
-def _documents(ws: Path, outputs: list[ArtifactOut], docs: str, start_sha: str, end_sha: str) -> list[ArtifactOut]:
-    """The stage's documents: what the agent returned plus anything else it wrote to the run's documents folder
-    (contract specs, notes), so the database has every document."""
-    found = {out.path: out for out in outputs}
-    for path in git_ops.changed_files(ws, start_sha, end_sha):
-        if path in found or not path.startswith(docs + "/"):
+def _documents(ws: Path, outputs: list[ArtifactOut], docs: str, before: dict[str, str]) -> list[ArtifactOut]:
+    """The stage's documents: what the agent returned plus anything else it wrote or changed in the run's documents
+    folder (contract specs, notes), so the database has every document."""
+    found = {out.path: out for out in outputs if (ws / out.path).is_file()}
+    after = workspace.snapshot_documents(ws)
+    for path, digest in after.items():
+        if path in found or not path.startswith(docs + "/") or before.get(path) == digest:
             continue
         f = ws / path
         if f.stat().st_size > MAX_DOCUMENT_BYTES:
@@ -149,11 +150,15 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             delivery.apply_confirmation(run_id, proposal["repository"]["key"], answer,
                                         lambda msg: emit(run_id, "log", msg, stage.key))
 
+        workspace.exclude_nested(ws)  # documents live in the database, never in the workspace's git
+        workspace.untrack_documents(ws)
         with session_scope() as s:
             attempt = 1 + s.scalar(
                 select(func.count()).where(StageExecution.run_id == run_id, StageExecution.stage == stage.key)
             )
-            nested = [dict(r) for r in s.get(Run, run_id).repositories or [] if r.get("base_sha")]
+            run_row = s.get(Run, run_id)
+            nested = [dict(r) for r in run_row.repositories or [] if r.get("base_sha")]
+            legacy_info, started_by = run_row.legacy, run_row.started_by
             start_sha = git_ops.head(ws)
             nested_starts = workspace.nested_heads(ws, nested)  # the run's other repositories, for rollbacks
             execution = StageExecution(run_id=run_id, stage=stage.key, attempt=attempt, status="running",
@@ -173,9 +178,11 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         domain = state["domain"]
         code_dir = _code_dir(stage, nested, domain)
         discovery = domain == discovery_store.MONOLITH or state["operation"] == discovery_store.FEATURES_OP
+        workspace.materialize_documents(run_id, ws)  # the documents in effect, from the database, for this step
         if not discovery and contracts_store.export_specs(ws):
             emit(run_id, "log", f"Copied the contracts catalogue's specs to {contracts_store.CATALOGUE_DIR}/",
                  stage.key)
+        before_docs = workspace.snapshot_documents(ws)
         ctx = AgentContext(
             run_id=run_id, domain=state["domain"], operation=state["operation"], stage=stage.key,
             attempt=attempt, workspace=ws, feedback=feedback, settings=settings,
@@ -188,6 +195,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             ownership=_ownership(),
             service_dir=code_dir if code_dir != "." else settings["service_dir_pattern"].format(domain=domain),
             code_dir=code_dir, repositories=_repository_notes(nested),
+            legacy=legacy_info, legacy_dir=legacy.path_for(_project_of(run_id), legacy_info, started_by),
             ask=lambda question, options=None: questions.ask(run_id, stage.key, attempt, question, options),
             refresh=refresh, previous_outputs=_previous_outputs(run_id, stage.key) if refresh else [],
         )
@@ -200,6 +208,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             else:
                 outputs = get_agent(stage.key, config, settings["ai_provider"]).run(ctx)
         except Exception as e:
+            workspace.clear_documents(ws)
             git_ops.reset_hard(ws, start_sha)  # leave clean trees for the retry
             for r in nested:
                 if r["key"] in nested_starts:
@@ -220,11 +229,13 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             end = git_ops.commit_all(path, message)
             nested_changes[r["key"]] = {"start": start, **({"end": end, "diff": git_ops.diff(path, start, end, binary=True)}
                                                           if end != start else {})}
-        outputs = _documents(ws, outputs, docs_dir(domain, state["operation"]), start_sha, end_sha)
+        outputs = _documents(ws, outputs, docs_dir(domain, state["operation"]), before_docs)
+        contents = {out.path: (ws / out.path).read_text() for out in outputs}
+        workspace.clear_documents(ws)  # stored in the database below; not kept on disk
         with session_scope() as s:
             for out in outputs:
                 s.add(Artifact(run_id=run_id, stage=stage.key, attempt=attempt, name=out.name, path=out.path,
-                               kind=out.kind, content=(ws / out.path).read_text()))
+                               kind=out.kind, content=contents[out.path]))
             ex = s.get(StageExecution, exec_id)
             ex.status, ex.end_sha, ex.finished_at = "completed", end_sha, utcnow()
             ex.diff = git_ops.diff(ws, start_sha, end_sha, binary=True)

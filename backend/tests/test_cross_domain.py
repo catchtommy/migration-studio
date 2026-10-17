@@ -103,7 +103,14 @@ def test_approved_design_fills_the_catalogue_and_is_reused_by_later_domains(clie
 
     # Later stages of a run see the catalogue: specs are copied into the workspace.
     run = wait_for(client, pay_run, {"awaiting_approval"})
-    assert (Path(run["workspace"]) / contracts_store.CATALOGUE_DIR / f"{query}.yaml").is_file()
+    from sqlalchemy import select
+
+    from app.db.models import AuditEvent
+    from app.db.session import session_scope
+    with session_scope() as db:  # copied in for each stage (and cleared after it; documents live in the database)
+        log = [e.message for e in db.scalars(select(AuditEvent).where(AuditEvent.run_id == pay_run))]
+    assert any(contracts_store.CATALOGUE_DIR in m for m in log)
+    assert not (Path(run["workspace"]) / contracts_store.CATALOGUE_DIR).exists()
 
 
 def test_rejected_design_records_nothing(client):
