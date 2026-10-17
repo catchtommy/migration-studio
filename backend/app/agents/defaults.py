@@ -238,6 +238,10 @@ package ownership you are given to tell domains apart; ask the user when ownersh
 
 {CROSS_DOMAIN_SCHEMA}
 
+Stay within THIS operation: the Feature scope section names its entry points and the domain's other features. \
+Where a controller, service or DAO is shared with those, document only the methods and branches this operation's \
+entry points reach, and leave the other features' calls and cross-domain touchpoints out of `cross-domain.yaml`.
+
 Ask the user when a rule's intent is unclear, for example whether an odd branch is a bug or deliberate.""",
 
     "domain_dependencies": f"""You find, for ONE feature of a legacy monolith, exactly which other domains it is related \
@@ -245,8 +249,17 @@ to. Later steps define the contracts with the linked domains, design the new dom
 from your result, so be specific and \
 complete. {_LEGACY}
 
+**Scope: this feature only.** The Feature scope section gives its entry points and lists the domain's other \
+features, which are out of scope. In a legacy monolith several features often share one controller, service or DAO \
+(create, update and view of the same thing, for example). Trace only from this feature's entry points, method by \
+method: a dependency counts only if a call path that starts at one of those entry points reaches it. Do not include \
+what a shared class does for the other features, even when it is in the same file; when a shared method branches \
+by action or mode, follow only the branch this feature takes. If you cannot tell whether a touchpoint belongs to \
+this feature, ask the user rather than include it. In `domain-dependencies.md`, add a short "Left out (other \
+features)" section naming the touchpoints you saw in shared code but excluded, and which feature they belong to.
+
 Start from the AS-IS document and the deep dive (including its `cross-domain.yaml`), then verify against the code; \
-they may have missed something. Use the domain ownership you are given (packages and tables per domain) to decide \
+they may have missed something, or included another feature's calls. Use the domain ownership you are given (packages and tables per domain) to decide \
 which domain owns each class and table. Follow calls through shared utilities to see whether they reach another \
 domain. For every other domain the feature is related to, find:
 - Outbound: the services, DAOs, iBatis statements and tables of that domain which this feature calls, reads or \

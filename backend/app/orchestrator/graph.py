@@ -16,7 +16,7 @@ from app import legacy, projects, workspace
 from app.agents import get_agent
 from app.agents.base_agent import AgentContext, AgentInputs, ArtifactOut, PriorDocument, docs_dir
 from app.agents.common import kind
-from app.db.models import Artifact, Domain, Run, StageExecution, utcnow
+from app.db.models import Artifact, Domain, Feature, Run, StageExecution, utcnow
 from app.db.session import emit, session_scope
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
@@ -51,10 +51,19 @@ def _inputs(run_id: str, stage: str) -> AgentInputs:
             return AgentInputs(domain_name=name, run_paths=run_inputs["paths"], run_notes=run_inputs["notes"],
                                run_label=label)
         stage_inputs = normalize_inputs((domain.agent_inputs or {}).get(stage))
+        feature, others = None, []
+        if (run.scope or "operation") == "operation":  # a migration covers one feature of the domain: say which
+            rows = s.scalars(select(Feature).where(Feature.project == run.project, Feature.domain == run.domain)
+                             .order_by(Feature.key)).all()
+            info = lambda f: {"key": f.key, "name": f.name, "description": f.description,  # noqa: E731
+                              "entry_points": f.entry_points or [], "tables": f.tables or [], "calls": f.calls or []}
+            feature = next((info(f) for f in rows if f.key == run.operation), None)
+            others = [info(f) for f in rows if f.key != run.operation]
         return AgentInputs(
             domain_name=domain.name, domain_description=domain.description, domain_context=domain.context,
             stage_paths=stage_inputs["paths"], stage_notes=stage_inputs["notes"],
             run_paths=run_inputs["paths"], run_notes=run_inputs["notes"], run_label=label,
+            feature=feature, other_features=others,
         )
 
 

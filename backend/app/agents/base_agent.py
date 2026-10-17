@@ -23,6 +23,18 @@ class PriorDocument:
     content: str | None = None  # set when the stage is configured to include contents in its prompt
 
 
+# Given to every agent of a migration run, whatever its own instructions say (analysis and design alike).
+FEATURE_RULES = """**Stay on this feature.** This run migrates this feature only; the domain's other features are out \
+of scope (listed below), even where they share its controllers, services, DAOs, JSPs or tables.
+- Analysis (AS-IS, deep dive, dependencies): follow only the code paths that start at this feature's entry points. \
+In shared classes, cover only the methods and branches this feature reaches; leave the rest out.
+- Design (contracts, domain, orchestration, integration, code): design for this feature's flow only. Don't add APIs, \
+operations, events, entities or contracts that only another feature needs. Where a shared table or component must \
+keep working for the other features, note that as a constraint; don't design it.
+- Earlier documents of this run may mention other features or flows; use only what concerns this one.
+- If you can't tell whether something belongs to this feature, ask the user rather than include it."""
+
+
 @dataclass
 class AgentInputs:
     """Guidance a person gave the agent: from the domain (shared and stage-specific) and from the run."""
@@ -35,9 +47,35 @@ class AgentInputs:
     run_paths: list[str] = field(default_factory=list)
     run_notes: str = ""
     run_label: str = "this operation"  # what the run's own paths and notes are for, in headings
+    # A migration's feature (from the domain's feature list) and the domain's other features, which are out of scope:
+    # {"key", "name", "description", "entry_points", "tables", "calls"}.
+    feature: dict | None = None
+    other_features: list[dict] = field(default_factory=list)
+
+    def scope_markdown(self) -> str:
+        """Which feature this run covers and which it doesn't, so shared legacy code isn't analysed for all of them."""
+        f = self.feature
+        if not f:
+            return ""
+        lines = [f"## Feature scope: {f['name']} (`{f['key']}`)"]
+        if f.get("description"):
+            lines.append(f["description"])
+        lines.append(FEATURE_RULES)
+        for title, values in (("Entry points", f.get("entry_points")), ("Tables (from the feature list)",
+                              f.get("tables")), ("Domains it is listed as calling", f.get("calls"))):
+            if values:
+                lines.append(f"{title}: " + ", ".join(f"`{v}`" for v in values))
+        if self.other_features:
+            lines.append(f"\n### Other features of {self.domain_name or 'this domain'}: out of scope")
+            for o in self.other_features[:40]:
+                points = ", ".join(f"`{p}`" for p in (o.get("entry_points") or [])[:5])
+                lines.append(f"- {o['name']} (`{o['key']}`)" + (f": {points}" if points else ""))
+            if len(self.other_features) > 40:
+                lines.append(f"- … and {len(self.other_features) - 40} more")
+        return "\n".join(lines)
 
     def as_markdown(self) -> str:
-        sections = []
+        sections = [self.scope_markdown()] if self.feature else []
         if self.domain_description or self.domain_context:
             sections.append("## Domain: " + self.domain_name + "\n" +
                             "\n\n".join(t for t in (self.domain_description, self.domain_context) if t))

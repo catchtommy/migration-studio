@@ -325,3 +325,47 @@ def test_domain_with_runs_is_deleted_only_with_its_runs(client):
     assert client.get(f"/api/runs/{run['id']}").status_code == 404
     assert not Path(run["workspace"]).exists()
     assert all(r["domain"] != key for r in client.get("/api/runs").json())
+
+
+def test_a_migration_is_scoped_to_its_feature_not_the_domains_others(client, monkeypatch):
+    """Create, update and view of a bank account share one legacy controller: a run for update tells every agent
+    which entry points are its own and which features are out of scope."""
+    from app.agents import common, stub
+
+    client.post("/api/domains", json={"key": "bank", "name": "Bank accounts", "description": ""})
+    for key, name, method in (("create-bank-account", "Create bank account", "create"),
+                              ("update-bank-account", "Update bank account", "update"),
+                              ("view-bank-account", "View bank account", "view")):
+        client.post("/api/domains/bank/features", json={
+            "key": key, "name": name, "entry_points": [f"BankAccountController#{method}"],
+            "calls": ["customer"] if method == "create" else []})
+    seen = {}
+    real_run = stub.StubAgent.run
+
+    def run(self, ctx):
+        seen.setdefault(ctx.stage, (ctx.inputs.scope_markdown(), common.brief(ctx)))
+        return real_run(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", run)
+    r = client.post("/api/runs", json={"domain": "bank", "operation": "update-bank-account"})
+    assert r.status_code == 201, r.text
+    run_id = r.json()["id"]
+    wait_for(client, run_id, {"awaiting_approval"})
+    client.post(f"/api/runs/{run_id}/decision", json={"decision": "approve"})  # on to the design steps
+    wait_for(client, run_id, {"awaiting_approval"}, timeout=60)
+    scope, brief = seen["as_is_doc"]
+    assert "## Feature scope: Update bank account (`update-bank-account`)" in scope
+    assert "Entry points: `BankAccountController#update`" in scope
+    own, others = scope.split("### Other features")
+    assert "BankAccountController#update" in own and "create" not in own
+    assert "Create bank account (`create-bank-account`): `BankAccountController#create`" in others
+    assert "View bank account (`view-bank-account`): `BankAccountController#view`" in others
+    assert "domain_design" in seen
+    assert "## Feature scope" in brief and "Stay on this feature" in brief  # every agent's brief carries it
+    for design_step in ("domain_design", "orchestrator_design", "linked_domain_contracts"):
+        if design_step in seen:  # design agents get the same rules (some steps may be skipped by the scope decision)
+            assert "Design (contracts, domain, orchestration" in seen[design_step][1]
+
+    from app.agents.defaults import default_config
+    finder = default_config("domain_dependencies")["instructions"]
+    assert "Trace only from this feature's entry points" in finder and "Left out (other" in finder
