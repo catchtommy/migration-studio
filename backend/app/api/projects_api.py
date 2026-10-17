@@ -178,7 +178,7 @@ def candidates(key: str, user: CurrentUser = Depends(current_user)) -> list[dict
     with session_scope() as s:
         members = set(s.scalars(select(ProjectMember.user_id).where(ProjectMember.project == key)))
         return [{"id": u.id, "username": u.username, "display_name": u.display_name}
-                for u in s.scalars(select(User).where(User.active.is_(True)).order_by(User.display_name))
+                for u in s.scalars(select(User).where(User.active == True).order_by(User.display_name))
                 if u.id not in members]
 
 

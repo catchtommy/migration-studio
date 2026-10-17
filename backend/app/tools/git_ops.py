@@ -31,6 +31,14 @@ def remove_tree(path: Path) -> None:
         shutil.rmtree(path, onexc=retry_writable)
 
 
+def hash_bytes(repo: Path, data: bytes) -> str:
+    """Store content as a blob in the repository; returns its id."""
+    proc = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=repo, input=data, capture_output=True)
+    if proc.returncode != 0:
+        raise GitError(f"git hash-object failed: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout.decode().strip()
+
+
 def valid_branch(name: str) -> bool:
     """A branch or tag name safe to pass to git: no leading dash, spaces, '..', '//', or trailing '/' or '.lock'."""
     return (isinstance(name, str) and bool(_BRANCH.match(name)) and ".." not in name and "//" not in name
@@ -60,7 +68,7 @@ def merge_file(ours: bytes, base: bytes, theirs: bytes, labels: tuple[str, str, 
 
 def git(repo: Path, *args: str, stdin: str | None = None, env: dict | None = None) -> str:
     """Run git in `repo`. `env` adds environment variables (e.g. a user's credentials, see app/git_auth.py)."""
-    proc = subprocess.run(["git", *_AUTHOR, *args], cwd=repo, capture_output=True, text=True, input=stdin,
+    proc = subprocess.run(["git", *_AUTHOR, *args], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace", input=stdin,
                           env={**os.environ, **env} if env else None)
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
@@ -76,14 +84,14 @@ def init_workspace(path: Path, source_repo: str | None, branch: str, base_sha: s
     if source_repo:
         start = ["--branch", source_branch] if source_branch and not base_sha else []
         proc = subprocess.run(["git", "clone", "--quiet", *start, "--", source_repo, str(path)], capture_output=True,
-                              text=True)
+                              text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             on = f" (branch {source_branch})" if start else ""
             raise GitError(f"git clone {source_repo}{on} failed: {proc.stderr.strip()}")
     else:
         path.mkdir(exist_ok=True)
         git(path, "init", "--quiet")
-        (path / "README.md").write_text("# Migration workspace\n\nNo monolith repository configured.\n")
+        (path / "README.md").write_text("# Migration workspace\n\nNo monolith repository configured.\n", encoding="utf-8")
         git(path, "add", "-A")
         git(path, "commit", "--quiet", "-m", "Initialise migration workspace")
         base_sha = None  # a fresh empty repo has new commit ids; its content is always the same
@@ -98,7 +106,7 @@ def clone_mirror(url: str, path: Path, env: dict | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".partial")  # a failed or interrupted clone never looks like a mirror
     remove_tree(tmp)
-    proc = subprocess.run(["git", "clone", "--quiet", "--mirror", "--", url, str(tmp)], capture_output=True, text=True,
+    proc = subprocess.run(["git", "clone", "--quiet", "--mirror", "--", url, str(tmp)], capture_output=True, text=True, encoding="utf-8", errors="replace",
                           env={**os.environ, **env} if env else None)
     if proc.returncode != 0:
         remove_tree(tmp)
@@ -117,7 +125,7 @@ def fetch_mirror(path: Path, url: str, env: dict | None = None) -> None:
 def commit_info(repo: Path, ref: str) -> dict | None:
     """The commit `ref` points at: sha, subject, author and date (None when there's no such ref)."""
     proc = subprocess.run(["git", "log", "-1", "--format=%H%x00%s%x00%an%x00%cI", ref, "--"], cwd=repo,
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     sha, subject, author, date = proc.stdout.strip().split("\x00")
@@ -125,7 +133,7 @@ def commit_info(repo: Path, ref: str) -> dict | None:
 
 
 def count_commits(repo: Path, since: str, until: str) -> int | None:
-    proc = subprocess.run(["git", "rev-list", "--count", f"{since}..{until}"], cwd=repo, capture_output=True, text=True)
+    proc = subprocess.run(["git", "rev-list", "--count", f"{since}..{until}"], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return int(proc.stdout.strip()) if proc.returncode == 0 else None
 
 

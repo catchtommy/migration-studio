@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type RunDetail, type StageDef } from "../lib/api";
 import { useCan } from "../lib/hooks";
 
-const RESTARTABLE = ["completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches"];
+const RESTARTABLE = ["completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "awaiting_publish"];
 
 /** "Re-run from here" (a flex item of the step header; the open panel takes a full row): run a completed step and
  * the steps after it again with the agents' current settings, either updating their documents or starting fresh. */

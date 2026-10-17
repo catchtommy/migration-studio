@@ -23,6 +23,9 @@ class StageDef:
     # Agents only: the step changes code, in {"repository": "" (the project's monolith) | git URL ({domain} filled
     # in), "base_branch": ""}. None: it writes documents only (it still reads the monolith).
     code: dict | None = field(default=None, hash=False, compare=False)
+    # Agents only: once approved, the step's documents are published to the monolith's docs/<domain>/<feature>/
+    # (AS-IS documentation, for later agents; see app/docs_publish.py).
+    publish_docs: bool = False
 
     def to_dict(self) -> dict:
         return {**asdict(self), "reviews": list(self.reviews),
@@ -33,7 +36,8 @@ class StageDef:
         uses = d.get("uses")
         return cls(key=d["key"], title=d["title"], kind=d["kind"], description=d.get("description", ""),
                    reviews=tuple(d.get("reviews") or ()), uses=None if uses is None else tuple(uses),
-                   include_content=bool(d.get("include_content")), code=d.get("code") or None)
+                   include_content=bool(d.get("include_content")), code=d.get("code") or None,
+                   publish_docs=bool(d.get("publish_docs")))
 
 
 class Workflow:
@@ -69,9 +73,11 @@ class Workflow:
 
 STANDARD = Workflow((
     StageDef("as_is_doc", "AS-IS documentation", "agent",
-             "Trace JSP → Controller → Service → DAO → iBatis SQL and document the current behaviour."),
+             "Trace JSP → Controller → Service → DAO → iBatis SQL and document the current behaviour.",
+             publish_docs=True),
     StageDef("deep_dive", "Deep dive", "agent",
-             "Business rules, edge cases, exception paths, cross-domain calls and a test scenario catalogue."),
+             "Business rules, edge cases, exception paths, cross-domain calls and a test scenario catalogue.",
+             publish_docs=True),
     StageDef("gate_analysis", "Approve analysis", "gate",
              "Review the AS-IS documentation and deep dive.", ("as_is_doc", "deep_dive")),
     # Modulith design: find what this feature depends on, define the contracts with those domains, then design the

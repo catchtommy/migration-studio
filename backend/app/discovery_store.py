@@ -134,7 +134,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
         f = output_dir / name
         if f.is_file():
             try:
-                parse(f.read_text())
+                parse(f.read_text(encoding="utf-8"))
             except InvalidDocument as e:
                 problems.append(str(e))
     return problems

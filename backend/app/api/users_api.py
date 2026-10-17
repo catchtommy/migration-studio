@@ -80,7 +80,7 @@ def _check_permissions(permissions: list[str]) -> list[str]:
 
 def _admins_remain(s) -> None:
     """Someone active must still be able to manage users."""
-    for user in s.scalars(select(User).where(User.active.is_(True))):
+    for user in s.scalars(select(User).where(User.active == True)):
         if "users.manage" in auth.permissions_of(s, list(user.roles or [])):
             return
     raise HTTPException(409, "At least one active user must keep the permission to manage users")

@@ -173,6 +173,8 @@ class Runner:
                 run.status, run.current_stage = "awaiting_branches", gate["stage"]
             elif gate and gate.get("kind") == "commit":  # a step's code changes wait to be reviewed and committed
                 run.status, run.current_stage = "awaiting_commit", gate["stage"]
+            elif gate and gate.get("kind") == "docs":  # approved AS-IS documents wait to be published (or not)
+                run.status, run.current_stage = "awaiting_publish", gate["stage"]
             elif gate:
                 run.status, run.current_stage = "awaiting_approval", gate["gate"]
             elif review:  # the workflow is done; a person reviews the code changes and commits them
@@ -184,6 +186,9 @@ class Runner:
         elif gate and gate.get("kind") == "branches":
             emit(run_id, "status", f"Confirm the branches for {gate['repository']['name']} before "
                                    f"{gate['stage_title']} changes code", gate["stage"])
+        elif gate and gate.get("kind") == "docs":
+            emit(run_id, "status", f"Publish the approved AS-IS documents ({len(gate['files'])}) to the monolith's "
+                                   "documentation, or skip", gate["stage"])
         elif gate and gate.get("kind") == "commit":
             emit(run_id, "status", f"Review the code {gate['stage_title']} changed in {gate['repository']['name']} "
                                    "and commit it", gate["stage"])

@@ -69,6 +69,10 @@ if (-not (Test-Path (Join-Path $Frontend "node_modules"))) {
 }
 
 # --- start both ---------------------------------------------------------------------------------------------------
+# UTF-8 for every file and process the backend reads and writes (Windows otherwise uses the local code page,
+# which garbles documents and git output).
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $backendProc = Start-Process -FilePath $Python -ArgumentList "-m", "uvicorn", "app.main:app", "--port", "8000", "--reload" `
     -WorkingDirectory $Backend -NoNewWindow -PassThru
 $frontendProc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npx", "vite", "--port", "5173", "--strictPort" `

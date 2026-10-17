@@ -49,6 +49,10 @@ test("a finished run's code is reviewed, its conflict resolved, and the feature 
       await page.request.post(`/api/runs/${runId}/branches`, { data: { feature_branch: "feature/e2e-approve" }, headers: project });
       continue;
     }
+    if (run.status === "awaiting_publish") {
+      await page.request.post(`/api/runs/${runId}/docs/skip`, { headers: project }); // see publish-docs.spec.ts
+      continue;
+    }
     if (run.status === "awaiting_commit" && run.current_stage) {
       await page.request.post(`/api/runs/${runId}/finish`, { headers: project }); // commit at the end instead
       continue;
@@ -133,6 +137,10 @@ test("a step that changes another repository: set on the step, cut on the same b
       await expect(page.getByLabel("Feature branch")).toHaveValue("migration/loan/approve");
       await page.getByRole("button", { name: /Confirm and start/ }).click();
       await expect(page.getByRole("heading", { name: "Confirm branches for loan-service" })).toBeHidden({ timeout: 30_000 });
+      continue;
+    }
+    if (run.status === "awaiting_publish") {
+      await page.request.post(`/api/runs/${runId}/docs/skip`, { headers: project }); // see publish-docs.spec.ts
       continue;
     }
     if (run.status === "awaiting_commit" && run.current_stage) {

@@ -6,6 +6,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 
 from app import boundary_check
+from app.text import decode, decode_with, encode_like
 from app.agents.base_agent import AgentContext
 
 MAX_LIST = 500
@@ -153,7 +154,7 @@ class Toolbox:
         return p.relative_to(self.root).as_posix()
 
     def _git(self, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True)
+        return subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
     def _repos(self) -> list[tuple[str, Path]]:
         """(prefix, checkout) of the workspace root and the run's other repositories inside it."""
@@ -168,10 +169,10 @@ class Toolbox:
         files = []
         for prefix, repo in self._repos():
             proc = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=repo,
-                                  capture_output=True, text=True)
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace")
             files += [prefix + f for f in proc.stdout.splitlines()]
         if self.legacy is not None:
-            proc = subprocess.run(["git", "ls-files", "--cached"], cwd=self.legacy, capture_output=True, text=True)
+            proc = subprocess.run(["git", "ls-files", "--cached"], cwd=self.legacy, capture_output=True, text=True, encoding="utf-8", errors="replace")
             files += proc.stdout.splitlines()
         bare = pattern.removeprefix("**/")
         matched = sorted({f for f in files if fnmatch(f, pattern) or fnmatch(f, bare)})
@@ -184,7 +185,7 @@ class Toolbox:
         p = self._read_path(path)
         if not p.is_file():
             raise ToolError(f"{path} is not a file")
-        lines = p.read_text(errors="replace").splitlines()
+        lines = decode(p.read_bytes()).splitlines()  # legacy code may not be UTF-8 (app/text.py)
         start = max(start_line, 1)
         end = min(end_line or len(lines), len(lines), start + MAX_READ_LINES - 1)
         body = "\n".join(f"{i:>6}\t{lines[i - 1]}" for i in range(start, end + 1))
@@ -198,10 +199,11 @@ class Toolbox:
         lines = []
         sources = self._repos() + ([("", self.legacy)] if self.legacy is not None else [])
         for prefix, repo in sources:
-            proc = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
+            proc = subprocess.run(["git", *args], cwd=repo, capture_output=True)
             if proc.returncode not in (0, 1):
-                raise ToolError(proc.stderr.strip())
-            lines += [prefix + line for line in proc.stdout.splitlines()]
+                raise ToolError(proc.stderr.decode("utf-8", errors="replace").strip())
+            # each match line is decoded on its own: legacy files may not be UTF-8 (app/text.py)
+            lines += [prefix + decode(line) for line in proc.stdout.splitlines()]
         if not lines:
             return "No matches."
         more = f"\n… and {len(lines) - MAX_SEARCH_LINES} more matches; narrow the search." \
@@ -211,7 +213,9 @@ class Toolbox:
     def write_file(self, path: str, content: str) -> str:
         p = self._write_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content)
+        # A file being rewritten keeps its encoding (legacy code may not be UTF-8); new files are UTF-8.
+        encoding = decode_with(p.read_bytes())[1] if p.is_file() else "utf-8"
+        p.write_bytes(encode_like(content, encoding))
         self.written.add(self._rel(p))
         self.ctx.log(f"wrote {self._rel(p)}")
         return f"Wrote {len(content.splitlines())} lines to {self._rel(p)}"
@@ -220,11 +224,11 @@ class Toolbox:
         p = self._write_path(path)
         if not p.is_file():
             raise ToolError(f"{path} is not a file")
-        text = p.read_text()
+        text, encoding = decode_with(p.read_bytes())  # kept as it is: legacy code may not be UTF-8
         count = text.count(old_text)
         if count != 1:
             raise ToolError(f"old_text occurs {count} times in {path}; it must occur exactly once")
-        p.write_text(text.replace(old_text, new_text))
+        p.write_bytes(encode_like(text.replace(old_text, new_text), encoding))
         self.written.add(self._rel(p))
         self.ctx.log(f"edited {self._rel(p)}")
         return f"Edited {self._rel(p)}"
@@ -236,7 +240,7 @@ class Toolbox:
         self.ctx.log(f"$ {command}")
         try:
             proc = subprocess.run(command, shell=True, cwd=self._resolve(self.ctx.code_dir), env=env,
-                                  capture_output=True, text=True,
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
                                   timeout=max(1, min(timeout_seconds, 3600)))
         except subprocess.TimeoutExpired:
             raise ToolError(f"Command timed out after {timeout_seconds}s")

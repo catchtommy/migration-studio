@@ -103,7 +103,7 @@ def _documents(ws: Path, outputs: list[ArtifactOut], docs: str, before: dict[str
         if f.stat().st_size > MAX_DOCUMENT_BYTES:
             continue
         try:
-            f.read_text()
+            f.read_text(encoding="utf-8")
         except UnicodeDecodeError:  # not a text document
             continue
         found[path] = ArtifactOut(name=f.name, path=path, kind=kind(path))
@@ -114,7 +114,7 @@ def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
     """Skip a Modulith design step the scope decision makes unnecessary: no agent runs, a short note is the document."""
     ctx.log(f"Skipped {stage.title}: {reason}")
     note = ctx.output_dir / f"{stage.key}.md"
-    note.write_text(modulith_scope.skip_note(stage.key, stage.title, reason))
+    note.write_text(modulith_scope.skip_note(stage.key, stage.title, reason), encoding="utf-8")
     return [ArtifactOut(name=note.name, path=ctx.rel(note), kind="markdown")]
 
 
@@ -230,7 +230,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             nested_changes[r["key"]] = {"start": start, **({"end": end, "diff": git_ops.diff(path, start, end, binary=True)}
                                                           if end != start else {})}
         outputs = _documents(ws, outputs, docs_dir(domain, state["operation"]), before_docs)
-        contents = {out.path: (ws / out.path).read_text() for out in outputs}
+        contents = {out.path: (ws / out.path).read_text(encoding="utf-8") for out in outputs}
         workspace.clear_documents(ws)  # stored in the database below; not kept on disk
         with session_scope() as s:
             for out in outputs:
@@ -252,8 +252,32 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
     return node
 
 
+def _publishes(workflow: Workflow, gate: StageDef) -> bool:
+    return any(workflow.by_key[k].publish_docs for k in gate.reviews if k in workflow.by_key)
+
+
+def publish_node_key(key: str) -> str:
+    return f"{key}__publish"
+
+
+def make_publish_node(key: str):
+    """After a gate approved steps that publish their documents (or after such a step no gate reviews): the run waits
+    for a person to publish the AS-IS documents to the monolith's docs folder, or skip (see app/docs_publish.py)."""
+
+    def node(state: MigrationState) -> dict:
+        from app import docs_publish
+        projects.set_current(_project_of(state["run_id"]))
+        proposal = docs_publish.publish_needed(state["run_id"], key)
+        if proposal:
+            interrupt(proposal)  # the runner shows the run as awaiting_publish; publishing or skipping resumes it
+        return {}
+
+    return node
+
+
 def make_gate_node(workflow: Workflow, gate: StageDef):
     after = workflow.next_stage(gate.key) or END
+    approved_to = publish_node_key(gate.key) if _publishes(workflow, gate) else after
 
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
@@ -281,7 +305,7 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
 
         if approved:
             emit(run_id, "approval", f"{gate.title}: approved", gate.key)
-            return {"route": after}
+            return {"route": approved_to}
 
         target = decision.get("target_stage") or gate.reviews[0]
         workspace.roll_back(run_id, Path(state["workspace"]), state["stage_shas"][target]["start"], target)
@@ -291,7 +315,7 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
             "feedback": {**state.get("feedback", {}), target: decision.get("comments") or "Rejected by reviewer."},
         }
 
-    return node, [*gate.reviews, after]
+    return node, list(dict.fromkeys([*gate.reviews, after, approved_to]))
 
 
 def make_commit_node(stage: StageDef):
@@ -315,23 +339,31 @@ def commit_node_key(stage_key: str) -> str:
 
 def build_graph(workflow: Workflow, checkpointer):
     g = StateGraph(MigrationState)
+    reviewed = {k for st in workflow.stages if st.kind == "gate" for k in st.reviews}
     for stage in workflow.stages:
         if stage.kind == "agent":
             g.add_node(stage.key, make_agent_node(workflow, stage))
             if stage.code:
                 g.add_node(commit_node_key(stage.key), make_commit_node(stage))
+            if stage.publish_docs and stage.key not in reviewed:  # no gate approves it: publish right after it
+                g.add_node(publish_node_key(stage.key), make_publish_node(stage.key))
         else:
             node, targets = make_gate_node(workflow, stage)
             g.add_node(stage.key, node)
             g.add_conditional_edges(stage.key, lambda s: s["route"], targets)
+            if _publishes(workflow, stage):
+                g.add_node(publish_node_key(stage.key), make_publish_node(stage.key))
+                g.add_edge(publish_node_key(stage.key), workflow.next_stage(stage.key) or END)
 
     g.add_edge(START, workflow.stages[0].key)
     for stage in workflow.stages:
         if stage.kind == "agent":
-            after = workflow.next_stage(stage.key) or END
+            chain = [stage.key]
             if stage.code:
-                g.add_edge(stage.key, commit_node_key(stage.key))
-                g.add_edge(commit_node_key(stage.key), after)
-            else:
-                g.add_edge(stage.key, after)
+                chain.append(commit_node_key(stage.key))
+            if stage.publish_docs and stage.key not in reviewed:
+                chain.append(publish_node_key(stage.key))
+            chain.append(workflow.next_stage(stage.key) or END)
+            for a, b in zip(chain, chain[1:]):
+                g.add_edge(a, b)
     return g.compile(checkpointer=checkpointer)

@@ -15,7 +15,7 @@ const editable = (steps: WorkflowStep[]): EditableStep[] => steps.map((s) => ({ 
 const toSteps = (steps: EditableStep[]): WorkflowStep[] =>
   steps.map(({ uid: _uid, ...s }) =>
     s.kind === "agent"
-      ? { kind: "agent", key: s.key, uses: s.uses ?? null, include_content: s.include_content ?? false, code: s.code ?? null }
+      ? { kind: "agent", key: s.key, uses: s.uses ?? null, include_content: s.include_content ?? false, code: s.code ?? null, publish_docs: s.publish_docs ?? false }
       : { kind: "gate", key: s.key, title: s.title ?? "", description: s.description ?? "", reviews: s.reviews ?? [] },
   );
 
@@ -303,6 +303,12 @@ function StepRow({ step, index, steps, agents, codeSteps, onChange, onMove, onRe
               <p className="w-full text-xs text-subtle">{agents.find((a) => a.key === step.key)?.description}</p>
               {earlierAgents.length > 0 && <StepInputs label={`Step ${index + 1} inputs`} step={step} earlierAgents={earlierAgents} title={title} onChange={onChange} />}
               {codeSteps && <StepCodeSettings label={`Step ${index + 1} code`} step={step} onChange={onChange} />}
+              {codeSteps && (
+                <label className="flex w-full items-center gap-1.5 text-sm" title="For documentation of the legacy code as it is: later agents read it instead of the code">
+                  <input type="checkbox" checked={step.publish_docs ?? false} onChange={(e) => onChange({ ...step, publish_docs: e.target.checked })} />
+                  Publish its documents to the monolith's <code className="text-xs">docs/&lt;domain&gt;/&lt;feature&gt;</code> once approved
+                </label>
+              )}
             </div>
           )}
         </div>

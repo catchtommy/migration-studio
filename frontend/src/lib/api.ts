@@ -1,4 +1,4 @@
-export type RunStatus = "pending" | "running" | "awaiting_input" | "awaiting_approval" | "changes_requested" | "awaiting_branches" | "awaiting_commit" | "completed" | "failed";
+export type RunStatus = "pending" | "running" | "awaiting_input" | "awaiting_approval" | "changes_requested" | "awaiting_branches" | "awaiting_commit" | "awaiting_publish" | "completed" | "failed";
 
 export interface StageDef {
   key: string;
@@ -9,6 +9,7 @@ export interface StageDef {
   uses?: string[] | null;
   include_content?: boolean;
   code?: StepCode | null;
+  publish_docs?: boolean;
 }
 
 export type Scope = "operation" | "domain" | "monolith";
@@ -46,6 +47,7 @@ export interface Run {
 export interface Delivery {
   commit?: boolean;
   repos?: Record<string, RepoDelivery>;
+  docs?: { sha: string; branch: string; repository: string; published: string[]; by: string; at: string }; // AS-IS docs published to the monolith
 }
 
 export interface RepoDelivery {
@@ -69,6 +71,16 @@ export interface PendingBranches {
   stage_title: string;
   feature_branch: string;
   repository: { key: string; name: string; url: string; base_branch: string | null; checked_out: boolean; default_branch: string | null };
+}
+
+/** Approved AS-IS documents and how they compare with the monolith's base branch. */
+export interface DocsPreview {
+  repository: string;
+  branch: string;
+  latest_sha: string;
+  folder: string;
+  message: string;
+  files: { path: string; status: "new" | "modified" | "unchanged"; changed_upstream: boolean; old: string | null; new: string | null }[];
 }
 
 /** Where a new migration works, for the New migration form: the feature branch, cut in each repository. */
@@ -186,6 +198,7 @@ export interface RunDetail extends Run {
   approvals: Approval[];
   pending_gate: { gate: string; reviews: string[] } | null;
   pending_branches: PendingBranches | null; // awaiting_branches: confirm before a step changes code
+  pending_publish: { stage: string; steps: string[]; files: string[]; repository: string } | null; // awaiting_publish
   pending_commit: { stage: string; stage_title: string; repository: { key: string; name: string; url: string } } | null; // awaiting_commit right after a step
   pending_rerun: { gate: string; target_stage: string; comments: string | null } | null; // rejection held for amendments
   base_sha: string | null; // the monolith commit the run started from
@@ -281,6 +294,7 @@ export interface WorkflowStep {
   uses?: string[] | null; // agents: earlier agent steps whose output they get; null = all of them
   include_content?: boolean;
   code?: StepCode | null; // agents: the step changes code, in this repository; null = documents only
+  publish_docs?: boolean; // agents: once approved, its documents are published to the monolith's docs/<domain>/<feature>
 }
 
 /** Where an agent step changes code: the project's monolith (repository ""), or another repository whose URL can
@@ -625,6 +639,10 @@ export const api = {
     request<ChangedFileDetail>(`/runs/${runId}/changes/file?${new URLSearchParams({ repo, path, latest })}`),
   commitRun: (runId: string, body: { repo: string; message: string; branch: string; files: string[]; resolutions: Record<string, Resolution>; latest_sha: string; head_sha: string }) =>
     request<RepoDelivery>(`/runs/${runId}/commit`, json("POST", body)),
+  docsPreview: (runId: string) => request<DocsPreview>(`/runs/${runId}/docs`),
+  publishDocs: (runId: string, body: { message: string; paths: string[]; latest_sha: string }) =>
+    request<{ sha: string; branch: string }>(`/runs/${runId}/docs/publish`, json("POST", body)),
+  skipDocs: (runId: string) => request<void>(`/runs/${runId}/docs/skip`, { method: "POST" }),
   confirmBranches: (runId: string, body: { feature_branch: string; base_branch?: string }) => request<Run>(`/runs/${runId}/branches`, json("POST", body)),
   finishRun: (runId: string) => request<void>(`/runs/${runId}/finish`, { method: "POST" }),
   accountGit: () => request<AccountGit>("/account/git"),

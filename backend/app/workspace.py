@@ -12,7 +12,7 @@ feature branch (with anything else pushed there since), and only later changes a
 
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app import projects, repos
 from app.agents.base_agent import DOCS_ROOT
@@ -68,7 +68,7 @@ def materialize_documents(run_id: str, ws: Path) -> int:
     for path, content in documents.items():
         f = ws / path
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(content)
+        f.write_text(content, encoding="utf-8")
     return len(documents)
 
 
@@ -216,10 +216,10 @@ def exclude_nested(ws: Path) -> None:
     """Keep the run's other repositories (checked out inside the workspace) out of the root repository."""
     exclude = ws / ".git" / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
-    text = exclude.read_text() if exclude.exists() else ""
+    text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     missing = [line for line in ("/.studio/", f"/{DOCS_ROOT}/") if line not in text.splitlines()]
     if missing:  # also the studio's documents, which live in the database
-        exclude.write_text(text + ("" if text.endswith("\n") or not text else "\n") + "\n".join(missing) + "\n")
+        exclude.write_text(text + ("" if text.endswith("\n") or not text else "\n") + "\n".join(missing) + "\n", encoding="utf-8")
 
 
 def nested_heads(ws: Path, nested: list[dict]) -> dict[str, str]:
@@ -250,10 +250,15 @@ def _reset_all(run_id: str, ws: Path, sha: str | None, nested_starts: dict | Non
     return True
 
 
+def _not_true(column):
+    """`column IS NOT TRUE`, written so Oracle (which has no boolean type: IS NOT 1 is invalid there) accepts it."""
+    return or_(column.is_(None), column == False)  # noqa: E712
+
+
 def _start_of(run_id: str, stage: str) -> StageExecution | None:
     with session_scope() as s:
         ex = s.scalar(select(StageExecution).where(StageExecution.run_id == run_id, StageExecution.stage == stage,
-                                                   StageExecution.rerun.is_not(True))
+                                                   _not_true(StageExecution.rerun))
                       .order_by(StageExecution.id.desc()).limit(1))
         if ex is not None:
             s.expunge(ex)

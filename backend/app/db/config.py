@@ -69,7 +69,7 @@ def load() -> DatabaseConfig | None:
     path = config_path()
     if not path.is_file():
         return None
-    return DatabaseConfig(**json.loads(path.read_text()))
+    return DatabaseConfig(**json.loads(path.read_text(encoding="utf-8")))
 
 
 def save(cfg: DatabaseConfig) -> None:
@@ -168,7 +168,14 @@ def test_connection(url: URL, cfg: "DatabaseConfig | None" = None) -> str:
             name = url.get_backend_name()
             conn.execute(text("SELECT 1 FROM DUAL" if name == "oracle" else "SELECT 1"))
             version = ".".join(str(v) for v in engine.dialect.server_version_info or ())
-        return f"{LABELS[name]} {version}".strip()
+            note = ""
+            if name == "oracle":  # documents are NCLOB (Unicode) either way; short texts follow the database's set
+                charset = conn.execute(text("SELECT value FROM nls_database_parameters "
+                                            "WHERE parameter = 'NLS_CHARACTERSET'")).scalar()
+                if charset and charset not in ("AL32UTF8", "UTF8"):
+                    note = (f" · character set {charset}: documents are stored as Unicode; names with characters "
+                            f"outside {charset} would show as ¿ (AL32UTF8 avoids that)")
+        return f"{LABELS[name]} {version}{note}".strip()
     except Exception as e:  # driver errors vary; show the driver's own message
         orig = getattr(e, "orig", None) or e
         message = str(orig).strip().splitlines()[0] if str(orig).strip() else type(orig).__name__

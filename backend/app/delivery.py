@@ -25,6 +25,7 @@ from app import git_auth, repos, settings_store, workspace
 from app.agents.base_agent import DOCS_ROOT
 from app.db.models import Run, StageExecution, User
 from app.db.session import emit, session_scope
+from app.text import decode
 from app.tools import git_ops
 
 DEFAULT_PATTERN = "migration/{domain}/{feature}"
@@ -366,9 +367,7 @@ def _is_binary(data: bytes | None) -> bool:
 
 
 def _text(data: bytes | None) -> str | None:
-    if data is None:
-        return None
-    return data.decode("utf-8", errors="replace")
+    return None if data is None else decode(data)  # the repository's files may not be UTF-8 (app/text.py)
 
 
 def _name_status(ws: Path, base: str, target: str) -> list[tuple[str, str]]:

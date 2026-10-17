@@ -51,7 +51,7 @@ def current(project: str) -> dict | None:
     """The copy new runs of the project read: {"url", "branch", "sha", "subject", "at"}, or None."""
     f = _current_file(project)
     try:
-        return json.loads(f.read_text()) if f.exists() else None
+        return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
     except ValueError:
         return None
 
@@ -117,7 +117,7 @@ def _record(project: str, url: str, branch: str, mirror: Path, sha: str) -> dict
             "at": datetime.now(UTC).isoformat()}
     f = _current_file(project)
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(data))
+    f.write_text(json.dumps(data), encoding="utf-8")
     return data
 
 

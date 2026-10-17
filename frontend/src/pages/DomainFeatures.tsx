@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Domain, type Feature, type FeatureInput } from "../lib/api";
 import { useDomains, useCan } from "../lib/hooks";
@@ -65,12 +65,12 @@ function ListingSetup({ domain, onStarted, onCancel }: { domain: Domain; onStart
 }
 
 const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
-const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "failed"];
+const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "awaiting_publish", "failed"];
 
 /** A link to start migrating a feature: the New migration form, with the domain and feature chosen. */
 export const migrateUrl = (domain: string, feature: string) => `/?domain=${encodeURIComponent(domain)}&feature=${encodeURIComponent(feature)}`;
 
-function FeatureForm({ domain, feature, onDone }: { domain: Domain; feature?: Feature; onDone: () => void }) {
+export function FeatureForm({ domain, feature, onDone }: { domain: Domain; feature?: Feature; onDone: () => void }) {
   const queryClient = useQueryClient();
   const [key, setKey] = useState(feature?.key ?? "");
   const [name, setName] = useState(feature?.name ?? "");
@@ -135,7 +135,7 @@ function FeatureForm({ domain, feature, onDone }: { domain: Domain; feature?: Fe
   );
 }
 
-function FeatureRow({ domain, feature, names, onEdit }: { domain: Domain; feature: Feature; names: Map<string, string>; onEdit: () => void }) {
+function FeatureRow({ domain, feature, names }: { domain: Domain; feature: Feature; names: Map<string, string> }) {
   const queryClient = useQueryClient();
   const remove = useMutation({
     mutationFn: () => api.deleteFeature(domain.key, feature.key),
@@ -147,7 +147,7 @@ function FeatureRow({ domain, feature, names, onEdit }: { domain: Domain; featur
   const run = feature.migration;
   const canEdit = useCan("domains.manage");
   return (
-    <tr className="border-t border-border align-top">
+    <tr id={`feature-${feature.key}`} className="scroll-mt-24 border-t border-border align-top">
       <td className="px-4 py-3">
         <span className="font-medium">{feature.name}</span>
         <code className="ml-2 text-xs text-subtle">{feature.key}</code>
@@ -193,9 +193,9 @@ function FeatureRow({ domain, feature, names, onEdit }: { domain: Domain; featur
       <td className="whitespace-nowrap px-4 py-3 text-right">
         {canEdit && (
           <>
-            <button onClick={onEdit} className="rounded-md px-2 py-1 text-xs text-subtle hover:bg-muted hover:text-fg">
+            <Link to={`/domains/${domain.key}/features/${encodeURIComponent(feature.key)}`} className="rounded-md px-2 py-1 text-xs text-subtle hover:bg-muted hover:text-fg">
               Edit
-            </button>
+            </Link>
             {!run && (
               <button
                 onClick={() => window.confirm(`Remove ${feature.name} from the feature list?`) && remove.mutate()}
@@ -226,7 +226,13 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
     queryKey: ["features", domain.key, listing?.status],
     queryFn: () => api.features(domain.key),
   });
-  const [editing, setEditing] = useState<string | null>(null); // feature key, or "" for a new one
+  const [editing, setEditing] = useState<string | null>(null); // "" while adding a feature (editing has its own page)
+  const location = useLocation();
+  // Back from a feature's page: scroll to the feature edited, so a long list keeps its place.
+  useEffect(() => {
+    if (!features || !location.hash.startsWith("#feature-")) return;
+    document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView({ block: "center" });
+  }, [features, location.hash]);
   const [params, setParams] = useSearchParams();
   const [setup, setSetupOpen] = useState(params.get("setup") === "1"); // a new domain arrives here with it open
   const closeSetup = () => {
@@ -268,9 +274,7 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
       {setup && !listingBusy && <ListingSetup domain={domain} onStarted={closeSetup} onCancel={closeSetup} />}
 
       {editing === "" && <FeatureForm domain={domain} onDone={() => setEditing(null)} />}
-      {editing && features?.some((f) => f.key === editing) && (
-        <FeatureForm key={editing} domain={domain} feature={features.find((f) => f.key === editing)} onDone={() => setEditing(null)} />
-      )}
+
 
       {isLoading || !features ? (
         <p className="text-sm text-subtle">Loading…</p>
@@ -294,7 +298,7 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
             </thead>
             <tbody>
               {features.map((f) => (
-                <FeatureRow key={f.key} domain={domain} feature={f} names={names} onEdit={() => setEditing(f.key)} />
+                <FeatureRow key={f.key} domain={domain} feature={f} names={names} />
               ))}
             </tbody>
           </table>

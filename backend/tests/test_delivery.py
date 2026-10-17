@@ -22,8 +22,11 @@ def finish_workflow(client, run_id, confirm=None) -> dict:
     """Approve every gate, confirm the proposed branches (or what `confirm(pending)` returns) and go on without
     committing right after code steps, until the workflow is done."""
     while True:
-        run = wait_for(client, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit", "completed",
-                                        "failed"}, timeout=60)
+        run = wait_for(client, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit", "awaiting_publish",
+                                        "completed", "failed"}, timeout=60)
+        if run["status"] == "awaiting_publish":
+            assert client.post(f"/api/runs/{run_id}/docs/skip").status_code == 204  # (tests/test_docs_publish.py)
+            continue
         if run["status"] == "awaiting_commit" and run["current_stage"]:
             assert client.post(f"/api/runs/{run_id}/finish").status_code == 204  # go on; offered again at the end
             continue
@@ -311,7 +314,9 @@ def test_an_older_run_approved_at_a_gate_asks_for_branches_before_a_later_code_s
              for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     assert proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
-    paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    wait_for(proj, run["id"], {"awaiting_publish"}, timeout=60)  # the approved AS-IS documents come first
+    assert proj.post(f"/api/runs/{run['id']}/docs/skip").status_code == 204
+    paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=60)
     assert paused["current_stage"] == later
 
 

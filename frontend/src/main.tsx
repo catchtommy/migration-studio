@@ -14,6 +14,7 @@ import { AgentsPage } from "./pages/AgentsPage";
 import { Dashboard } from "./pages/Dashboard";
 import { DomainPage } from "./pages/DomainPage";
 import { DomainsPage } from "./pages/DomainsPage";
+import { FeaturePage } from "./pages/FeaturePage";
 import { ContractsPage } from "./pages/ContractsPage";
 import { RunPage } from "./pages/RunPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -252,6 +253,7 @@ function Shell({ user, project, projects, sqlite, onSwitch }: { user: Me; projec
           <Route path="/runs/:runId" element={<RunPage />} />
           <Route path="/domains" element={<DomainsPage />} />
           <Route path="/domains/:domainKey" element={<DomainPage />} />
+          <Route path="/domains/:domainKey/features/:featureKey" element={<FeaturePage />} />
           {can("workflows.manage") && <Route path="/workflows" element={<WorkflowsPage />} />}
           {can("workflows.manage") && <Route path="/workflows/:workflowKey" element={<WorkflowsPage />} />}
           <Route path="/contracts" element={<ContractsPage />} />

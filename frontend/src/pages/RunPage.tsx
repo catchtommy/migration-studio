@@ -11,6 +11,7 @@ import { StageDetail } from "../components/StageDetail";
 import { StageTimeline } from "../components/StageTimeline";
 import { CommitReview, DeliverySummary } from "../components/CommitReview";
 import { BranchConfirmation } from "../components/BranchConfirmation";
+import { PublishDocsPanel } from "../components/PublishDocsPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 
@@ -111,6 +112,13 @@ export function RunPage() {
       )}
 
       {run.status === "awaiting_branches" && run.pending_branches && <BranchConfirmation key={run.pending_branches.repository.key} runId={run.id} pending={run.pending_branches} />}
+      {run.status === "awaiting_publish" && <PublishDocsPanel key={run.current_stage ?? ""} run={run} />}
+      {run.delivery?.docs && run.status !== "awaiting_publish" && (
+        <p className="card px-4 py-2.5 text-sm text-subtle">
+          AS-IS documentation published to <code className="text-xs">{run.delivery.docs.branch}</code> as{" "}
+          <code className="text-xs">{run.delivery.docs.sha.slice(0, 10)}</code> by {run.delivery.docs.by}, {new Date(run.delivery.docs.at).toLocaleString()}.
+        </p>
+      )}
       {run.status === "awaiting_commit" && <CommitReview run={run} />}
       {run.status === "completed" && <DeliverySummary run={run} />}
 

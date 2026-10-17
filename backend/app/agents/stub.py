@@ -49,7 +49,7 @@ class StubAgent(StageAgent):
         if ctx.refresh:
             lines += ["", "## Re-run", f"Updated in place from the previous attempt ({len(ctx.previous_outputs)} "
                                          "document(s)) with the agent's current settings."]
-        out.write_text("\n".join(lines) + "\n")
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
         artifacts = [ArtifactOut(name=out.name, path=ctx.rel(out), kind="markdown")]
         artifacts += _sample_cross_domain_files(ctx)
         artifacts += _sample_api_files(ctx)
@@ -221,7 +221,7 @@ components:
     for name, content in files.items():
         f = ctx.output_dir / name
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(content)
+        f.write_text(content, encoding="utf-8")
         written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
     return written
 
@@ -427,7 +427,7 @@ def _sample_api_files(ctx: AgentContext) -> list[ArtifactOut]:
     written = []
     for name, content in files.items():
         f = ctx.output_dir / name
-        f.write_text(content)
+        f.write_text(content, encoding="utf-8")
         written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="openapi" if "openapi" in content[:20] else "yaml"))
     return written
 
@@ -468,7 +468,7 @@ def _sample_discovery_files(ctx: AgentContext) -> list[ArtifactOut]:
     written = []
     for name, content in files.items():
         f = ctx.output_dir / name
-        f.write_text(content)
+        f.write_text(content, encoding="utf-8")
         written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
     return written
 
@@ -479,5 +479,5 @@ def _sample_code_change(ctx: AgentContext, stage: StageDef) -> None:
         return
     code = ctx.workspace / ctx.code_dir / "studio-stub" / f"{ctx.stage}.txt"
     code.parent.mkdir(parents=True, exist_ok=True)
-    code.write_text(f"{stage.title} for {ctx.domain}/{ctx.operation} (stub agent, attempt {ctx.attempt})\n")
+    code.write_text(f"{stage.title} for {ctx.domain}/{ctx.operation} (stub agent, attempt {ctx.attempt})\n", encoding="utf-8")
     ctx.log(f"[stub] changed code: {ctx.rel(code)}")

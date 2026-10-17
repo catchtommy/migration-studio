@@ -182,7 +182,7 @@ def _linked_contracts_problems(output_dir: Path, contracts: list[dict]) -> list[
     if not f.is_file():
         return []
     try:
-        deps = load_domain_dependencies(f.read_text())["dependencies"]
+        deps = load_domain_dependencies(f.read_text(encoding="utf-8"))["dependencies"]
     except InvalidDocument:
         return []  # reported for that file itself
     outbound = {d["domain"] for d in deps if d.get("direction", "outbound") == "outbound"}
@@ -233,7 +233,7 @@ def _domain_design_problems(output_dir: Path, design: dict) -> list[str]:
     linked = output_dir / LINKED_CONTRACTS_FILE
     if linked.is_file():
         try:
-            keys = {c["key"] for c in parse_linked_domain_contracts(linked.read_text())}
+            keys = {c["key"] for c in parse_linked_domain_contracts(linked.read_text(encoding="utf-8"))}
         except InvalidDocument:
             return []  # reported for that file itself
         return [f"{DOMAIN_DESIGN_FILE}: other_domain_dependencies names {d}, which is not a contract in "
@@ -242,7 +242,7 @@ def _domain_design_problems(output_dir: Path, design: dict) -> list[str]:
     deps = output_dir / DOMAIN_DEPENDENCIES_FILE
     if named and deps.is_file():
         try:
-            if load_domain_dependencies(deps.read_text())["decision"]["scope"] == "domain-only":
+            if load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"] == "domain-only":
                 return [f"{DOMAIN_DESIGN_FILE}: other_domain_dependencies must be empty: {DOMAIN_DEPENDENCIES_FILE} "
                         "decides this feature is domain-only"]
         except InvalidDocument:
@@ -257,7 +257,7 @@ def domain_design_ownership_problems(output_dir: Path, domain: str, ownership: d
     if not f.is_file():
         return []
     try:
-        design = parse_domain_design(f.read_text())
+        design = parse_domain_design(f.read_text(encoding="utf-8"))
     except InvalidDocument:
         return []
     owners = {t.upper(): other for other, o in ownership.items() if other != domain for t in o.get("tables") or []}
@@ -317,7 +317,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
         if not f.is_file():
             continue
         try:
-            parsed = parse(f.read_text())
+            parsed = parse(f.read_text(encoding="utf-8"))
         except InvalidDocument as e:
             problems.append(str(e))
             continue
@@ -427,9 +427,9 @@ def export_specs(workspace: Path) -> int:
     changed = 0
     for key, spec in specs:
         f = workspace / CATALOGUE_DIR / f"{key}.yaml"
-        if not f.is_file() or f.read_text() != spec:
+        if not f.is_file() or f.read_text(encoding="utf-8") != spec:
             f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text(spec)
+            f.write_text(spec, encoding="utf-8")
             changed += 1
     return changed
 

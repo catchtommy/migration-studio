@@ -274,6 +274,17 @@ function General({ project }: { project: string }) {
             </Field>
           </div>
           <RepositoryNote project={project} />
+          <Field
+            label="Monolith documentation folder"
+            hint="Approved AS-IS documents are published here, as <folder>/<domain>/<feature>/, on the base branch; later agents read them before the code."
+          >
+            <input
+              className={`${input} max-w-xs font-mono`}
+              value={(form.monolith_docs_dir as string) ?? "docs"}
+              disabled={!form.monolith_repo}
+              onChange={(e) => set("monolith_docs_dir", e.target.value.trim())}
+            />
+          </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={`Legacy ${lang.toolchain} home`} hint="The monolith's toolchain, for agents set to Legacy">
               <input className={input} value={form.jdk_legacy_home as string} onChange={(e) => set("jdk_legacy_home", e.target.value)} />

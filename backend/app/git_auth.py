@@ -52,9 +52,9 @@ sys.stdout.write(os.environ.get("STUDIO_GIT_USERNAME" if prompt.startswith("User
 
 
 def _write(path, text: str, mode: int | None = None) -> None:
-    if not path.exists() or path.read_text() != text:
+    if not path.exists() or path.read_text(encoding="utf-8") != text:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
         if mode is not None:
             path.chmod(mode)
 

@@ -2,11 +2,11 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, ForeignKey, Identity, Integer, LargeBinary, String, Text, UniqueConstraint,
+    Boolean, ForeignKey, Identity, Integer, LargeBinary, String, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from app.db.types import JSONText, NonNullText, UTCDateTime
+from app.db.types import JSONText, LongText, NonNullText, UTCDateTime
 from app.orchestrator.stages import STANDARD
 
 
@@ -38,10 +38,10 @@ class Run(Base):
     # (awaiting_commit: the workflow finished; a person reviews the code changes and commits them, see app/delivery.py)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     current_stage: Mapped[str | None] = mapped_column(String(64))
-    workspace: Mapped[str | None] = mapped_column(Text)
+    workspace: Mapped[str | None] = mapped_column(LongText)
     branch: Mapped[str | None] = mapped_column(String(255))
     base_sha: Mapped[str | None] = mapped_column(String(64))  # monolith commit the run branch started from
-    repository: Mapped[str | None] = mapped_column(Text)  # git URL or path the run works on (None: blank workspace)
+    repository: Mapped[str | None] = mapped_column(LongText)  # git URL or path the run works on (None: blank workspace)
     base_branch: Mapped[str | None] = mapped_column(String(255))  # the branch `branch` was cut from (None: default)
     started_by: Mapped[int | None] = mapped_column(Integer)  # user id; their git credentials fetch the repository
     # The other repositories agent steps change code in, each checked out inside the workspace on the same feature
@@ -53,7 +53,7 @@ class Run(Base):
     # Committing the code: {"commit": bool (review and commit at the end)} at start, then per repository once
     # committed: {"repos": {key: {"status": "pushed" | "skipped", "sha", "branch", "files", "by", "at", ...}}}
     delivery: Mapped[dict | None] = mapped_column(JSONText)
-    error: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(LongText)
     # Operation-specific guidance for every agent: {"paths": [...], "notes": "..."}
     inputs: Mapped[dict | None] = mapped_column(JSONText)
     workflow: Mapped[str | None] = mapped_column(String(64))  # key of the workflow the run started from
@@ -88,9 +88,9 @@ class StageExecution(Base):
     status: Mapped[str] = mapped_column(String(32))
     start_sha: Mapped[str | None] = mapped_column(String(64))
     end_sha: Mapped[str | None] = mapped_column(String(64))
-    feedback: Mapped[str | None] = mapped_column(Text)
-    error: Mapped[str | None] = mapped_column(Text)
-    diff: Mapped[str | None] = mapped_column(Text)  # git diff of the attempt, kept so it outlives the workspace
+    feedback: Mapped[str | None] = mapped_column(LongText)
+    error: Mapped[str | None] = mapped_column(LongText)
+    diff: Mapped[str | None] = mapped_column(LongText)  # git diff of the attempt, kept so it outlives the workspace
     # The run's other repositories (Run.repositories): {key: {"start": sha, "end": sha, "diff": text}}; every
     # repository's start is recorded, end and diff only where the attempt changed something.
     repos: Mapped[dict | None] = mapped_column(JSONText)
@@ -125,7 +125,7 @@ class Approval(Base):
     gate: Mapped[str] = mapped_column(String(64))
     decision: Mapped[str] = mapped_column(String(16))  # approve | reject
     target_stage: Mapped[str | None] = mapped_column(String(64))
-    comments: Mapped[str | None] = mapped_column(Text)
+    comments: Mapped[str | None] = mapped_column(LongText)
     reviewer: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
@@ -229,7 +229,7 @@ class Question(Base):
     question: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)
     options: Mapped[list | None] = mapped_column(JSONText)  # suggested answers, if the agent offered any
     status: Mapped[str] = mapped_column(String(16), default="open")  # open | answered | cancelled
-    answer: Mapped[str | None] = mapped_column(Text)
+    answer: Mapped[str | None] = mapped_column(LongText)
     answered_by: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     answered_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
@@ -248,8 +248,8 @@ class Contract(Base):
     name: Mapped[str] = mapped_column(String(255))
     version: Mapped[str] = mapped_column(String(32), default="1")
     description: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)
-    spec: Mapped[str | None] = mapped_column(Text)  # OpenAPI / AsyncAPI document (YAML)
-    spec_path: Mapped[str | None] = mapped_column(Text)
+    spec: Mapped[str | None] = mapped_column(LongText)  # OpenAPI / AsyncAPI document (YAML)
+    spec_path: Mapped[str | None] = mapped_column(LongText)
     consumers: Mapped[list] = mapped_column(JSONText, default=list)
     # proposed | approved | provided-by-monolith | provided-by-service | deprecated
     status: Mapped[str] = mapped_column(String(32), default="approved")
@@ -358,7 +358,7 @@ class GitCredential(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     host: Mapped[str] = mapped_column(String(255))  # e.g. github.com, mycompany.ghe.com
     username: Mapped[str] = mapped_column(String(255))
-    token: Mapped[str] = mapped_column(Text)
+    token: Mapped[str] = mapped_column(LongText)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

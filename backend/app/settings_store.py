@@ -23,6 +23,7 @@ GLOBAL_DEFAULTS: dict[str, Any] = {
 PROJECT_DEFAULTS: dict[str, Any] = {
     "monolith_repo": "",  # git URL or local path; empty = blank workspace
     "monolith_branch": "",  # the branch (or tag) runs start from; empty = the repository's default branch
+    "monolith_docs_dir": "docs",  # where approved AS-IS documents are published in the monolith: <dir>/<domain>/<feature>
     "max_attempts": 3,  # self-verification retries per stage
     # What the project migrates from and to; given to every agent, so AI agents work in the project's language.
     "language": "java",  # see LANGUAGES
@@ -77,6 +78,10 @@ def _check(values: dict[str, Any], allowed: dict[str, Any], kind: str) -> None:
         raise KeyError(f"Unknown {kind} settings: {', '.join(sorted(unknown))}")
     if "language" in values and values["language"] not in LANGUAGES:
         raise KeyError(f"language must be one of {', '.join(LANGUAGES)}")
+    docs = values.get("monolith_docs_dir")
+    if docs is not None and not (isinstance(docs, str) and docs.strip("/") and ".." not in docs.split("/")
+                                 and not docs.startswith(("/", "\\", "-")) and ":" not in docs):
+        raise KeyError("The monolith documentation folder must be a relative folder, e.g. docs")
     branch = values.get("monolith_branch")
     if branch is not None and branch != "" and not valid_branch(branch):
         raise KeyError("The base branch must be a git branch or tag name, e.g. main or release/2.4")

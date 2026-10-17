@@ -49,6 +49,24 @@ def project_brief(ctx: AgentContext) -> str:
             "toolchain.")
 
 
+def documentation_brief(ctx: AgentContext) -> str:
+    """Reviewed AS-IS documentation published in the monolith (docs/<domain>/<feature>/): read it before the code."""
+    folder = (ctx.settings.get("monolith_docs_dir") or "docs").strip().strip("/")
+    base = ctx.legacy_dir or ctx.workspace
+    if not folder or not (base / folder).is_dir():
+        return ""
+    feature = f"{folder}/{ctx.domain}/{ctx.operation}"
+    lines = ["## Existing documentation",
+             f"The monolith has reviewed AS-IS documentation of features under `{folder}/<domain>/<feature>/`. Read the "
+             "relevant parts before the code: it saves you re-reading code that is already explained."]
+    if (base / feature).is_dir():
+        lines.append(f"This feature's is in `{feature}/`.")
+        if ctx.stage_def is not None and ctx.stage_def.publish_docs:
+            lines.append("Start from those documents and update them where the code changed, rather than "
+                         "re-analysing everything.")
+    return "\n".join(lines)
+
+
 def repository_brief(ctx: AgentContext) -> str:
     """Where the monolith is, and where this step changes code (when it does, or the run has other repositories)."""
     code = (ctx.stage_def.code if ctx.stage_def else None)
@@ -138,6 +156,9 @@ def brief(ctx: AgentContext) -> str:
     repos = repository_brief(ctx)
     if repos:
         parts.append(repos)
+    docs = documentation_brief(ctx)
+    if docs:
+        parts.append(docs)
     if ctx.refresh:
         parts.append(refresh_brief(ctx))
     if ctx.previous_artifacts:

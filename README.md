@@ -88,6 +88,11 @@ On first start the UI asks which database to use; change it later under **Settin
 | **Oracle** 19c+ | Production, where Oracle is the standard. Give the service name of the pluggable database; the user needs `CREATE TABLE` and quota on its tablespace. Uses python-oracledb in thin mode, so no Oracle Client install is needed (see below for thick mode). |
 | **SQLite** | Local development and the test suite only: one writer at a time, on this server's disk. The UI shows a warning while it is in use. |
 
+**Oracle character set**: documents, diffs and other long text are stored as `NCLOB`, which is always Unicode, so
+they're kept exactly even when the database's character set is a single-byte one such as `WE8MSWIN1252` (a `CLOB`
+there turns arrows, dashes and quotes into `¿`). **Test connection** shows the character set. For a new database,
+`AL32UTF8` is best: short texts such as names then hold any character too.
+
 **Oracle error DPY-3015 ("password verifier type 0x939 is not supported … in thin mode")**: the database user's
 password only has Oracle's old 10G verifier. Best fix: ask the DBA to reset the password, with
 `SQLNET.ALLOWED_LOGON_VERSION_SERVER` of 11 or higher in the server's `sqlnet.ora` (the default since 12c), so a newer
@@ -378,6 +383,28 @@ acting user's token, given to git through `GIT_ASKPASS`, so it never appears in 
 a token for the host (or for SSH URLs), the server's own git setup is used. Tokens are encrypted with the key in
 `STUDIO_SECRET_KEY`, or else `backend/data/secret.key` (made on first use, mode 600). Every server sharing the
 database needs the same key, so back it up. If it's lost, users enter their tokens again.
+
+## Publishing AS-IS documentation to the monolith
+
+The AS-IS documentation and Deep dive steps describe the legacy code as it is. Once approved, their documents can be
+committed into the monolith repository, so later agents (for this feature, and for features calling into it) read
+reviewed documentation before the code, which saves tokens and time.
+
+- **Workflow → agent step → "Publish its documents to the monolith's docs/<domain>/<feature> once approved"**: on by
+  default for AS-IS documentation and Deep dive. Design, contract and microservice documents are never published.
+- **Project → Settings → Monolith documentation folder** (default `docs`): documents go to
+  `<folder>/<domain>/<feature>/`.
+- After the gate that reviews those steps (**Approve analysis**) is approved, the run waits as **Ready to publish
+  docs**. The run page lists the documents (new, modified or unchanged against the base branch, with a warning if
+  someone changed one in git since this run published it), with a side-by-side diff of each and an editable commit
+  message. **Publish to <base branch>** (needs *Approve workflow runs* and your git name and email) commits them
+  **directly to the monolith's base branch** as you and pushes, never forced. If the branch moved since you looked,
+  it asks you to compare again. **Skip for now** goes on without publishing.
+- The legacy code stays read-only: the commit is built inside the server's mirror of the repository, so nothing
+  touches the shared read-only copy or any checkout. The shared copy gets the documents at the next **Fetch now**.
+- Agents are told when the monolith has `<folder>/`: read the feature's documentation first; the AS-IS steps update
+  existing documents instead of re-analysing everything.
+- Re-running the AS-IS steps and approving again asks to publish only if the documents changed.
 
 ## How it works
 

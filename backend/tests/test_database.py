@@ -186,3 +186,20 @@ def test_a_connection_string_in_the_host_field_is_refused_clearly(client):
     r = client.post("/api/database/test", json={"dialect": "oracle", "host": "jdbc:oracle:thin:@//db:1521/PDB",
                                                 "database": "PDB", "username": "u", "password": "p"})
     assert r.status_code == 422 and "only the server name" in r.json()["detail"]
+
+
+def test_boolean_filters_are_valid_on_oracle():
+    """Oracle has no boolean type: `IS TRUE` / `IS NOT TRUE` become `IS 1` / `IS NOT 1`, which it rejects (ORA-00908).
+    Booleans are compared with = instead, and 'not true' is written as IS NULL OR = 0."""
+    import re
+    from sqlalchemy import select
+    from sqlalchemy.dialects import oracle
+
+    from app.db.models import StageExecution
+    from app.workspace import _not_true
+    pattern = re.compile(r"\.(is_|is_not|isnot)\((True|False)\)")
+    offenders = [f"{p}:{n}" for p in Path("app").rglob("*.py")
+                 for n, line in enumerate(p.read_text().splitlines(), 1) if pattern.search(line)]
+    assert not offenders, offenders
+    sql = str(select(StageExecution.id).where(_not_true(StageExecution.rerun)).compile(dialect=oracle.dialect()))
+    assert "IS NOT 1" not in sql and "rerun = 0" in sql

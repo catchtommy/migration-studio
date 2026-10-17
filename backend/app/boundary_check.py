@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.text import decode
+
 CODE_SUFFIXES = {
     ".java", ".kt", ".scala", ".groovy",  # JVM
     ".cs", ".vb", ".fs", ".csproj", ".cshtml", ".razor",  # .NET
@@ -58,7 +60,7 @@ def check(workspace: Path, domain: str, service_dir: str, ownership: dict[str, d
     violations: list[Violation] = []
     for f in _files(root):
         rel = f.relative_to(workspace).as_posix()
-        for n, line in enumerate(f.read_text(errors="replace").splitlines(), 1):
+        for n, line in enumerate(decode(f.read_bytes()).splitlines(), 1):
             declaration = line.lstrip().startswith(DECLARATIONS)
             for pattern, rule, detail in rules:
                 if (rule == "package" or not declaration) and pattern.search(line):

@@ -33,7 +33,7 @@ class WorkflowInvalid(ValueError):
 
 def steps_of(workflow: Workflow) -> list[dict]:
     return [{"kind": "agent", "key": s.key, "uses": None if s.uses is None else list(s.uses),
-             "include_content": s.include_content} if s.kind == "agent" else
+             "include_content": s.include_content, "publish_docs": s.publish_docs} if s.kind == "agent" else
             {"kind": "gate", "key": s.key, "title": s.title, "description": s.description,
              "reviews": list(s.reviews)} for s in workflow.stages]
 
@@ -76,6 +76,7 @@ def seed() -> None:
             s.add(Setting(key="_standard_workflow_v2", value=True))
             s.add(Setting(key="_standard_workflow_v3", value=True))
             s.add(Setting(key="_standard_workflow_v4", value=True))
+            s.add(Setting(key="_standard_publishes_as_is_docs", value=True))
         else:
             # Upgrade the standard workflow only if nobody has changed it; customised ones are left alone.
             for marker, previous in (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2),
@@ -85,6 +86,14 @@ def seed() -> None:
                     if standard is not None and _shape(standard.steps) == previous:
                         standard.steps, standard.description = steps_of(STANDARD), STANDARD_DESCRIPTION
                     s.add(Setting(key=marker, value=True))
+        if s.get(Setting, (GLOBAL, "_standard_publishes_as_is_docs")) is None:
+            # The standard workflow's AS-IS steps publish their approved documents to the monolith's docs folder.
+            standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
+            if standard is not None:
+                standard.steps = [{**st, "publish_docs": True}
+                                  if st.get("kind") == "agent" and st.get("key") in ("as_is_doc", "deep_dive")
+                                  and "publish_docs" not in st else st for st in standard.steps]
+            s.add(Setting(key="_standard_publishes_as_is_docs", value=True))
         if s.get(Setting, (GLOBAL, "_added_discovery_workflows")) is None:
             for scope, (key, name, description, workflow) in DISCOVERY.items():
                 if s.get(WorkflowDef, (SHARED, key)) is None:
@@ -122,7 +131,8 @@ def validate(steps: list[dict]) -> list[dict]:
             keys.add(key)
             out.append({"kind": "agent", "key": key, "uses": uses,
                         "include_content": bool(step.get("include_content")),
-                        "code": _code(step.get("code"), i, agents[key][0])})
+                        "code": _code(step.get("code"), i, agents[key][0]),
+                        "publish_docs": bool(step.get("publish_docs"))})
         elif kind == "gate":
             title = (step.get("title") or "").strip()
             if not title:
@@ -184,7 +194,8 @@ def resolve(steps: list[dict]) -> Workflow:
             title, description = agents.get(step["key"], (step["key"], ""))
             uses = step.get("uses")
             stages.append(StageDef(step["key"], title, "agent", description, uses=None if uses is None else tuple(uses),
-                                   include_content=bool(step.get("include_content")), code=step.get("code") or None))
+                                   include_content=bool(step.get("include_content")), code=step.get("code") or None,
+                                   publish_docs=bool(step.get("publish_docs"))))
         else:
             stages.append(StageDef(step["key"], step["title"], "gate", step.get("description", ""),
                                    tuple(step["reviews"])))

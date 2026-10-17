@@ -25,7 +25,7 @@ def skip_reason(stage: str, output_dir: Path) -> str | None:
     if not f.is_file():
         return None
     try:
-        decision = contracts_store.load_domain_dependencies(f.read_text())["decision"]
+        decision = contracts_store.load_domain_dependencies(f.read_text(encoding="utf-8"))["decision"]
     except contracts_store.InvalidDocument:
         return None
     if decision["scope"] != "domain-only":
