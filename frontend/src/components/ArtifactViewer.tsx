@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Markdown } from "./Markdown";
 import { api } from "../lib/api";
 import { SpecView } from "./SpecView";
 
@@ -24,7 +23,7 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
   if (isLoading || !artifact) return <p className="text-sm text-subtle">Loading artifact…</p>;
 
   return (
-    <div className="card">
+    <div className="card min-w-0 max-w-full">
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <code className="truncate text-xs text-subtle">{artifact.path}</code>
         {editable && !editing && (
@@ -61,11 +60,11 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
           </div>
         </div>
       ) : artifact.kind === "markdown" ? (
-        <article className="prose prose-sm max-w-none p-4 dark:prose-invert">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifact.content}</ReactMarkdown>
-        </article>
+        <Markdown className="p-4">{artifact.content}</Markdown>
       ) : (
-        <SpecView content={artifact.content} yaml={<pre className="overflow-x-auto p-4 font-mono text-xs">{artifact.content}</pre>} />
+        <div className="max-w-full overflow-x-auto">
+          <SpecView content={artifact.content} yaml={<pre className="max-w-full overflow-x-auto p-4 font-mono text-xs">{artifact.content}</pre>} />
+        </div>
       )}
     </div>
   );

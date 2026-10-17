@@ -71,10 +71,11 @@ function ContractRow({ contract, names }: { contract: Contract; names: Map<strin
       </tr>
       {open && (
         <tr>
-          <td colSpan={5} className="bg-muted/50 px-4 py-3">
-            {contract.description && <p className="mb-2 text-sm">{contract.description}</p>}
+          {/* max-w-0: a wide spec scrolls inside the row instead of widening the whole table */}
+          <td colSpan={5} className="max-w-0 bg-muted/50 px-4 py-3">
+            {contract.description && <p className="mb-2 break-words text-sm">{contract.description}</p>}
             {contract.spec ? (
-              <div className="rounded-lg border border-border bg-surface">
+              <div className="max-w-full overflow-x-auto rounded-lg border border-border bg-surface">
                 <SpecView
                   content={contract.spec}
                   yaml={<pre className="max-h-96 overflow-auto p-3 font-mono text-xs">{contract.spec}</pre>}

@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Markdown } from "./Markdown";
 import { api, type Question, type StageDef } from "../lib/api";
 import { useCan } from "../lib/hooks";
 
@@ -22,9 +21,7 @@ export function QuestionPanel({ runId, question, stages }: { runId: string; ques
   return (
     <section className="rounded-lg border border-accent/40 bg-accent/5 p-4" aria-label="Agent question">
       <h2 className="font-semibold">The {title} agent has a question</h2>
-      <div className="prose prose-sm mt-2 max-w-none dark:prose-invert">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{question.question}</ReactMarkdown>
-      </div>
+      <Markdown className="mt-2">{question.question}</Markdown>
 
       {question.options && (
         <div className="mt-3 flex flex-wrap gap-2">
