@@ -4,7 +4,7 @@ the required-documents check and artifact collection."""
 import json
 from pathlib import Path
 
-from app import boundary_check, contracts_store, discovery_store
+from app import boundary_check, contracts_store, discovery_store, module_guardrails
 from app.agents.base_agent import AgentContext, ArtifactOut
 from app.agents.tools import ToolError, Toolbox
 
@@ -210,6 +210,8 @@ def verify(ctx: AgentContext) -> list[str]:
     if "boundary" in (ctx.config.get("checks") or []):
         problems += [f"Boundary: {v}" for v in boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir,
                                                                       ctx.ownership)]
+    if "module_guardrails" in (ctx.config.get("checks") or []):
+        problems += [f"Guardrail: {p}" for p in module_guardrails.for_context(ctx)]
     return problems
 
 

@@ -461,7 +461,7 @@ def test_a_proposed_contract_becomes_approved_by_a_decision_and_a_provided_one_s
 _DESIGN = """domain: loan
 owned_tables: [LOAN]
 read_only_tables: []
-utility_modules: [com.acme.common.DateUtils]
+utility_modules: [com.acme:common-utils]
 other_domain_dependencies: []
 schema_changes: []
 ui_changes: []
@@ -477,7 +477,7 @@ def test_every_modulith_agent_carries_the_guardrails():
         assert "WITHOUT changing the UI, the database schema or the technology stack" in text, key
         assert "WHO WRITES WHICH TABLES" in text and "God module" in text and "Utility modules only" in text, key
     assert "domain-design.yaml" in default_config("domain_design")["outputs"]
-    assert "hard limits" in INSTRUCTIONS["modular_monolith"]
+    assert "Hard rules for this step" in INSTRUCTIONS["modular_monolith"] and "WHO WRITES WHICH TABLES" in INSTRUCTIONS["modular_monolith"]
     assert "god_modules" in INSTRUCTIONS["domain_dependencies"]
 
 
@@ -527,3 +527,91 @@ considered_unrelated: []
     contracts_store.parse_domain_dependencies(base + "shared_code: [a.DateUtils]\ngod_modules: [a.MasterService]\n")
     with pytest.raises(contracts_store.InvalidDocument, match="both shared_code"):
         contracts_store.parse_domain_dependencies(base + "shared_code: [a.X]\ngod_modules: [a.X]\n")
+
+
+# ---- Module in monolith ------------------------------------------------------------------------------------------
+
+_EXTRACTION = """feature: create-broker
+domain: broker
+scope: domain-only
+modules:
+  - {path: broker-domain/broker-profile/domain, kind: domain, artifact: "com.acme:broker-profile-domain"}
+outside_changes: [web/src/main/java/BrokerController.java]
+shared_copies: [{item: selectBrokerById, remove_when: view-broker is migrated}]
+events: [BrokerCreated]
+"""
+
+
+def test_utility_modules_must_be_maven_coordinates():
+    with pytest.raises(contracts_store.InvalidDocument, match="Maven coordinates"):
+        contracts_store.parse_domain_design(_DESIGN.replace("com.acme:common-utils", "com.acme.common.DateUtils"))
+
+
+def test_module_extraction_declaration_is_validated():
+    assert contracts_store.parse_module_extraction(_EXTRACTION)["modules"][0]["kind"] == "domain"
+    bad = {
+        "scope: domain-only": "scope: sometimes",
+        "kind: domain,": "kind: library,",
+        'artifact: "com.acme:broker-profile-domain"': "artifact: broker-profile-domain",
+        "path: broker-domain/broker-profile/domain": "path: ../elsewhere",
+        "shared_copies: [{item: selectBrokerById, remove_when: view-broker is migrated}]": "shared_copies: [{item: x}]",
+    }
+    for old, new in bad.items():
+        with pytest.raises(contracts_store.InvalidDocument):
+            contracts_store.parse_module_extraction(_EXTRACTION.replace(old, new))
+
+
+def test_module_extraction_follows_the_scope_decision():
+    orchestrator = ("  - {path: broker-domain/broker-profile/orchestrator, kind: orchestrator, "
+                    "artifact: \"com.acme:broker-profile-orchestrator\"}\n")
+    # domain-only: neither an orchestrator module nor a bridge
+    with pytest.raises(contracts_store.InvalidDocument, match="domain-only"):
+        contracts_store.parse_module_extraction(_EXTRACTION.replace("outside_changes", orchestrator + "outside_changes"))
+    with pytest.raises(contracts_store.InvalidDocument, match="domain-only"):
+        contracts_store.parse_module_extraction(_EXTRACTION + "bridge_dir: web/legacybridge\n")
+    # cross-domain: both
+    cross = _EXTRACTION.replace("scope: domain-only", "scope: cross-domain")
+    with pytest.raises(contracts_store.InvalidDocument, match="cross-domain"):
+        contracts_store.parse_module_extraction(cross)
+    assert contracts_store.parse_module_extraction(
+        cross.replace("outside_changes", orchestrator + "outside_changes") + "bridge_dir: web/legacybridge\n")
+
+
+def test_module_extraction_scope_must_match_the_dependency_decision(tmp_path):
+    (tmp_path / "domain-dependencies.yaml").write_text(
+        "feature: f\ndomain: broker\ndecision: {scope: cross-domain, reason: r}\ndependencies:\n"
+        "  - domain: customer\n    relation: calls\n    touchpoints: [{kind: service, ref: a.B#c}]\n")
+    (tmp_path / "module-extraction.yaml").write_text(_EXTRACTION)
+    assert any("decides cross-domain" in p for p in contracts_store.validate_outputs(tmp_path))
+
+
+def test_module_in_monolith_agent_is_configured_for_the_guardrails():
+    c = default_config("modular_monolith")
+    assert {"check_module_guardrails", "edit_file", "run_command", "ask_user"} <= set(c["tools"])
+    assert c["checks"] == ["module_guardrails"] and c["max_turns"] == 200
+    assert c["outputs"] == ["modular-monolith.md", "module-extraction.yaml"]
+    text = INSTRUCTIONS["modular_monolith"]
+    for phrase in ("Characterization tests first", "Controllers are never moved", "bridge_dir", "module-extraction.yaml",
+                   "Stop and ask with ask_user", "Rollback: revert the commit", "never the reverse"):
+        assert phrase in text, phrase
+    assert "check_module_guardrails" not in default_config("domain_design")["tools"]
+
+
+def test_untouched_module_agent_is_upgraded_with_more_turns_and_the_new_check(client, monkeypatch):
+    import hashlib
+
+    previous = "You extract one operation into a module inside the monolith."  # stands for an earlier release
+    monkeypatch.setitem(agent_store.PREVIOUS_DEFAULT_HASHES, "modular_monolith",
+                        {hashlib.sha256(previous.encode()).hexdigest()})
+    with session_scope() as s:
+        row = s.get(Agent, (agent_store.SHARED, "modular_monolith"))
+        row.instructions, row.tools, row.checks, row.max_turns = previous, ["list_files"], [], 80
+        marker = s.get(Setting, (agent_store.GLOBAL, agent_store.UPGRADE_MARKER))
+        if marker is not None:
+            s.delete(marker)
+    with session_scope() as s:
+        agent_store._upgrade_untouched_builtins(s)
+    with session_scope() as s:
+        row = s.get(Agent, (agent_store.SHARED, "modular_monolith"))
+        assert "careful legacy refactorer" in row.instructions and row.max_turns == 200
+        assert row.checks == ["module_guardrails"] and "check_module_guardrails" in row.tools

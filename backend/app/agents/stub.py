@@ -3,6 +3,7 @@
 import re
 import time
 
+from app import contracts_store
 from app.agents.base_agent import AgentContext, ArtifactOut, StageAgent
 from app.config import settings
 from app.orchestrator.stages import StageDef
@@ -123,6 +124,26 @@ stack_changes: []
 god_module_dependencies: []
 exceptions: []
 """
+    if "module-extraction.yaml" in outputs:
+        scope = "domain-only"
+        deps = ctx.output_dir / "domain-dependencies.yaml"
+        if deps.is_file():
+            try:
+                scope = contracts_store.load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"]
+            except contracts_store.InvalidDocument:
+                pass
+        base = f"{ctx.domain}-domain/{ctx.operation}"
+        modules = [("domain", f"{base}/domain", f"com.example:{ctx.domain}-{ctx.operation}-domain")]
+        if scope == "cross-domain":
+            modules.append(("orchestrator", f"{base}/orchestrator", f"com.example:{ctx.domain}-{ctx.operation}-orchestrator"))
+        lines = ["# [stub] sample module extraction declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
+                 f"scope: {scope}", "modules:"]
+        for kind, path, artifact in modules:
+            lines += [f"  - path: {path}", f"    kind: {kind}", f"    artifact: {artifact}"]
+        if scope == "cross-domain":
+            lines.append(f"bridge_dir: src/main/java/com/example/{ctx.domain}/legacybridge")
+        lines += ["outside_changes: []", "shared_copies: []", "events: []"]
+        files["module-extraction.yaml"] = "\n".join(lines) + "\n"
     if "linked-domain-contracts.yaml" in outputs:
         files["linked-domain-contracts.yaml"] = f"""# [stub] sample linked-domain contracts
 feature: {ctx.operation}

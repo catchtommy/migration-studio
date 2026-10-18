@@ -4,20 +4,18 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="bbcfea33-b798-42b5-bb9f-3aaabfad3bd4" name="Changes" comment="">
+    <list default="true" id="bbcfea33-b798-42b5-bb9f-3aaabfad3bd4" name="Changes" comment="Improved the design">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/backend/app/agent_store.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agent_store.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/agents/base_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agents/base_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/agents/common.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agents/common.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/backend/app/agents/defaults.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agents/defaults.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/backend/app/agents/stub.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agents/stub.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/app/agents/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/agents/tools.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/backend/app/contracts_store.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/contracts_store.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/app/orchestrator/graph.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/orchestrator/graph.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/app/orchestrator/stages.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/orchestrator/stages.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/app/workflow_store.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/app/workflow_store.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/tests/test_agents_domains.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/tests/test_agents_domains.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/tests/test_cross_domain.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/tests/test_cross_domain.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/backend/tests/test_workflow.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/tests/test_workflow.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/e2e/cross-domain.spec.ts" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/e2e/cross-domain.spec.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/frontend/e2e/workflow.spec.ts" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/e2e/workflow.spec.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/backend/tests/test_modulith_design.py" beforeDir="false" afterPath="$PROJECT_DIR$/backend/tests/test_modulith_design.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/frontend/src/pages/AgentsPage.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/frontend/src/pages/AgentsPage.tsx" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -70,6 +68,45 @@
       <option name="presentableId" value="Default" />
       <updated>1791085489865</updated>
     </task>
+    <task id="LOCAL-00001" summary="Changes to the design for modulith">
+      <option name="closed" value="true" />
+      <created>1791995796033</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1791995796033</updated>
+    </task>
+    <task id="LOCAL-00002" summary="Modulith Design Wrapper changed to linked contracts">
+      <option name="closed" value="true" />
+      <created>1792142993040</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1792142993040</updated>
+    </task>
+    <task id="LOCAL-00003" summary="Modulith Design Wrapper changed to linked contracts">
+      <option name="closed" value="true" />
+      <created>1792143497105</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1792143497105</updated>
+    </task>
+    <task id="LOCAL-00004" summary="Improved the design">
+      <option name="closed" value="true" />
+      <created>1792144707459</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1792144707459</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="Changes to the design for modulith" />
+    <MESSAGE value="Modulith Design Wrapper changed to linked contracts" />
+    <MESSAGE value="Improved the design" />
+    <option name="LAST_COMMIT_MESSAGE" value="Improved the design" />
   </component>
 </project>

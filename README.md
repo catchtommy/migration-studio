@@ -39,21 +39,54 @@ accepted them yet) with this feature's domain as a consumer; contracts the integ
 *approved*, and a contract already provided is never moved back. The integration design reuses the contract keys and
 adds what they don't cover: events, sagas and read models.
 
-The *Module in monolith* agent implements the designs: the module, the orchestrator and its `local` and `contract`
-adapters, and the monolith bindings (marked temporary). The earlier *Modular monolith design* (`boundary_design`) and
 **Guardrails.** The Modulith design agents act as a DDD architect and share one fixed set of rules: no UI change, no
 database schema change (no DDL; contexts are carved by *who writes which tables* and by business capability, one
 owning domain per table) and no stack change (Java 8, Spring MVC 3, iBatis). The domain may use **utility modules**
-only (stateless helpers with no business rules, database access or domain knowledge) and must never depend on a **God
-module**; the dependency finder classifies shared code as `shared_code` (utility) or `god_modules`. Domains depend on
-each other only through linked-domain contracts. The domain design also writes `domain-design.yaml`, which is
-checked before the agent can finish: `schema_changes`, `ui_changes`, `stack_changes` and `god_module_dependencies`
-must be empty unless the user approved an exception, no table may be owned or read directly if another domain owns
-it, and `other_domain_dependencies` may only name contracts. The Module in monolith agent treats it as hard limits.
+only (separate jars the monolith already depends on, named by Maven coordinates, with no business rules, database
+access or domain knowledge) and must never depend on a **God module**; the dependency finder classifies shared code as
+`shared_code` (utility) or `god_modules`. Domains depend on each other only through linked-domain contracts. The domain
+design also writes `domain-design.yaml`, which is checked before the agent can finish: `schema_changes`, `ui_changes`,
+`stack_changes` and `god_module_dependencies` must be empty unless the user approved an exception, no table may be
+owned or read directly if another domain owns it, and `other_domain_dependencies` may only name contracts.
 
-*Modulith design: Wrapper* (`wrapper_design`) agents are no longer part of the Standard migration workflow. They stay
-in the code and the database but are hidden from the Agents page and the workflow editor, and reappear while a
-workflow uses them.
+### Module in monolith
+
+The *Module in monolith* agent is a careful legacy refactorer: it implements one feature exactly as the designs say, in
+small mechanical steps, and proves that behaviour is unchanged. It creates new Maven modules (a **domain** module and,
+for a cross-domain feature, an **orchestrator** module), deletes the moved code from the monolith and re-points the
+callers. A domain-only feature gets no orchestrator and no bridge; its callers use the domain's public API directly.
+
+1. **Baseline** build of the affected modules (stop and ask if it is red), then **characterization tests** first: new
+   Mockito tests for every public method of the feature, green on the old code before anything moves.
+2. **One step at a time**: module skeleton, move the classes (`git mv`, package line only), move the SQL statements
+   (text identical; a statement other features of the domain still use is copied and listed in `shared_copies`), Spring
+   context with `<alias>`es for the old bean ids, delete the old code, then fix the callers the compiler lists. Each
+   step is compiled, tested, checked and committed locally; a failed step is reverted, not "fixed".
+3. **Callers** (the controller, God modules, anything else) change only in their import, injected type and bean
+   reference lines; the module's API keeps the legacy method names and signatures. Controllers are never moved.
+4. **Events** are only those the approved designs name, published with Spring's own event publishing after commit.
+   There is no outbox (that would need a table), so delivery is not guaranteed; the pull request description says so.
+5. **Cross-domain**: the `local` adapters and the contract bindings sit in a temporary bridge package in the monolith
+   (`bridge_dir`), one class per binding, resolving the legacy bean lazily.
+
+The step writes `module-extraction.yaml` (the new modules, `bridge_dir`, every file changed outside the modules,
+`shared_copies`, `events`) and `modular-monolith.md`, which is the pull request description (what moved, how behaviour
+was proven unchanged, guardrails, known limitations, rollback = revert).
+
+**`check_module_guardrails`** compares the code with the commit the step started from, and runs again when the agent
+tries to finish; the step cannot finish while it fails. It refuses: any UI file (JSP, HTML, JS, CSS, images); DDL or
+new SQL scripts; changed SQL (every statement in a module must exist, text for text, in the monolith, and a statement
+taken out of a legacy SQL map must now be in a module); build changes beyond a `<module>` line and a dependency on the
+new module; a new module that declares plugins, a Java level, a dependency on a module of the monolith itself, a
+library the monolith does not already use, or a version it does not use (the exceptions are the utility jars listed in
+`domain-design.yaml`); edits outside the modules other than imports, declarations, injection annotations and bean or
+wiring lines of moved classes; existing tests that are deleted, ignored or changed beyond package and import lines; any
+use of another domain's tables or packages or of a God module in the modules; and more than 10 changed files outside
+the modules (stop and ask). Turn it off or on per agent with the *Module guardrails* check on the Agents page.
+
+The earlier *Modular monolith design* (`boundary_design`) and *Modulith design: Wrapper* (`wrapper_design`) agents are
+no longer part of the Standard migration workflow. They stay in the code and the database but are hidden from the
+Agents page and the workflow editor, and reappear while a workflow uses them.
 
 ## Run it
 

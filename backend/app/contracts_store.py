@@ -6,6 +6,7 @@ recorded here: contracts are upserted into the company-wide catalogue (so later 
 dependencies replace any recorded before.
 """
 
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -30,6 +31,8 @@ DEPENDENCY_STRENGTHS = ("hard", "soft", "side-effect")
 TOUCHPOINT_KINDS = ("service", "dao", "table", "view", "config", "event")
 MODULITH_SCOPES = ("domain-only", "cross-domain")
 LINKED_CONTRACTS_FILE = "linked-domain-contracts.yaml"  # written by the linked-domain contracts step
+MODULE_EXTRACTION_FILE = "module-extraction.yaml"  # the Module in monolith step's declaration of what it changed
+COORDINATES = re.compile(r"^[\w.\-]+:[\w.\-]+$")  # Maven groupId:artifactId
 DOMAIN_DESIGN_FILE = "domain-design.yaml"  # the domain design's declaration against the guardrails
 # Lists in domain-design.yaml that must stay empty unless the user approved an exception for that rule.
 DOMAIN_DESIGN_LOCKED = {"schema_changes": "the schema is fixed", "ui_changes": "the UI is fixed",
@@ -138,7 +141,8 @@ def load_domain_dependencies(text: str) -> dict:
     if decision["scope"] == "cross-domain" and not outbound:
         raise InvalidDocument(f"{where}: scope cross-domain, but no outbound dependency is listed; "
                               "choose domain-only or list the dependency")
-    return {"decision": decision, "dependencies": items}
+    return {"decision": decision, "dependencies": items, "shared_code": data.get("shared_code") or [],
+            "god_modules": data.get("god_modules") or []}
 
 
 def parse_linked_domain_contracts(text: str) -> list[dict]:
@@ -220,10 +224,65 @@ def parse_domain_design(text: str) -> dict:
             raise InvalidDocument(
                 f"{where}: {field} must be empty ({why}); found {', '.join(map(str, data[field]))}. Remove them, or "
                 f"ask the user and record the approved exception for {field} under exceptions")
+    for u in data["utility_modules"]:
+        if not isinstance(u, str) or not COORDINATES.match(u):
+            raise InvalidDocument(f"{where}: utility module {u!r} must be Maven coordinates, groupId:artifactId "
+                                  "(for example com.acme:common-utils)")
     overlap = {t.upper() for t in data["owned_tables"]} & {t.upper() for t in data["read_only_tables"]}
     if overlap:
         raise InvalidDocument(f"{where}: {', '.join(sorted(overlap))} is in both owned_tables and read_only_tables")
     return data
+
+
+def parse_module_extraction(text: str) -> dict:
+    """What the Module in monolith step declares it created and changed. The guardrail check compares it with git."""
+    data = _load(text, MODULE_EXTRACTION_FILE)
+    where = MODULE_EXTRACTION_FILE
+    _require(data, ("feature", "domain", "scope"), where)
+    _one_of(data["scope"], MODULITH_SCOPES, f"{where} scope")
+    modules = data.get("modules")
+    if not isinstance(modules, list) or not modules:
+        raise InvalidDocument(f"{where}: list the new modules (at least the domain module)")
+    for i, m in enumerate(modules, 1):
+        if not isinstance(m, dict):
+            raise InvalidDocument(f"{where} module {i} must be a mapping")
+        _require(m, ("path", "kind", "artifact"), f"{where} module {i}")
+        _one_of(m["kind"], ("domain", "orchestrator"), f"{where} module {i}")
+        if str(m["path"]).startswith("/") or ".." in Path(str(m["path"])).parts:
+            raise InvalidDocument(f"{where} module {i}: path must be inside the repository")
+        if not COORDINATES.match(str(m["artifact"])):
+            raise InvalidDocument(f"{where} module {i}: artifact must be Maven coordinates, groupId:artifactId")
+    kinds = [m["kind"] for m in modules]
+    if kinds.count("domain") != 1 or kinds.count("orchestrator") > 1:
+        raise InvalidDocument(f"{where}: exactly one domain module and at most one orchestrator module")
+    if data["scope"] == "domain-only" and ("orchestrator" in kinds or data.get("bridge_dir")):
+        raise InvalidDocument(f"{where}: the feature is domain-only, so there is no orchestrator module and no "
+                              "bridge_dir; callers use the domain's public API directly")
+    if data["scope"] == "cross-domain" and ("orchestrator" not in kinds or not data.get("bridge_dir")):
+        raise InvalidDocument(f"{where}: the feature is cross-domain, so add an orchestrator module and the "
+                              "bridge_dir (the temporary legacy bridge package in the monolith)")
+    for field in ("outside_changes", "events"):
+        if data.get(field) is not None and not isinstance(data[field], list):
+            raise InvalidDocument(f"{where}: {field} must be a list")
+    for i, c in enumerate(data.get("shared_copies") or [], 1):
+        if not isinstance(c, dict):
+            raise InvalidDocument(f"{where} shared copy {i} must be a mapping")
+        _require(c, ("item", "remove_when"), f"{where} shared copy {i}")
+    return data
+
+
+def _module_extraction_problems(output_dir: Path, declaration: dict) -> list[str]:
+    deps = output_dir / DOMAIN_DEPENDENCIES_FILE
+    if not deps.is_file():
+        return []
+    try:
+        scope = load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"]
+    except InvalidDocument:
+        return []
+    if scope != declaration["scope"]:
+        return [f"{MODULE_EXTRACTION_FILE}: scope is {declaration['scope']}, but {DOMAIN_DEPENDENCIES_FILE} decides "
+                f"{scope}"]
+    return []
 
 
 def _domain_design_problems(output_dir: Path, design: dict) -> list[str]:
@@ -312,6 +371,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
     for name, parse in ((CROSS_DOMAIN_FILE, parse_cross_domain), (DOMAIN_DEPENDENCIES_FILE, parse_domain_dependencies),
                         (LINKED_CONTRACTS_FILE, parse_linked_domain_contracts),
                         (DOMAIN_DESIGN_FILE, parse_domain_design),
+                        (MODULE_EXTRACTION_FILE, parse_module_extraction),
                         (DECISIONS_FILE, lambda text: parse_decisions(text, {c["key"] for c in linked}))):
         f = output_dir / name
         if not f.is_file():
@@ -328,6 +388,8 @@ def validate_outputs(output_dir: Path) -> list[str]:
                          for c in parsed if c.get("spec") and not (output_dir / c["spec"]).is_file()]
         if name == DOMAIN_DESIGN_FILE:
             problems += _domain_design_problems(output_dir, parsed)
+        if name == MODULE_EXTRACTION_FILE:
+            problems += _module_extraction_problems(output_dir, parsed)
         if name == DECISIONS_FILE:
             for c in parsed["contracts"]:
                 if c.get("spec") and not (output_dir / c["spec"]).is_file():

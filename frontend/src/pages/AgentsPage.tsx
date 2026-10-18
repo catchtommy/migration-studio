@@ -9,6 +9,11 @@ import { Field, inputClass } from "../components/Field";
 import { PageTitle } from "../components/PageTitle";
 import { ChipIcon } from "../components/icons";
 
+function toggleCheck(checks: string[], name: string, on: boolean): string[] {
+  const rest = checks.filter((c) => c !== name);
+  return on ? [...rest, name] : rest;
+}
+
 function toInput(agent: Agent): AgentInput {
   const { key: _key, builtin: _builtin, created_at: _created, updated_at: _updated, scope: _scope, customised: _customised, ...rest } = agent;
   return rest;
@@ -524,13 +529,29 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
               type="checkbox"
               className="mt-1"
               checked={(form.checks ?? []).includes("boundary")}
-              onChange={(e) => set("checks", e.target.checked ? ["boundary"] : [])}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "boundary", e.target.checked))}
             />
             <span>
               Boundary check
               <span className="block text-xs text-subtle">
                 Before finishing, the agent must remove every use of another domain's packages or tables from this domain's service (ownership is set on each
                 domain's Boundary tab).
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={(form.checks ?? []).includes("module_guardrails")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "module_guardrails", e.target.checked))}
+            />
+            <span>
+              Module guardrails
+              <span className="block text-xs text-subtle">
+                Before finishing, a git comparison with the commit the step started from must pass: no UI, DDL, version or build changes, only call-site and
+                wiring edits outside the new modules, SQL text identical to the monolith's, and no other domain's or God module's code in the modules.
               </span>
             </span>
           </label>

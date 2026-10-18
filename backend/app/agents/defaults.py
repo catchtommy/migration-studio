@@ -15,11 +15,13 @@ TOOLS = {
     "run_command": "Run a shell command in the workspace (builds, tests)",
     "ask_user": "Ask a person a question and wait for the answer",
     "check_boundaries": "Check the service only uses its own domain's tables and packages",
+    "check_module_guardrails": "Check the module extraction against its limits: no UI, DDL or version changes, only "
+                               "call-site and wiring edits outside the new modules",
 }
 READ_ONLY = ["list_files", "read_file", "search_code", "ask_user"]
 DOCS = [*READ_ONLY, "write_file"]
 CODE = [*READ_ONLY, "write_file", "edit_file", "run_command", "check_boundaries"]
-CHECKS = ("boundary",)  # verifications an agent can be configured to pass before it may finish
+CHECKS = ("boundary", "module_guardrails")  # verifications an agent can be configured to pass before it may finish
 
 # Machine-readable files the cross-domain stages produce. Migration Studio validates them before the agent finishes
 # and records the decisions and contracts in its catalogue when the design is approved.
@@ -155,7 +157,8 @@ the domain's public API.
 beyond Java 8.
 4. Utility modules only. The domain may use shared code only if it is a utility module: stateless helpers with no \
 business rules, no database access and no knowledge of any domain (date, string and number helpers, formatting, \
-constants, generic validation, logging). List each one you use and why it qualifies. Shared code that is not a \
+constants, generic validation, logging). List each one you use by its Maven coordinates (groupId:artifactId) and say why it qualifies. A utility module is \
+a separate jar the monolith already depends on; helper classes inside the monolith's own sources are not one. Shared code that is not a \
 utility is not available to the domain.
 5. No dependency on God modules. A God module is a class or package that mixes several domains' business logic or \
 that most of the code reaches (a giant service, manager, facade, helper or DAO). The domain never imports, injects, \
@@ -182,13 +185,31 @@ domain: loan
 feature: create-loan
 owned_tables: [LOAN, LOAN_SCHEDULE]   # tables this domain WRITES: one owner per table, none owned by another domain
 read_only_tables: [LOAN_TYPE]         # this domain's own tables that its code only reads
-utility_modules: [com.acme.common.DateUtils]   # shared code used: stateless helpers only
+utility_modules: [com.acme:common-utils]   # Maven coordinates (groupId:artifactId) of the utility jars used
 other_domain_dependencies: [customer.get-kyc-status]   # only contract keys from linked-domain-contracts.yaml
 schema_changes: []                    # must stay empty: no new or changed table, column, index, view, trigger
 ui_changes: []                        # must stay empty: URLs, parameters, JSPs, response shapes
 stack_changes: []                     # must stay empty: no new framework or library
 god_module_dependencies: []           # must stay empty: no use of a God module
 exceptions: []                        # only what the user approved: {rule: schema_changes, reason: ...}
+```"""
+
+MODULE_EXTRACTION_SCHEMA = """```yaml
+# module-extraction.yaml: what this step created and changed. A tool compares it with git before you may finish.
+feature: create-broker
+domain: broker
+scope: domain-only            # copy of decision.scope in domain-dependencies.yaml
+modules:
+  - path: broker-domain/broker-profile/domain     # folder of the new Maven module
+    kind: domain              # domain | orchestrator (cross-domain features add an orchestrator module)
+    artifact: com.acme:broker-profile-domain
+# bridge_dir: web/src/main/java/com/acme/broker/legacybridge   # cross-domain only: temporary adapters and bindings
+outside_changes:              # every existing file outside the modules you changed: call sites, wiring, SQL maps, tests
+  - web/src/main/java/com/acme/web/BrokerController.java
+shared_copies:                # copied, not moved, because another feature of this domain still uses the original
+  - item: selectBrokerById
+    remove_when: view-broker is migrated
+events: [BrokerCreated]       # only events named in the approved designs
 ```"""
 
 _INTEGRATION_RULES = """Decision rules, in order:
@@ -368,7 +389,7 @@ orchestrator steps are skipped.
 - UI: controllers, URLs, parameters and JSPs stay exactly as they are; show how each controller delegates to the \
 public API.
 - Stack: Java 8, Spring MVC 3, iBatis. No new frameworks or libraries.
-- Utility modules: each shared utility the domain uses, and why it is one.
+- Utility modules: each utility jar the domain uses, by Maven coordinates (groupId:artifactId), and why it is one.
 - God modules: each God module the dependency finder found that the feature uses today, and how the dependency is \
 removed: what moves into this domain and what is reached through a contract.
 - Guardrail check: a table of every guardrail above with its status (met, or exception) and the evidence.
@@ -490,31 +511,45 @@ and commands.
 
 Ask the user when a decision depends on business tolerance for stale data or on another team's plans.""",
 
-    "modular_monolith": f"""You extract one operation into a module inside the monolith, shaped like the future \
-microservice. {_LEGACY}
+    "modular_monolith": f"""You are a careful legacy refactorer. You extract ONE feature of the monolith into new Maven modules, exactly as the approved designs say, in small mechanical steps, and you prove that behaviour is unchanged. You do not redesign, improve or tidy anything. {_LEGACY}
 
-Using the approved domain, linked-domain contracts, orchestrator and integration designs:
-- Create the module's package structure as the domain design describes, with a clear public API (service \
-interface + DTOs) matching the REST contract.
-- Move or copy the operation's controller, service, DAO and iBatis mappings into the module. Callers outside the \
-module must go through its public API only.
-- The module contains only this domain's features. Every dependency on another domain becomes a port: an interface \
-in `<domain>.integration.port`, named after what it does (e.g. CustomerDirectory), with an in-monolith adapter for \
-now. Never copy another domain's classes or query its tables from the module.
-- Implement the orchestrator from the orchestrator design: `local` adapters that call the existing services, \
-`contract` adapters that call the linked-domain contracts, and the configuration that selects the mode per \
-dependency, defaulting to `local`.
-- Add the monolith binding of each contract in `linked-domain-contracts.yaml`: an endpoint that serves the contract \
-by delegating to the existing service named in `binding.delegates_to`. Keep the bindings together in a `binding` \
-package and mark each one as temporary, with its `remove_when`. They only delegate; do not change the other \
-domains' logic or tables.
-- Treat `domain-design.yaml` as hard limits: no schema change (no DDL, and no iBatis statement against a table the \
-domain does not own), no UI change, no new library, no use of a God module, and no shared code beyond the listed \
-utility modules. If the code cannot be written within them, stop and ask the user instead of working around them.
-- Keep the code Java 8 / Spring 3 / iBatis compatible. Do not change behaviour.
-- Build with the project's build tool and fix compilation errors before finishing.
+{_MODULITH_GUARDRAILS}
 
-Summarise what moved, what still crosses the boundary, and how you verified the build.""",
+Hard rules for this step. A tool (`check_module_guardrails`) checks them against git, and the step cannot finish while it fails. When it reports a violation, revert that step; do not work around it.
+- Never edit UI files (JSP, HTML, JavaScript, CSS, images), never write DDL or add SQL scripts, never change the meaning of any SQL, never change a dependency, plugin or Java version, never add a library.
+- Never delete, ignore or weaken an existing test, and never change an assertion to make it pass. Tests of moved code move with it, changing only their package and import lines.
+- Controllers are never moved. A controller, and any other caller of the moved code (God modules included), changes only in its import, injected type and bean reference lines. The module's public API keeps the legacy method names and signatures so no call line has to change.
+- The new modules depend only on the utility jars listed in `domain-design.yaml`, the Spring and iBatis jars the monolith already uses, and test libraries it already has (Mockito; PowerMock only for statics, and only in tests that stay in the monolith). The monolith depends on the new modules, never the reverse. The parent POM gains only a `<module>` line, and a POM that uses the module gains only a dependency line on it.
+
+Read first: `domain-dependencies.yaml` (the scope decision, `god_modules`, `shared_code`), `linked-domain-contracts.yaml`, `domain-design.yaml` and `domain-design.md`, `orchestrator-design.md` and `integration-decisions.yaml` when they exist. If modules for this domain already exist (an earlier feature), extend them; do not create them again.
+
+Procedure:
+1. Baseline. Build and test only the modules this feature touches, with the project's build tool (offline and quiet where possible, and read only the failing lines of the output). If it is not green before you change anything, stop and report with ask_user.
+2. Characterization tests first. Write NEW tests, with Mockito, for every public method of the feature in the monolith: the normal path, each validation or error branch, and the DAO calls (arguments and order) with the DAO mocked. Run them on the old code; they must pass before anything moves. Commit them.
+3. Write the ordered checklist of the steps below, for this feature, at the top of `modular-monolith.md`.
+4. Do the steps one at a time. After each: compile and test the affected modules, run `check_module_guardrails`, then commit locally (`git add -A`, then `git -c user.name=migration-studio -c user.email=studio@localhost commit -m "step N: ..."`). If a step fails, revert it with git instead of fixing behaviour; fix forward only when the fix is mechanical. Never push.
+   a. Module skeleton: a POM that inherits everything from the parent (no versions, plugins or Java level) with only the allowed dependencies; the `<module>` line in the parent; the dependency line in the POM that uses it.
+   b. Move the feature's classes (service interface and implementation, DAO, DTOs and entities only this feature uses) with `git mv`, changing the package line only. Leave other features' methods where they are.
+   c. SQL: move the statements only this feature uses; their text stays identical, and the SQL map is registered in `sqlMapConfig` by one line. A statement or helper that other features of the same domain still use is copied, with identical text, and listed under `shared_copies` with `remove_when`. A statement or helper that another domain also uses: stop and ask.
+   d. Spring: a context file in the module with its beans, `<alias>` entries for the old bean ids so callers wired by name need no edit, and one import line in the monolith's root context.
+   e. Delete the old moved code from the monolith, then compile. The errors list every call site; fix each with import, type and bean-reference lines only.
+   f. Events: only those the approved designs name, with their classes and a small event port in the domain module. Publish them with Spring's own event publishing after the transaction commits (register a transaction synchronization; Spring 3.2 has no after-commit listener). There is no outbox, so delivery is not guaranteed; say so in `modular-monolith.md`.
+   g. Cross-domain features only: the orchestrator module holds the ports and the orchestration from `orchestrator-design.md`, with `contract` adapters for the linked-domain contracts. The `local` adapters and the contract bindings live in the monolith, in the temporary package named by `bridge_dir`: one class per binding, calling only the single legacy method it names, resolving that bean lazily (setter injection or a lookup on first use; never constructor injection). The mode defaults to `local`. For a domain-only feature there is no orchestrator and no bridge: callers use the domain's public API directly.
+   h. A wiring test, with the test libraries that exist, showing that the old bean ids resolve to the module's beans. If none of them can load the Spring context, ask the user.
+5. Finish. Write `module-extraction.yaml` in this format, run `check_module_guardrails` until it passes, build and test the affected modules once more, and write `modular-monolith.md`.
+
+{MODULE_EXTRACTION_SCHEMA}
+
+Stop and ask with ask_user when: the baseline build is red; a table is owned by another domain; a SQL statement or helper is also used by another domain; only a God module provides a capability the feature needs; a moved method's signature uses a type that exists only in the monolith; more than 10 files outside the modules need changing; a behaviour cannot be preserved; a test cannot be written with mocks; or a build or wiring change outside what is allowed seems necessary. Decide everything else yourself and record it.
+
+`modular-monolith.md` is the pull request description, in this form:
+## <domain> / <feature>: <title>
+### Checklist (the steps you took)
+### What moved or changed (a table: item, from, to, shim or alias left)
+### How behaviour was proven unchanged: the characterization tests (classes, scenario counts), existing tests all passing and none modified or ignored, SQL text of moved statements identical, old bean ids resolve (the wiring test)
+### Guardrails: the `check_module_guardrails` result, and the number of files changed outside the modules
+### Known limitations: event delivery, temporary bridge classes with their `remove_when`, copied shared code
+### Rollback: revert the commit""",
 
     "microservice_scaffold": """You wrap the extracted module in a standalone Spring Boot application that exposes the \
 approved REST contract.
@@ -619,7 +654,7 @@ OUTPUTS = {
     "orchestrator_design": ["orchestrator-design.md"],
     "boundary_design": ["boundary-design.md", "openapi.yaml"],
     "integration_design": ["integration-design.md", "integration-decisions.yaml"],
-    "modular_monolith": ["modular-monolith.md"],
+    "modular_monolith": ["modular-monolith.md", "module-extraction.yaml"],
     "microservice_scaffold": ["microservice.md"],
     "independent_tests": ["test-report.md"],
     "modernise": ["modernisation.md"],
@@ -642,8 +677,8 @@ def default_config(stage: str) -> dict:
         "effort": "high",
         "jdk": "modern" if stage in _MODERN_JDK else "legacy",
         "instructions": INSTRUCTIONS[stage],
-        "tools": list(DOCS if stage in _ANALYSIS else CODE),
+        "tools": [*(DOCS if stage in _ANALYSIS else CODE), *(["check_module_guardrails"] if stage == "modular_monolith" else [])],
         "outputs": list(OUTPUTS[stage]),
-        "max_turns": 80,
-        "checks": ["boundary"] if stage in _BOUNDARY_CHECKED else [],
+        "max_turns": 200 if stage == "modular_monolith" else 80,
+        "checks": ["boundary"] if stage in _BOUNDARY_CHECKED else ["module_guardrails"] if stage == "modular_monolith" else [],
     }

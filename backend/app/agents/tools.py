@@ -5,7 +5,7 @@ import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 
-from app import boundary_check
+from app import boundary_check, module_guardrails
 from app.text import decode, decode_with, encode_like
 from app.agents.base_agent import AgentContext
 
@@ -61,6 +61,14 @@ SCHEMAS: dict[str, dict] = {
         "description": "Check that this domain's microservice only uses its own domain: reports every reference to "
                        "another domain's code packages (namespaces, modules) or tables, with file and line. Run it "
                        "before finishing.",
+        "input_schema": _obj({}, []),
+    },
+    "check_module_guardrails": {
+        "description": "Check everything you changed since this step started against the step's limits: no UI, DDL, "
+                       "version or build changes, only the allowed call-site and wiring edits outside the new "
+                       "modules, SQL text identical to the monolith's, only allowed dependencies, no God module, no "
+                       "other domain's tables or packages, no existing test weakened. Run it after every step and "
+                       "before finishing. Needs module-extraction.yaml.",
         "input_schema": _obj({}, []),
     },
     "ask_user": {
@@ -119,6 +127,8 @@ class Toolbox:
         self.legacy = ctx.legacy_dir.resolve() if ctx.legacy_dir else None
         self.toolchain_home = toolchain_home
         self.written: set[str] = set()  # workspace-relative paths written by this agent
+        if ctx.base_sha is None and "check_module_guardrails" in ctx.config.get("tools", []):
+            ctx.base_sha = module_guardrails.head(self.root / ctx.code_dir)
 
     def run(self, name: str, args: dict) -> str:
         if name not in self.ctx.config.get("tools", []):
@@ -250,6 +260,9 @@ class Toolbox:
     def check_boundaries(self) -> str:
         ctx = self.ctx
         return boundary_check.report(boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir, ctx.ownership))
+
+    def check_module_guardrails(self) -> str:
+        return module_guardrails.report(module_guardrails.for_context(self.ctx))
 
     def ask_user(self, question: str, options: list[str] | None = None) -> str:
         return self.ctx.ask(question, [str(o) for o in options] if options else None)
