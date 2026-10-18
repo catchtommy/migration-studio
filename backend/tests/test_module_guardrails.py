@@ -304,7 +304,7 @@ def test_domain_only_features_have_no_orchestrator_or_bridge(repo):
                                                "kind": "orchestrator", "artifact": "com.acme:broker-profile-orch"}],
                    "bridge_dir": "web/src/main/java/com/acme/legacybridge"}
     out = "\n".join(run(root, base, declaration))
-    assert "so there is no orchestrator" in out and "bridge_dir is set" in out
+    assert "so there is no orchestrator" in out and "bridge_dir is set" not in out
 
 
 def test_outside_changes_must_match_what_changed(repo):
@@ -428,3 +428,23 @@ def test_the_stub_declaration_is_valid_for_both_scopes(tmp_path):
         [out] = [a for a in stub._sample_cross_domain_files(ctx) if a.name == "module-extraction.yaml"]
         parsed = contracts_store.parse_module_extraction((tmp_path / out.path).read_text())
         assert len(parsed["modules"]) == expect and parsed["scope"] == scope
+
+
+def test_modules_may_not_read_the_session_or_user_directly(repo):
+    root, base = repo
+    extract(root)
+    put(root, f"{MOD}/src/main/java/com/acme/broker/domain/Audit.java",
+        "package com.acme.broker.domain;\nimport javax.servlet.http.HttpSession;\n"
+        "class Audit { HttpSession s; ThreadLocal<String> user; }\n")
+    out = "\n".join(run(root, base))
+    assert "Audit.java uses" in out and "context port" in out
+
+
+def test_the_bridge_package_may_hold_context_adapters(repo):
+    root, base = repo
+    extract(root)
+    bridge = "web/src/main/java/com/acme/legacybridge"
+    put(root, f"{bridge}/SessionCurrentUser.java",
+        "package com.acme.legacybridge;\nimport javax.servlet.http.HttpSession;\nclass SessionCurrentUser { HttpSession s; }\n")
+    declaration = {**DECLARATION, "bridge_dir": bridge}
+    assert run(root, base, declaration) == []

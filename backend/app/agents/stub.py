@@ -118,12 +118,26 @@ owned_tables: [{', '.join(owned)}]
 read_only_tables: []
 utility_modules: []
 other_domain_dependencies: [{query}]
+context_ports: []
 schema_changes: []
 ui_changes: []
 stack_changes: []
 god_module_dependencies: []
 exceptions: []
 """
+    if "microservice-extraction.yaml" in outputs:
+        module = ctx.output_dir / "module-extraction.yaml"
+        events = []
+        if module.is_file():
+            try:
+                events = contracts_store.parse_module_extraction(module.read_text(encoding="utf-8")).get("events") or []
+            except contracts_store.InvalidDocument:
+                pass
+        files["microservice-extraction.yaml"] = "\n".join([
+            "# [stub] sample microservice declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
+            "module_commit: 0000000000000000000000000000000000000000", "operations:",
+            f"  - {{method: {ctx.domain.title()}Service#{ctx.operation.replace('-', '_')}, operation_id: {ctx.operation}}}",
+            "replaced: []", "open_decisions: []", f"events: [{', '.join(events)}]"]) + "\n"
     if "module-extraction.yaml" in outputs:
         scope = "domain-only"
         deps = ctx.output_dir / "domain-dependencies.yaml"

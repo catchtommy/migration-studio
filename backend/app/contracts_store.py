@@ -31,6 +31,7 @@ DEPENDENCY_STRENGTHS = ("hard", "soft", "side-effect")
 TOUCHPOINT_KINDS = ("service", "dao", "table", "view", "config", "event")
 MODULITH_SCOPES = ("domain-only", "cross-domain")
 LINKED_CONTRACTS_FILE = "linked-domain-contracts.yaml"  # written by the linked-domain contracts step
+MICROSERVICE_EXTRACTION_FILE = "microservice-extraction.yaml"  # the microservice step's declaration
 MODULE_EXTRACTION_FILE = "module-extraction.yaml"  # the Module in monolith step's declaration of what it changed
 COORDINATES = re.compile(r"^[\w.\-]+:[\w.\-]+$")  # Maven groupId:artifactId
 DOMAIN_DESIGN_FILE = "domain-design.yaml"  # the domain design's declaration against the guardrails
@@ -204,7 +205,8 @@ def parse_domain_design(text: str) -> dict:
     data = _load(text, DOMAIN_DESIGN_FILE)
     where = DOMAIN_DESIGN_FILE
     _require(data, ("domain",), where)
-    lists = ("owned_tables", "read_only_tables", "utility_modules", "other_domain_dependencies", *DOMAIN_DESIGN_LOCKED)
+    lists = ("owned_tables", "read_only_tables", "utility_modules", "other_domain_dependencies", "context_ports",
+             *DOMAIN_DESIGN_LOCKED)
     for field in lists:
         if data.get(field) is None:
             raise InvalidDocument(f"{where}: missing {field} (write {field}: [] when there is none)")
@@ -255,9 +257,9 @@ def parse_module_extraction(text: str) -> dict:
     kinds = [m["kind"] for m in modules]
     if kinds.count("domain") != 1 or kinds.count("orchestrator") > 1:
         raise InvalidDocument(f"{where}: exactly one domain module and at most one orchestrator module")
-    if data["scope"] == "domain-only" and ("orchestrator" in kinds or data.get("bridge_dir")):
-        raise InvalidDocument(f"{where}: the feature is domain-only, so there is no orchestrator module and no "
-                              "bridge_dir; callers use the domain's public API directly")
+    if data["scope"] == "domain-only" and "orchestrator" in kinds:
+        raise InvalidDocument(f"{where}: the feature is domain-only, so there is no orchestrator module; callers use "
+                              "the domain's public API directly")
     if data["scope"] == "cross-domain" and ("orchestrator" not in kinds or not data.get("bridge_dir")):
         raise InvalidDocument(f"{where}: the feature is cross-domain, so add an orchestrator module and the "
                               "bridge_dir (the temporary legacy bridge package in the monolith)")
@@ -271,18 +273,65 @@ def parse_module_extraction(text: str) -> dict:
     return data
 
 
+def parse_microservice_extraction(text: str) -> dict:
+    """What the microservice step declares: the monolith commit it copied from, the operations it exposes, what it
+    replaced instead of copying, the events it publishes and the open decisions it found."""
+    data = _load(text, MICROSERVICE_EXTRACTION_FILE)
+    where = MICROSERVICE_EXTRACTION_FILE
+    _require(data, ("feature", "domain", "module_commit"), where)
+    ops = data.get("operations")
+    if not isinstance(ops, list) or not ops:
+        raise InvalidDocument(f"{where}: list the operations the service exposes (method and operation_id)")
+    seen = set()
+    for i, o in enumerate(ops, 1):
+        if not isinstance(o, dict):
+            raise InvalidDocument(f"{where} operation {i} must be a mapping")
+        _require(o, ("method", "operation_id"), f"{where} operation {i}")
+        if not re.match(r"^\w+#\w+$", str(o["method"])):
+            raise InvalidDocument(f"{where} operation {i}: method must look like BrokerService#create")
+        if o["operation_id"] in seen:
+            raise InvalidDocument(f"{where} operation {i}: duplicate operation_id {o['operation_id']}")
+        seen.add(o["operation_id"])
+    for field, needs in (("replaced", ("file", "reason")), ("open_decisions", ("topic", "detail"))):
+        value = data.get(field)
+        if value is None:
+            raise InvalidDocument(f"{where}: missing {field} (write {field}: [] when there is none)")
+        if not isinstance(value, list):
+            raise InvalidDocument(f"{where}: {field} must be a list")
+        for i, item in enumerate(value, 1):
+            if not isinstance(item, dict):
+                raise InvalidDocument(f"{where} {field} {i} must be a mapping")
+            _require(item, needs, f"{where} {field} {i}")
+    if data.get("events") is not None and not isinstance(data["events"], list):
+        raise InvalidDocument(f"{where}: events must be a list")
+    return data
+
+
 def _module_extraction_problems(output_dir: Path, declaration: dict) -> list[str]:
+    problems = []
     deps = output_dir / DOMAIN_DEPENDENCIES_FILE
-    if not deps.is_file():
-        return []
-    try:
-        scope = load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"]
-    except InvalidDocument:
-        return []
-    if scope != declaration["scope"]:
-        return [f"{MODULE_EXTRACTION_FILE}: scope is {declaration['scope']}, but {DOMAIN_DEPENDENCIES_FILE} decides "
-                f"{scope}"]
-    return []
+    if deps.is_file():
+        try:
+            scope = load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"]
+        except InvalidDocument:
+            scope = declaration["scope"]
+        if scope != declaration["scope"]:
+            problems.append(f"{MODULE_EXTRACTION_FILE}: scope is {declaration['scope']}, but {DOMAIN_DEPENDENCIES_FILE} "
+                            f"decides {scope}")
+    design = output_dir / DOMAIN_DESIGN_FILE
+    if design.is_file():
+        try:
+            ports = parse_domain_design(design.read_text(encoding="utf-8"))["context_ports"]
+        except InvalidDocument:
+            return problems
+        if ports and not declaration.get("bridge_dir"):
+            problems.append(f"{MODULE_EXTRACTION_FILE}: {DOMAIN_DESIGN_FILE} lists context ports "
+                            f"({', '.join(map(str, ports))}), so add bridge_dir: the package in the monolith with "
+                            "their adapters")
+        if not ports and declaration["scope"] == "domain-only" and declaration.get("bridge_dir"):
+            problems.append(f"{MODULE_EXTRACTION_FILE}: bridge_dir is set, but this domain-only feature has no "
+                            "context ports and so nothing to bridge")
+    return problems
 
 
 def _domain_design_problems(output_dir: Path, design: dict) -> list[str]:
@@ -372,6 +421,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
                         (LINKED_CONTRACTS_FILE, parse_linked_domain_contracts),
                         (DOMAIN_DESIGN_FILE, parse_domain_design),
                         (MODULE_EXTRACTION_FILE, parse_module_extraction),
+                        (MICROSERVICE_EXTRACTION_FILE, parse_microservice_extraction),
                         (DECISIONS_FILE, lambda text: parse_decisions(text, {c["key"] for c in linked}))):
         f = output_dir / name
         if not f.is_file():

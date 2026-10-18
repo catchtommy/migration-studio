@@ -84,6 +84,33 @@ wiring lines of moved classes; existing tests that are deleted, ignored or chang
 use of another domain's tables or packages or of a God module in the modules; and more than 10 changed files outside
 the modules (stop and ask). Turn it off or on per agent with the *Module guardrails* check on the Agents page.
 
+### Microservice
+
+The *Spring Boot microservice* step is a **lift**, not a rewrite: it turns the module into a service in its own
+repository (the step's *Changes code* setting) and changes nothing about how the code behaves. Modernisation stays a
+later step. The stack stays the module's (Java 8, Spring 3.2, iBatis 2): an executable jar that starts an embedded
+server, with a health endpoint, not Spring Boot, because Spring's own iBatis 2 support is gone from Spring 4 onward.
+
+- The module's code, SQL maps and tests are **copied** with package and import lines changed and nothing else. A file
+  that cannot be copied unchanged is listed under `replaced` with a reason.
+- The service has the **same schema**, owned tables only. There is no outbox (that would need a table): designed events
+  are published after commit to Azure Service Bus, at-most-once, and the pull request description says so.
+- A monolith has no endpoints, only method calls, so the REST contract is new: each public method of the module's API
+  maps to exactly one OpenAPI operation, and the step writes that table in `microservice-extraction.yaml`.
+- What the session and thread-locals gave the monolith comes through the **context ports** of the domain design: the
+  module reads them through a port, the monolith fills it from the session, and the service fills it from request
+  headers. The step also lists, without solving them, the callers that use the module inside a larger transaction and
+  the calls inside loops: over HTTP the first loses atomicity and the second becomes many calls.
+- There is no authentication yet (internal network only); the pull request description records that limitation.
+
+**`check_service_guardrails`** compares the service repository with its starting commit, and runs again when the agent
+tries to finish. It refuses: any change to the monolith repository; copied code or tests that differ from the module's
+beyond package and import lines (or that were not copied); SQL that is not the module's, text for text; libraries other
+than the module's (same versions) plus an embedded server, JSON, Azure Service Bus, an HTTP client, logging and the
+module's test tools; a dependency on a module of the monolith; a Java level other than 8; secrets, DDL, new SQL scripts
+or UI files; God modules and other domains' packages; operations that differ from `openapi.yaml`; events the designs do
+not name; and a context port without an adapter. Turn it on or off per agent with the *Service guardrails* check.
+
 The earlier *Modular monolith design* (`boundary_design`) and *Modulith design: Wrapper* (`wrapper_design`) agents are
 no longer part of the Standard migration workflow. They stay in the code and the database but are hidden from the
 Agents page and the workflow editor, and reappear while a workflow uses them.

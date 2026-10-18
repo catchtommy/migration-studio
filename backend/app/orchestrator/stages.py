@@ -106,7 +106,8 @@ STANDARD = Workflow((
     StageDef("modular_monolith", "Module in monolith", "agent",
              "Extract a Java 8 / Spring 3 / iBatis module shaped like the future microservice."),
     StageDef("microservice_scaffold", "Spring Boot microservice", "agent",
-             "Wrap the module in a Spring Boot app exposing the approved REST contract."),
+             "Lift the module into its own service (same Spring 3.2 / iBatis stack, executable jar) exposing the approved REST "
+             "contract; code and SQL copied unchanged."),
     StageDef("independent_tests", "Independent tests", "agent",
              "Contract, integration and characterization tests covering every scenario."),
     StageDef("gate_tests", "Approve tests", "gate",

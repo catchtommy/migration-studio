@@ -5,7 +5,7 @@ import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 
-from app import boundary_check, module_guardrails
+from app import boundary_check, module_guardrails, service_guardrails
 from app.text import decode, decode_with, encode_like
 from app.agents.base_agent import AgentContext
 
@@ -71,6 +71,15 @@ SCHEMAS: dict[str, dict] = {
                        "before finishing. Needs module-extraction.yaml.",
         "input_schema": _obj({}, []),
     },
+    "check_service_guardrails": {
+        "description": "Check everything you changed in the service repository since this step started against the "
+                       "step's limits: the monolith untouched, the copied code equal to the module's apart from "
+                       "package and import lines, SQL text identical, only the module's libraries plus the allowed "
+                       "infrastructure ones, Java 8, no secrets or DDL, no God module, exactly the approved "
+                       "operations, only designed events, an adapter for every context port. Run it after every step "
+                       "and before finishing. Needs microservice-extraction.yaml.",
+        "input_schema": _obj({}, []),
+    },
     "ask_user": {
         "description": "Ask the person supervising this migration a question and wait for their answer. Use it "
                        "when you cannot find something, the code is ambiguous, or a decision belongs to a person. "
@@ -127,8 +136,11 @@ class Toolbox:
         self.legacy = ctx.legacy_dir.resolve() if ctx.legacy_dir else None
         self.toolchain_home = toolchain_home
         self.written: set[str] = set()  # workspace-relative paths written by this agent
-        if ctx.base_sha is None and "check_module_guardrails" in ctx.config.get("tools", []):
+        tools = ctx.config.get("tools", [])
+        if ctx.base_sha is None and ("check_module_guardrails" in tools or "check_service_guardrails" in tools):
             ctx.base_sha = module_guardrails.head(self.root / ctx.code_dir)
+        if ctx.monolith_sha is None and "check_service_guardrails" in tools and ctx.code_dir not in (".", ""):
+            ctx.monolith_sha = module_guardrails.head(self.root)  # the monolith checkout the service copies from
 
     def run(self, name: str, args: dict) -> str:
         if name not in self.ctx.config.get("tools", []):
@@ -263,6 +275,9 @@ class Toolbox:
 
     def check_module_guardrails(self) -> str:
         return module_guardrails.report(module_guardrails.for_context(self.ctx))
+
+    def check_service_guardrails(self) -> str:
+        return service_guardrails.report(service_guardrails.for_context(self.ctx))
 
     def ask_user(self, question: str, options: list[str] | None = None) -> str:
         return self.ctx.ask(question, [str(o) for o in options] if options else None)

@@ -555,6 +555,22 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
               </span>
             </span>
           </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={(form.checks ?? []).includes("service_guardrails")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "service_guardrails", e.target.checked))}
+            />
+            <span>
+              Service guardrails
+              <span className="block text-xs text-subtle">
+                Before finishing, a git comparison must pass: the monolith untouched, the copied code and tests equal to the module's apart from package and import
+                lines, SQL text identical, only the module's libraries plus the allowed infrastructure ones, and exactly the approved operations.
+              </span>
+            </span>
+          </label>
         </div>
 
       </>

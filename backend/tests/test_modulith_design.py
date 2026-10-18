@@ -463,6 +463,7 @@ owned_tables: [LOAN]
 read_only_tables: []
 utility_modules: [com.acme:common-utils]
 other_domain_dependencies: []
+context_ports: []
 schema_changes: []
 ui_changes: []
 stack_changes: []
@@ -567,8 +568,8 @@ def test_module_extraction_follows_the_scope_decision():
     # domain-only: neither an orchestrator module nor a bridge
     with pytest.raises(contracts_store.InvalidDocument, match="domain-only"):
         contracts_store.parse_module_extraction(_EXTRACTION.replace("outside_changes", orchestrator + "outside_changes"))
-    with pytest.raises(contracts_store.InvalidDocument, match="domain-only"):
-        contracts_store.parse_module_extraction(_EXTRACTION + "bridge_dir: web/legacybridge\n")
+    # a domain-only feature may have a bridge package, for context-port adapters (checked against the design)
+    assert contracts_store.parse_module_extraction(_EXTRACTION + "bridge_dir: web/legacybridge\n")
     # cross-domain: both
     cross = _EXTRACTION.replace("scope: domain-only", "scope: cross-domain")
     with pytest.raises(contracts_store.InvalidDocument, match="cross-domain"):
@@ -615,3 +616,56 @@ def test_untouched_module_agent_is_upgraded_with_more_turns_and_the_new_check(cl
         row = s.get(Agent, (agent_store.SHARED, "modular_monolith"))
         assert "careful legacy refactorer" in row.instructions and row.max_turns == 200
         assert row.checks == ["module_guardrails"] and "check_module_guardrails" in row.tools
+
+
+def test_context_ports_are_required_and_need_a_bridge_for_their_adapters(tmp_path):
+    with pytest.raises(contracts_store.InvalidDocument, match="missing context_ports"):
+        contracts_store.parse_domain_design(_DESIGN.replace("context_ports: []\n", ""))
+    (tmp_path / "domain-design.yaml").write_text(_DESIGN.replace("context_ports: []", "context_ports: [CurrentUser]"))
+    (tmp_path / "module-extraction.yaml").write_text(_EXTRACTION)
+    assert any("context ports (CurrentUser), so add bridge_dir" in p for p in contracts_store.validate_outputs(tmp_path))
+    (tmp_path / "module-extraction.yaml").write_text(_EXTRACTION + "bridge_dir: web/legacybridge\n")
+    assert contracts_store.validate_outputs(tmp_path) == []
+    (tmp_path / "domain-design.yaml").write_text(_DESIGN)  # no ports: nothing to bridge
+    assert any("nothing to bridge" in p for p in contracts_store.validate_outputs(tmp_path))
+
+
+def test_ambient_inputs_are_part_of_the_designs_and_the_module_agent():
+    assert "No ambient inputs" in INSTRUCTIONS["domain_design"] and "context_ports" in INSTRUCTIONS["domain_design"]
+    text = INSTRUCTIONS["modular_monolith"]
+    assert "Context ports:" in text and "never read the session" in text
+
+
+# ---- Microservice ------------------------------------------------------------------------------------------------
+
+def test_microservice_agent_is_configured_for_the_guardrails():
+    c = default_config("microservice_scaffold")
+    assert "check_service_guardrails" in c["tools"] and c["max_turns"] == 200
+    assert c["checks"] == ["boundary", "service_guardrails"]
+    assert c["outputs"] == ["microservice.md", "microservice-extraction.yaml"]
+    text = INSTRUCTIONS["microservice_scaffold"]
+    for phrase in ("Copy, do not rewrite", "No Spring Boot", "no outbox", "request headers", "No authentication in this step",
+                   "open_decisions", "Stop and ask with ask_user", "WITHOUT changing the UI"):
+        assert phrase in text, phrase
+    assert "Oracle schema" not in text and "transactional outbox" not in text  # the earlier, contradicting rules
+    assert "check_service_guardrails" not in default_config("modular_monolith")["tools"]
+
+
+def test_untouched_microservice_agent_is_upgraded(client, monkeypatch):
+    import hashlib
+
+    previous = "You wrap the extracted module in a standalone Spring Boot application."
+    monkeypatch.setitem(agent_store.PREVIOUS_DEFAULT_HASHES, "microservice_scaffold",
+                        {hashlib.sha256(previous.encode()).hexdigest()})
+    with session_scope() as s:
+        row = s.get(Agent, (agent_store.SHARED, "microservice_scaffold"))
+        row.instructions, row.tools, row.checks, row.max_turns = previous, ["list_files"], ["boundary"], 80
+        marker = s.get(Setting, (agent_store.GLOBAL, agent_store.UPGRADE_MARKER))
+        if marker is not None:
+            s.delete(marker)
+    with session_scope() as s:
+        agent_store._upgrade_untouched_builtins(s)
+    with session_scope() as s:
+        row = s.get(Agent, (agent_store.SHARED, "microservice_scaffold"))
+        assert "lift the module" in row.instructions and row.max_turns == 200
+        assert row.checks == ["boundary", "service_guardrails"] and "check_service_guardrails" in row.tools

@@ -116,6 +116,7 @@ class AgentContext:
     code_dir: str = "."
     repositories: list[dict] = field(default_factory=list)
     base_sha: str | None = None  # the code repository's commit when the step started (set by the toolbox)
+    monolith_sha: str | None = None  # the monolith checkout's commit when the step started, if it is not the code
     # The project's shared read-only copy of the monolith, when the run reads it instead of checking it out: its
     # files appear at the same paths as in a checkout, through the file tools ({"branch", "sha"} describes it).
     legacy_dir: Path | None = None

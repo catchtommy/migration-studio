@@ -37,6 +37,8 @@ SKIP_PREFIXES = (".migration/", ".studio/", ".git/")
 MAX_OUTSIDE_FILES = 10  # more changed files than this outside the modules: stop and ask
 MAX_REPORTED = 60
 
+AMBIENT = re.compile(r"\b(?:HttpSession|HttpServletRequest|HttpServletResponse|ServletContext|RequestContextHolder|"
+                     r"ServletRequestAttributes|SecurityContextHolder|InheritableThreadLocal|ThreadLocal)\b|javax\.servlet")
 CALL = re.compile(r"[\w)\]]\s*\.\s*\w+\s*\(")
 CONTROL = re.compile(r"\b(?:return|if|else|for|while|switch|case|throw|try|catch|assert|synchronized)\b")
 IMPORT = re.compile(r"^\s*(?:import|package)\s+(?:static\s+)?[\w.]+(?:\.\*)?\s*;\s*$")
@@ -65,15 +67,27 @@ def _git(root: Path, *args: str, env: dict | None = None) -> str:
     return proc.stdout
 
 
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # what a repository without commits is compared with
+
+
 def head(root: Path) -> str | None:
+    """The commit the repository is at; for a repository without commits, the empty tree; None if not a repository."""
     try:
         return _git(root, "rev-parse", "HEAD").strip()
+    except (RuntimeError, OSError):
+        pass
+    try:
+        _git(root, "rev-parse", "--git-dir")
+        return EMPTY_TREE
     except (RuntimeError, OSError):
         return None
 
 
 def changes(root: Path, base: str) -> list[Change]:
     """Everything that differs from `base`: commits, staged, unstaged and new files, via a throw-away index."""
+    if base == EMPTY_TREE:  # git only knows the empty tree once something has written it
+        subprocess.run(["git", "hash-object", "-t", "tree", "-w", "--stdin"], cwd=root, input="", text=True,
+                       capture_output=True, check=False)
     with tempfile.TemporaryDirectory() as tmp:
         index = Path(tmp) / "index"
         env = {**os.environ, "GIT_INDEX_FILE": str(index)}
@@ -367,12 +381,18 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
             problems.append(f"{c.path} uses the God module {hit}. New modules and the bridge must not depend on one: "
                             "split what this feature needs, or ask the user")
 
-    # 7. Scope: a domain-only feature has neither an orchestrator nor a bridge.
+    # 6b. No ambient inputs in the modules: the session, request, user and thread-locals come through context ports.
+    for c in inside:
+        if c.path.endswith(".java") and c.status != "D" and not _is_test(c.path):
+            hit = AMBIENT.search(_read(root, c.path))
+            if hit:
+                problems.append(f"{c.path} uses {hit.group(0)}. The modules never read the session, request, user or a "
+                                "thread-local directly: use a context port from domain-design.yaml, with its adapter "
+                                "in the bridge package")
+    # 7. Scope: a domain-only feature has no orchestrator.
     if declaration and declaration.get("scope") == "domain-only":
         problems += [f"Module {m['path']}: the feature is domain-only, so there is no orchestrator"
                      for m in decl_modules if m.get("kind") == "orchestrator"]
-        if bridge:
-            problems.append("bridge_dir is set but the feature is domain-only")
     # 8. Tests are never ignored.
     for c in diff:
         if _is_test(c.path) and c.status != "D":
