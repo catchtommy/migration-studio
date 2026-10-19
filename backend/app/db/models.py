@@ -196,6 +196,22 @@ class Agent(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
 
+class SharedText(Base):
+    """A text agents share: the preamble every agent gets, or a block several agents' instructions include as
+    {{key}}. Edited from the Agents page (Shared texts); see app/shared_texts.py."""
+
+    __tablename__ = "shared_texts"
+
+    project: Mapped[str] = mapped_column(String(64), primary_key=True, default=SHARED)  # SHARED: every project's
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)
+    text: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)
+    updated_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
 class WorkflowDef(Base):
     """A named workflow: ordered agent steps and approval gates. Edited from the Workflows page."""
 

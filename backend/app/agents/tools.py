@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app import boundary_check, module_guardrails, service_guardrails
 from app.text import decode, decode_with, encode_like
-from app.agents.base_agent import AgentContext
+from app.agents.base_agent import DOCS_ROOT, AgentContext
 
 MAX_LIST = 500
 MAX_READ_LINES = 1500
@@ -136,6 +136,8 @@ class Toolbox:
         self.legacy = ctx.legacy_dir.resolve() if ctx.legacy_dir else None
         self.toolchain_home = toolchain_home
         self.written: set[str] = set()  # workspace-relative paths written by this agent
+        # A step not set to change code (Workflows page) writes its documents and nothing else.
+        self.docs_only = ctx.stage_def is not None and not ctx.stage_def.code
         tools = ctx.config.get("tools", [])
         if ctx.base_sha is None and ("check_module_guardrails" in tools or "check_service_guardrails" in tools):
             ctx.base_sha = module_guardrails.head(self.root / ctx.code_dir)
@@ -167,6 +169,10 @@ class Toolbox:
 
     def _write_path(self, path: str) -> Path:
         p = self._resolve(path)
+        if self.docs_only and not p.is_relative_to(self.root / DOCS_ROOT):
+            raise ToolError(f"{path} is code, and this step writes documents only: write under "
+                            f"{DOCS_ROOT}/ (your documents folder). To let a step change code, set it to on the "
+                            "Workflows page")
         if self.legacy is not None and not p.exists() and (self.legacy / path).exists():
             raise ToolError(f"{path} is the monolith's code, which is read-only in this run: write documents under "
                             ".migration/ and code only in the repository this step changes")
@@ -256,6 +262,9 @@ class Toolbox:
         return f"Edited {self._rel(p)}"
 
     def run_command(self, command: str, timeout_seconds: int = 600) -> str:
+        if self.docs_only:
+            raise ToolError("This step writes documents only, so it can't run commands (they could change code). "
+                            "Read the code with list_files, read_file and search_code")
         env = toolchain_env(dict(os.environ), self.toolchain_home, self.ctx.settings.get("language") or "java")
         if self.legacy is not None:
             env["STUDIO_LEGACY_DIR"] = str(self.legacy)  # the read-only monolith, for commands that read it

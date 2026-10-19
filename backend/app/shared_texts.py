@@ -1,0 +1,117 @@
+"""Texts agents share, persisted in `shared_texts` and edited from the Agents page (Shared texts): the preamble every
+agent gets before its instructions, the feature-scope rules, and blocks several agents' instructions include (the
+legacy stack, the Modulith guardrails, the REST rules, the machine-readable formats, ...).
+
+Instructions include a block with its placeholder, `{{key}}`, filled in from the database when a step starts, so a
+change to a block reaches every agent that uses it, edited or not. The texts in app/agents/defaults.py are only the
+defaults: the database is seeded with them once (blocks added in later releases are added then), and Reset puts one
+back.
+"""
+
+import re
+from typing import Any
+
+from sqlalchemy import select
+
+from app.agents.defaults import SHARED_TEXTS
+from app.db.models import GLOBAL, SHARED, Agent, Setting, SharedText
+from app.db.session import NotConfigured, session_scope
+
+PLACEHOLDER = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
+_TEMPLATED_MARKER = "_agents_use_shared_texts"  # existing agents' instructions were given placeholders once
+
+
+def _as_dict(row: SharedText) -> dict[str, Any]:
+    default = SHARED_TEXTS.get(row.key)
+    return {"key": row.key, "title": row.title, "description": row.description, "text": row.text,
+            "builtin": default is not None, "customised": default is not None and row.text != default[2],
+            "used_by": [], "updated_by": row.updated_by, "updated_at": row.updated_at}
+
+
+def seed() -> None:
+    """Add the shared texts the database doesn't have yet, then (once) give existing agents' instructions placeholders
+    wherever they still hold a block's default text word for word, so later changes to the block reach them."""
+    from app.agents.defaults import templated
+
+    with session_scope() as s:
+        have = set(s.scalars(select(SharedText.key).where(SharedText.project == SHARED)))
+        for key, (title, description, text) in SHARED_TEXTS.items():
+            if key not in have:
+                s.add(SharedText(project=SHARED, key=key, title=title, description=description, text=text))
+        if s.get(Setting, (GLOBAL, _TEMPLATED_MARKER)) is None:
+            for agent in s.scalars(select(Agent)):
+                agent.instructions = templated(agent.instructions or "")
+            s.add(Setting(key=_TEMPLATED_MARKER, value=True))
+
+
+def texts() -> dict[str, str]:
+    """key -> text, from the database (the defaults when no database is open, e.g. in unit tests)."""
+    try:
+        with session_scope() as s:
+            stored = {r.key: r.text for r in s.scalars(select(SharedText).where(SharedText.project == SHARED))}
+    except NotConfigured:
+        stored = {}
+    return {**{k: v[2] for k, v in SHARED_TEXTS.items()}, **stored}
+
+
+def text(key: str) -> str:
+    return texts()[key]
+
+
+def expand(instructions: str, values: dict[str, str] | None = None) -> str:
+    """Instructions with every placeholder of a known shared text filled in; unknown ones are left as they are."""
+    values = texts() if values is None else values
+    return PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), instructions)
+
+
+def template(instructions: str) -> str:
+    """The reverse of expand, for instructions read from an agent.md file (which has the shared texts written out):
+    each block's current text, where it appears word for word, is put back as its placeholder."""
+    values = texts()
+    for key, value in sorted(values.items(), key=lambda kv: -len(kv[1])):
+        if key not in ("preamble", "feature_rules") and value:
+            instructions = instructions.replace(value, "{{" + key + "}}")
+    return instructions
+
+
+def unknown(instructions: str) -> list[str]:
+    """Placeholders in the instructions that name no shared text."""
+    known = texts()
+    return sorted({m.group(1) for m in PLACEHOLDER.finditer(instructions)} - set(known))
+
+
+def list_all() -> list[dict[str, Any]]:
+    order = {k: i for i, k in enumerate(SHARED_TEXTS)}
+    with session_scope() as s:
+        rows = list(s.scalars(select(SharedText).where(SharedText.project == SHARED)))
+        out = [_as_dict(r) for r in sorted(rows, key=lambda r: (order.get(r.key, len(order)), r.key))]
+        agents = list(s.scalars(select(Agent)))
+    for item in out:
+        token = item["key"]
+        item["used_by"] = sorted({a.title for a in agents
+                                  if any(m.group(1) == token for m in PLACEHOLDER.finditer(a.instructions or ""))})
+    return out
+
+
+def get(key: str) -> dict[str, Any]:
+    item = next((t for t in list_all() if t["key"] == key), None)
+    if item is None:
+        raise KeyError(key)
+    return item
+
+
+def update(key: str, value: str, by: str | None = None) -> dict[str, Any]:
+    if PLACEHOLDER.search(value):
+        raise ValueError("A shared text can't include another one ({{...}}); write its text out instead")
+    with session_scope() as s:
+        row = s.get(SharedText, (SHARED, key))
+        if row is None:
+            raise KeyError(key)
+        row.text, row.updated_by = value, by
+    return get(key)
+
+
+def reset(key: str, by: str | None = None) -> dict[str, Any]:
+    if key not in SHARED_TEXTS:
+        raise KeyError(key)
+    return update(key, SHARED_TEXTS[key][2], by)

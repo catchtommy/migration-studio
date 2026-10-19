@@ -94,7 +94,9 @@ def test_copilot_agent_runs_the_stage_with_only_this_apps_tools(ctx):  # noqa: F
     assert kw["available_tools"].to_list() == [f"custom:{t.name}" for t in kw["tools"]]  # no built-in tools
     assert all(t.overrides_built_in_tool for t in kw["tools"])
     assert kw["working_directory"] == str(ctx.workspace)
-    assert ctx.config["instructions"] in kw["system_message"]["content"]
+    from app import shared_texts
+    assert "{{legacy}}" in ctx.config["instructions"]  # the shared text is filled in
+    assert shared_texts.expand(ctx.config["instructions"]) in kw["system_message"]["content"] and "{{" not in kw["system_message"]["content"]
     assert kw["model"] == "gpt-5" and kw["reasoning_effort"] == "high"
     assert "# as_is_doc: loan / approve" in session.prompts[0] and "has not been written yet" in session.prompts[1]
     assert session.disconnected and asked == [("Where is the rule?", None)]

@@ -4,7 +4,7 @@ import logging
 
 from sqlalchemy import URL
 
-from app import agent_store, auth, domain_store, projects, workflow_store
+from app import agent_store, auth, domain_store, projects, shared_texts, workflow_store
 from app.db import session, transfer
 from app import workspace
 from app.orchestrator.runner import get_runner
@@ -19,6 +19,7 @@ def open_database(url: URL) -> None:
     auth.seed()
     projects.seed()
     agent_store.seed()
+    shared_texts.seed()  # after the agents: it gives their instructions placeholders
     domain_store.seed()
     workflow_store.seed()
     get_runner().recover_interrupted()

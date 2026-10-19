@@ -11,17 +11,6 @@ from app.agents.tools import ToolError, Toolbox
 INLINE_LIMIT = 200_000  # characters of earlier documents put in the prompt; larger ones are left to read_file
 LOG_LIMIT = 2_000
 
-PREAMBLE = """You are one stage agent in Migration Studio, which migrates a legacy monolith to microservices one \
-operation at a time. The project's language and stacks are given at the start of your task; where the stage \
-instructions assume another language (for example Java), apply them to the project's language instead. You work in \
-a git checkout of the monolith (the workspace) using the tools provided; all paths are relative to the workspace \
-root. Earlier stages' documents are in the workspace, and a person reviews your output before the migration moves \
-on.
-
-When you are done, reply with a short summary of what you produced and anything the reviewer should check, \
-without calling a tool.
-
-Stage instructions follow."""
 
 
 class AgentFailed(RuntimeError):
@@ -29,7 +18,11 @@ class AgentFailed(RuntimeError):
 
 
 def system_prompt(ctx: AgentContext) -> str:
-    return f"{PREAMBLE}\n\n{ctx.config['instructions']}"
+    """The preamble and the agent's instructions, with the shared texts they include (app/shared_texts.py)."""
+    from app import shared_texts
+
+    values = shared_texts.texts()
+    return f"{shared_texts.expand(values['preamble'], values)}\n\n{shared_texts.expand(ctx.config['instructions'], values)}"
 
 
 def toolchain_home(ctx: AgentContext) -> str | None:

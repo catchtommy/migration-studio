@@ -23,18 +23,6 @@ class PriorDocument:
     content: str | None = None  # set when the stage is configured to include contents in its prompt
 
 
-# Given to every agent of a migration run, whatever its own instructions say (analysis and design alike).
-FEATURE_RULES = """**Stay on this feature.** This run migrates this feature only; the domain's other features are out \
-of scope (listed below), even where they share its controllers, services, DAOs, JSPs or tables.
-- Analysis (AS-IS, deep dive, dependencies): follow only the code paths that start at this feature's entry points. \
-In shared classes, cover only the methods and branches this feature reaches; leave the rest out.
-- Design (contracts, domain, orchestration, integration, code): design for this feature's flow only. Don't add APIs, \
-operations, events, entities or contracts that only another feature needs. Where a shared table or component must \
-keep working for the other features, note that as a constraint; don't design it.
-- Earlier documents of this run may mention other features or flows; use only what concerns this one.
-- If you can't tell whether something belongs to this feature, ask the user rather than include it."""
-
-
 @dataclass
 class AgentInputs:
     """Guidance a person gave the agent: from the domain (shared and stage-specific) and from the run."""
@@ -60,7 +48,8 @@ class AgentInputs:
         lines = [f"## Feature scope: {f['name']} (`{f['key']}`)"]
         if f.get("description"):
             lines.append(f["description"])
-        lines.append(FEATURE_RULES)
+        from app import shared_texts
+        lines.append(shared_texts.text("feature_rules"))
         for title, values in (("Entry points", f.get("entry_points")), ("Tables (from the feature list)",
                               f.get("tables")), ("Domains it is listed as calling", f.get("calls"))):
             if values:

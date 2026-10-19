@@ -33,8 +33,19 @@ def stored_documents(run_id):
                                                      .order_by(Artifact.id))}
 
 
+@pytest.fixture
+def code_steps(client):
+    """Every agent step of the standard workflow set to change code (this project's copy, dropped afterwards)."""
+    wf = client.get("/api/workflows/standard").json()
+    steps = [{**st, "code": {"repository": ""}} if st["kind"] == "agent" else st for st in wf["steps"]]
+    assert client.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    yield
+    assert client.post("/api/workflows/standard/revert").status_code == 200
+
+
 def code_writing_stub(monkeypatch):
-    """Stub agents that also change code outside the documents folder, as real agents do."""
+    """Stub agents that also change code outside the documents folder, as real code-changing agents do (only steps
+    set to change code may; see the code_steps fixture)."""
     original = stub.StubAgent.run
 
     def run(self, ctx):
@@ -46,7 +57,7 @@ def code_writing_stub(monkeypatch):
     monkeypatch.setattr(stub.StubAgent, "run", run)
 
 
-def test_every_document_and_the_stage_diff_are_stored(client, monkeypatch):
+def test_every_document_and_the_stage_diff_are_stored(client, monkeypatch, code_steps):
     code_writing_stub(monkeypatch)
     run_id = new_run(client)
     run = wait_for(client, run_id, {"awaiting_approval"})
@@ -62,7 +73,7 @@ def test_every_document_and_the_stage_diff_are_stored(client, monkeypatch):
     assert client.get(f"/api/runs/{run_id}/stages/{ex['id']}/diff").json()["diff"] == diff
 
 
-def test_lost_workspace_is_rebuilt_for_a_rejection(client, monkeypatch):
+def test_lost_workspace_is_rebuilt_for_a_rejection(client, monkeypatch, code_steps):
     code_writing_stub(monkeypatch)
     run_id = new_run(client)
     wait_for(client, run_id, {"awaiting_approval"})

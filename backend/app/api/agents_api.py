@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import agent_files, agent_store, settings_store, workflow_store
+from app import agent_files, agent_store, settings_store, shared_texts, workflow_store
 from app.agents.defaults import AUTO, CLAUDE_MODELS, EFFORTS, TOOLS
 from app.copilot_service import get_service
 from app.api.schemas import AgentCatalog, AgentCreate, AgentIn, AgentOut
@@ -23,6 +23,13 @@ Scope = Literal["shared", "project"]
 def _visible(agent: dict, access: ProjectAccess) -> dict:
     """Other pages need agents' names and modes; only people who manage agents see their instructions."""
     return agent if access.can("agents.manage") else {**agent, "instructions": ""}
+
+
+def _check_placeholders(instructions: str) -> None:
+    missing = shared_texts.unknown(instructions)
+    if missing:
+        raise HTTPException(422, f"The instructions include {', '.join('{{' + m + '}}' for m in missing)}, which "
+                                 "is not a shared text. Check the spelling, or see Shared texts on the Agents page.")
 
 
 def _check_scope(scope: Scope, access: ProjectAccess) -> None:
@@ -54,15 +61,17 @@ class AgentFile(BaseModel):
 def parse_agent_md(body: AgentFile):
     """Read a Copilot custom agent file (*.agent.md) into agent fields, without saving anything."""
     try:
-        return agent_files.parse(body.content)
+        parsed = agent_files.parse(body.content)
     except agent_files.InvalidAgentFile as e:
         raise HTTPException(422, str(e))
+    return {**parsed, "instructions": shared_texts.template(parsed["instructions"])}
 
 
 @router.post("/render-agent-md", dependencies=[Depends(require("agents.manage"))])
 def render_agent_md(body: AgentIn):
     """The (possibly unsaved) agent fields as agent.md text, for the agent.md editor."""
-    return {"content": agent_files.render(body.model_dump())}
+    fields = body.model_dump()
+    return {"content": agent_files.render({**fields, "instructions": shared_texts.expand(fields["instructions"])})}
 
 
 @router.put("/{key}/agent-md", dependencies=[Depends(require("agents.manage"))])
@@ -77,11 +86,14 @@ def save_agent_md(key: str, body: AgentFile, scope: Scope = "shared", access: Pr
     except agent_files.InvalidAgentFile as e:
         raise HTTPException(422, str(e))
     warnings = parsed.pop("warnings")
+    if "instructions" in parsed:  # the file has the shared texts written out
+        parsed["instructions"] = shared_texts.template(parsed["instructions"])
     try:
         fields = AgentIn.model_validate({**{f: current[f] for f in AgentIn.model_fields}, **parsed})
     except ValidationError as e:
         raise HTTPException(422, "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()))
     _check_scope(scope, access)
+    _check_placeholders(fields.instructions)
     return {"agent": agent_store.update(key, fields.model_dump(), scope), "warnings": warnings}
 
 
@@ -92,6 +104,8 @@ def export_agent_md(key: str):
     except KeyError:
         raise HTTPException(404, "Agent not found")
     filename = f"{key.replace('_', '-')}.agent.md"
+    # Outside the studio there are no shared texts: the file has them written out.
+    agent = {**agent, "instructions": shared_texts.expand(agent["instructions"])}
     return PlainTextResponse(agent_files.render(agent), media_type="text/markdown",
                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
@@ -117,6 +131,7 @@ def get_agent(key: str, access: ProjectAccess = Depends(project_context)):
 def update_agent(key: str, body: AgentIn, scope: Scope = "shared", access: ProjectAccess = Depends(project_context)):
     """Change the shared agent, or (scope=project) this project's copy, made from the shared one if needed."""
     _check_scope(scope, access)
+    _check_placeholders(body.instructions)
     try:
         return agent_store.update(key, body.model_dump(), scope)
     except KeyError:

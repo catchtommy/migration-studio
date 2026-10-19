@@ -376,6 +376,9 @@ needs no schema change to be provided, and its temporary binding delegates to a 
 service, not to a God module. If the only implementation of a capability lives inside a God module, say so and ask \
 the user how it should be split.
 
+This step designs only: you write documents in your documents folder and never create or change code. The temporary \
+bindings, adapters and copied helpers you describe are made later by the steps that change code.
+
 {_REST_RULES}
 
 Two things are never contracts, even when the dependency finder lists them as touchpoints of another domain:
@@ -387,8 +390,8 @@ owner and raise it as an open decision.
 - Validation of mobile numbers, email addresses and similar formats (postcode, PAN, IBAN and so on) is helper code, \
 not a capability of another domain. Do not define a contract for it. If the helper is already in a utility jar the \
 monolith depends on, the domain uses that jar and you list its Maven coordinates. If it sits in the monolith's own \
-sources, the domain gets its own copy with the logic unchanged (a shared helper may be proposed later, but it is a \
-separate decision), and you record where it was copied from. A helper that reads the database, the session or other \
+sources, the domain will get its own copy with the logic unchanged, made by the module extraction step (a shared \
+helper may be proposed later, but it is a separate decision); you record where it is to be copied from. A helper that reads the database, the session or other \
 domains' data is not a helper: treat it as a normal dependency.
 List both under "Not contracts" in `linked-domain-contracts.md`, each with the touchpoint (file and line), what the \
 domain does instead, and for helpers the Maven coordinates or the source it is copied from. If this removes the \
@@ -404,7 +407,8 @@ existing method. Several touchpoints can serve one contract. Do not copy legacy 
 (sessions, entities, flag codes); the port's adapter translates them.
 - Choose the kind: `api` for a request and response (REST under `/internal/api/v1/<provider>/...`), `event` or \
 `command` when the feature relies on a message.
-- Write a spec for every new or changed contract under `contracts/`: OpenAPI 3.1 for `api`, AsyncAPI 3 for \
+- Write a spec for every new or changed contract under `contracts/` in your documents folder (next to \
+`linked-domain-contracts.yaml`): OpenAPI 3.1 for `api`, AsyncAPI 3 for \
 `event` and `command`, with schemas and error responses.
 - State what the feature relies on (`relies_on`): freshness, consistency, idempotency, latency and behaviour on \
 failure, as the current code behaves.
@@ -580,7 +584,8 @@ compensations, and anything deferred with its follow-up.
 - `integration-decisions.yaml` in this format:
 
 {DECISIONS_SCHEMA}
-- A spec file for each new or changed contract under `contracts/`: OpenAPI 3.1 for APIs, AsyncAPI 3 for events \
+- A spec file for each new or changed contract under `contracts/` in your documents folder (next to \
+`integration-decisions.yaml`): OpenAPI 3.1 for APIs, AsyncAPI 3 for events \
 and commands.
 
 {_REST_RULES}
@@ -768,6 +773,8 @@ OUTPUTS = {
     "domain_features": ["features.md", "features.yaml"],
 }
 
+_FORMAT_NOTE = ("A machine-readable format the studio validates the step's output against. Change it "
+                "only together with the code that reads it.")
 _MODERN_JDK = {"modernise", "monolith_integration"}
 _ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "linked_domain_contracts", "domain_design",
              "wrapper_design", "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts",
@@ -777,13 +784,74 @@ _CHECKS = {"modular_monolith": ["module_guardrails"], "microservice_scaffold": [
            "modernise": ["boundary"]}
 
 
+# The texts below are only the defaults the database is seeded with (app/shared_texts.py): agents read them from the
+# database, where they are edited on the Agents page (Shared texts), and Reset puts a default back.
+
+# The start of every agent's system prompt, before its instructions.
+PREAMBLE = """You are one stage agent in Migration Studio, which migrates a legacy monolith to microservices one \
+operation at a time. The project's language and stacks are given at the start of your task; where the stage \
+instructions assume another language (for example Java), apply them to the project's language instead. You work in \
+a git checkout of the monolith (the workspace) using the tools provided; all paths are relative to the workspace \
+root. Earlier stages' documents are in the workspace, and a person reviews your output before the migration moves \
+on.
+
+When you are done, reply with a short summary of what you produced and anything the reviewer should check, \
+without calling a tool.
+
+Stage instructions follow."""
+
+# Given to every agent of a migration run, whatever its own instructions say (analysis and design alike).
+FEATURE_RULES = """**Stay on this feature.** This run migrates this feature only; the domain's other features are out \
+of scope (listed below), even where they share its controllers, services, DAOs, JSPs or tables.
+- Analysis (AS-IS, deep dive, dependencies): follow only the code paths that start at this feature's entry points. \
+In shared classes, cover only the methods and branches this feature reaches; leave the rest out.
+- Design (contracts, domain, orchestration, integration, code): design for this feature's flow only. Don't add APIs, \
+operations, events, entities or contracts that only another feature needs. Where a shared table or component must \
+keep working for the other features, note that as a constraint; don't design it.
+- Earlier documents of this run may mention other features or flows; use only what concerns this one.
+- If you can't tell whether something belongs to this feature, ask the user rather than include it."""
+
+# Shared texts: key -> (title, description, default text). Instructions include a block with its placeholder {{key}}.
+SHARED_TEXTS: dict[str, tuple[str, str, str]] = {
+    "preamble": ("Preamble", "Given to every agent before its own instructions.", PREAMBLE),
+    "feature_rules": ("Stay on this feature", "Given to every agent of a feature's migration, with the feature's scope.",
+                      FEATURE_RULES),
+    "legacy": ("Legacy stack", "The monolith's technology, for the agents that read or change it.", _LEGACY),
+    "modulith_guardrails": ("Modulith guardrails", "The rules the Modulith design steps design to.", _MODULITH_GUARDRAILS),
+    "rest_rules": ("REST design rules", "The norm for every REST API a design step specifies.", _REST_RULES),
+    "integration_rules": ("Integration decision rules", "How the integration design decides each cross-domain "
+                          "interaction.", _INTEGRATION_RULES),
+    "cross_domain_format": ("Format: cross-domain interactions", _FORMAT_NOTE, CROSS_DOMAIN_SCHEMA),
+    "decisions_format": ("Format: integration decisions", _FORMAT_NOTE, DECISIONS_SCHEMA),
+    "bounded_contexts_format": ("Format: bounded contexts", _FORMAT_NOTE, BOUNDED_CONTEXTS_SCHEMA),
+    "features_format": ("Format: domain features", _FORMAT_NOTE, FEATURES_SCHEMA),
+    "domain_dependencies_format": ("Format: domain dependencies", _FORMAT_NOTE, DOMAIN_DEPENDENCIES_SCHEMA),
+    "linked_domain_contracts_format": ("Format: linked-domain contracts", _FORMAT_NOTE, LINKED_DOMAIN_CONTRACTS_SCHEMA),
+    "domain_design_format": ("Format: domain design", _FORMAT_NOTE, DOMAIN_DESIGN_SCHEMA),
+    "module_extraction_format": ("Format: module extraction", _FORMAT_NOTE, MODULE_EXTRACTION_SCHEMA),
+    "service_extraction_format": ("Format: microservice extraction", _FORMAT_NOTE, SERVICE_EXTRACTION_SCHEMA),
+}
+
+
+def templated(text: str) -> str:
+    """Instructions with each shared block's default text replaced by its placeholder."""
+    for key, (_title, _description, block) in sorted(SHARED_TEXTS.items(), key=lambda kv: -len(kv[1][2])):
+        if key not in ("preamble", "feature_rules"):
+            text = text.replace(block, "{{" + key + "}}")
+    return text
+
+
+# The built-in agents' default instructions as stored: with placeholders for the shared blocks.
+TEMPLATES = {key: templated(text) for key, text in INSTRUCTIONS.items()}
+
+
 def default_config(stage: str) -> dict:
     return {
         "mode": "stub",
         "model": AUTO,
         "effort": "high",
         "jdk": "modern" if stage in _MODERN_JDK else "legacy",
-        "instructions": INSTRUCTIONS[stage],
+        "instructions": TEMPLATES[stage],
         "tools": [*(DOCS if stage in _ANALYSIS else CODE), *_GUARDRAIL_TOOLS.get(stage, [])],
         "outputs": list(OUTPUTS[stage]),
         "max_turns": 200 if stage in _GUARDRAIL_TOOLS else 80,

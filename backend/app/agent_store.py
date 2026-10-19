@@ -50,12 +50,14 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                             "f9e96fafed18fe73fe6e62b9d75184fe99b3c6bdf802d190fed21afb42c35542",
                             "95e1470cf6cff461d1caf1d4e94205c0229b696ee8c852c6bd3acdb7b257a79e",
                             "3e283b3f86a097de59173a64e5068d92ee6fc631799dfaac7c2617f903a91dc9"},
-    "linked_domain_contracts": {"5d19465bca4616a7f4a6e3581fbadcd30b9707efb9c43e993ddddd96ed8cc464",
+    "linked_domain_contracts": {"2f1fde8befb5a2d452aea0a989261f084433a5465e64dced1eb3205a53654609",
+        "5d19465bca4616a7f4a6e3581fbadcd30b9707efb9c43e993ddddd96ed8cc464",
         "5ef353e2455182ccc268bfd59999b18449c873a8bb41be559aee177df7c6d941",
                                 "7373d95b05eadcacff8638d41bc2da63c8627647d323f824a12159828a41f3d7",
                                 "f769606aba568416e0e3892f88a6fd147ab3eeb1ff082d9be446ec6ea3fc9dbf",
                                 "7a589e02ca2bb06072c304f2f0d99e47482f4eba4d3a7846a4986cfbaef45a8a"},
-    "integration_design": {"50062f4c3b3dcc7aab9e4ace195d0134977a341a4a81a22518962ed7f87474c2",
+    "integration_design": {"11231d4efa53ca45a9e53af4e52a3666c5258092e03dff6ae17f948ca462ab6d",
+        "50062f4c3b3dcc7aab9e4ace195d0134977a341a4a81a22518962ed7f87474c2",
         "22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
                               "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5"},
     "independent_tests": {"d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
@@ -72,7 +74,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v10"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v11"
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.

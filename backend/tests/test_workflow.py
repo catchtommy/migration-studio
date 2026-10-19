@@ -195,3 +195,25 @@ def test_run_that_failed_before_its_first_step_can_be_retried(client, monkeypatc
     run = wait_for(client, run_id, {"awaiting_approval"})
     assert [e["status"] for e in executions(run, "as_is_doc")] == ["completed"]
     assert not (Path(run["workspace"]) / "half-checked-out.txt").exists()
+
+
+def test_code_changes_of_a_step_that_writes_documents_only_are_undone(client, monkeypatch):
+    original = stub.StubAgent.run
+
+    def sneaky(self, ctx):
+        if self.stage == "as_is_doc":  # as if through a command, past the tools' checks
+            (ctx.workspace / "src").mkdir(exist_ok=True)
+            (ctx.workspace / "src" / "Sneaky.java").write_text("class Sneaky {}")
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", sneaky)
+    run_id = new_run(client)
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    ws = Path(run["workspace"])
+    assert not (ws / "src" / "Sneaky.java").exists()
+    assert document(run, "as_is_doc").is_file()  # its documents are kept
+    from app.db.models import AuditEvent
+    from app.db.session import session_scope
+    with session_scope() as s:
+        messages = [e.message for e in s.query(AuditEvent).filter(AuditEvent.run_id == run_id)]
+    assert any("documents only" in m and "src/Sneaky.java" in m for m in messages)

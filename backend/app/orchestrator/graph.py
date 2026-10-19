@@ -141,6 +141,21 @@ def _repository_notes(nested: list[dict]) -> list[dict]:
     return [{"key": r["key"], "url": r["url"], "path": r["path"], "base_branch": r.get("base_branch")} for r in nested]
 
 
+def _undo_code_changes(ws: Path, start_sha: str, nested: list[dict], nested_starts: dict[str, str]) -> list[str]:
+    """Put the workspace's code (the root and the run's other repositories) back as it was when a step started,
+    keeping its documents (which git ignores); returns the paths that had changed."""
+    undone = []
+    for prefix, path, sha in [("", ws, start_sha)] + [(r["path"] + "/", ws / r["path"], nested_starts[r["key"]])
+                                                     for r in nested if r["key"] in nested_starts]:
+        changed = git_ops.git(path, "diff", "--name-only", sha).splitlines()
+        changed += git_ops.git(path, "ls-files", "--others", "--exclude-standard").splitlines()
+        if changed or git_ops.head(path) != sha:
+            git_ops.reset_hard(path, sha)
+            git_ops.git(path, "clean", "-fdq")  # untracked files; ignored ones (the documents) stay
+            undone += [prefix + f for f in dict.fromkeys(changed)]
+    return undone
+
+
 def make_agent_node(workflow: Workflow, stage: StageDef):
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
@@ -227,6 +242,13 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
                 ex.status, ex.error, ex.finished_at = "failed", str(e), utcnow()
             emit(run_id, "error", f"{stage.title} failed: {e}", stage.key)
             raise
+
+        if not stage.code:  # a step that writes documents only never changes code, whatever its agent did
+            undone = _undo_code_changes(ws, start_sha, nested, nested_starts)
+            if undone:
+                emit(run_id, "log", f"{stage.title} writes documents only, so its changes to code were undone: "
+                                    f"{', '.join(undone[:20])}{f' and {len(undone) - 20} more' if len(undone) > 20 else ''}",
+                     stage.key)
 
         message = f"[{stage.key}] {discovery_store.subject(state['domain'], state['operation'])} attempt {attempt}"
         end_sha = git_ops.commit_all(ws, message)

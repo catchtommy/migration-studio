@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.api import (
     account_api, agents_api, auth_api, contracts_api, copilot_api, database_api, discovery_api, domains_api, projects_api, runs,
-    settings_api, users_api, workflows_api,
+    settings_api, shared_texts_api, users_api, workflows_api,
 )
 from app.auth import current_user, project_context
 from app.config import settings
@@ -50,7 +50,7 @@ for router in (settings_api.router, copilot_api.router, users_api.router, projec
     app.include_router(router, dependencies=[Depends(require_database), Depends(current_user)])
 # Project data: the request names its project (X-Project), which the user must be able to open.
 for router in (runs.router, agents_api.router, domains_api.router, workflows_api.router, contracts_api.router,
-               discovery_api.router):
+               discovery_api.router, shared_texts_api.router):
     app.include_router(router, dependencies=[Depends(require_database), Depends(project_context)])
 
 

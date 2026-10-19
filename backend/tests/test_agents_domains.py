@@ -180,7 +180,9 @@ def test_claude_agent_uses_tools_asks_and_writes_outputs(ctx, monkeypatch):
     assert any("Self-check" in line for line in logs)
     req = client.requests[0]
     assert req["model"] == llm.DEFAULT_MODEL and req["output_config"] == {"effort": "high"}  # "auto" → default
-    assert ctx.config["instructions"] in req["system"]
+    from app import shared_texts
+    assert "{{legacy}}" in ctx.config["instructions"]  # the shared text is filled in
+    assert shared_texts.expand(ctx.config["instructions"]) in req["system"] and "{{" not in req["system"]
     assert [t["name"] for t in req["tools"]] == ["list_files", "read_file", "search_code", "write_file", "ask_user"]
 
 
@@ -216,6 +218,26 @@ def test_tools_stay_inside_the_workspace_and_respect_the_config(ctx):
     with pytest.raises(ToolError, match="Missing"):
         tools.run("read_file", {})
     assert tools.run("list_files", {"pattern": "**/*.java"}) == "src/LoanController.java"
+
+
+def test_a_step_that_writes_documents_only_cannot_change_code(ctx):
+    from app.orchestrator.stages import StageDef
+    ctx, _, _ = ctx
+    ctx.config = {**ctx.config, "tools": [*ctx.config["tools"], "edit_file", "run_command"]}  # even when enabled
+    ctx.stage_def = StageDef("linked_domain_contracts", "Linked-domain contracts", "agent", "")
+    tools = Toolbox(ctx, None)
+    for name, args in [("write_file", {"path": "src/LoanPort.java", "content": "x"}),
+                       ("edit_file", {"path": "src/LoanController.java", "old_text": "approve", "new_text": "x"}),
+                       ("write_file", {"path": "contracts/loan.yaml", "content": "x"})]:
+        with pytest.raises(ToolError, match="documents only"):
+            tools.run(name, args)
+    with pytest.raises(ToolError, match="documents only"):
+        tools.run("run_command", {"command": "touch src/Changed.java"})
+    assert not (ctx.workspace / "src" / "Changed.java").exists()
+    assert tools.run("write_file", {"path": ".migration/loan/approve/contracts/loan.yaml", "content": "x"}).startswith("Wrote")
+
+    ctx.stage_def = StageDef("modular_monolith", "Modular monolith", "agent", "", code={"repository": ""})
+    assert Toolbox(ctx, None).run("write_file", {"path": "src/LoanPort.java", "content": "x"}).startswith("Wrote")
 
 
 def test_claude_agent_brief_includes_earlier_documents(ctx, monkeypatch):
