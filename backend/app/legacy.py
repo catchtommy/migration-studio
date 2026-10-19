@@ -2,9 +2,10 @@
 
 A large monolith checked out into every run's workspace costs its full size each time. Instead, each project keeps
 one shared copy of its base branch at a fixed commit, data/repos/<project>/legacy/<commit>/: a git worktree of the
-project's mirror (app/repos.py), with its files made read-only. Runs whose steps don't change the monolith read it
-through the agents' file tools at the same paths as a checkout (src/..., pom.xml); their own workspace holds only
-their documents and the other repositories they change. Fetching the latest (Project page) makes a new copy current
+project's mirror (app/repos.py), with its files made read-only. Runs read it through the agents' file tools at the
+same paths as a checkout (src/..., pom.xml); their own workspace holds only their documents and the other repositories
+they change. Only a run reaching a step that changes the monolith's code gets its own checkout, just before that step
+(app/workspace.py check_out_monolith). Fetching the latest (Project page) makes a new copy current
 for new runs; runs keep the copy they started with, and copies no unfinished run uses are deleted.
 
 Like the mirrors, the copies are a cache: the commit a run reads is recorded in the database (Run.legacy), and its
@@ -121,12 +122,23 @@ def _record(project: str, url: str, branch: str, mirror: Path, sha: str) -> dict
     return data
 
 
-def snapshot(project: str, user_id: int | None = None) -> dict | None:
+def snapshot(project: str, user_id: int | None = None, branch: str | None = None) -> dict | None:
     """The copy a new run reads: the current one, made (cloning the mirror if needed) when there is none or the
-    project's repository or base branch changed since. None when the project has no monolith repository."""
-    url, branch = _target(project)
+    project's repository or base branch changed since. None when the project has no monolith repository. A run started
+    from another `branch` than the project's reads that branch's latest commit instead (a copy of its own, shared with
+    any other run at that commit)."""
+    url, project_branch = _target(project)
     if not url:
         return None
+    if branch and branch != project_branch:
+        with _lock(project):
+            mirror = Path(repos.ensure(project, url, user_id))
+            sha = git_ops.git(mirror, "rev-parse", f"{branch}^{{commit}}")
+            _make(project, mirror, sha)
+            info = git_ops.commit_info(mirror, sha) or {}
+            return {"url": url, "branch": branch, "sha": sha, "subject": info.get("subject", ""),
+                    "at": datetime.now(UTC).isoformat()}
+    branch = project_branch
     with _lock(project):
         cur = current(project)
         if cur and cur["url"] == url and cur["branch"] == branch and (copy_dir(project, cur["sha"]) / ".git").exists():

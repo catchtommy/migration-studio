@@ -168,6 +168,47 @@ def rebuild(run_id: str, before_stage: str | None = None) -> str:
     return sha
 
 
+def monolith_pending(run: Run) -> bool:
+    """Whether the run reads the monolith from the shared read-only copy, so a step that changes its code needs the run's
+    own checkout first (check_out_monolith)."""
+    return bool(run.legacy and run.legacy.get("url")) and not run.repository and not run.base_sha
+
+
+def check_out_monolith(run_id: str, branch: str, base_branch: str | None, user_id: int | None, log) -> None:
+    """Give a run that has read the monolith from the shared read-only copy (app/legacy.py) its own checkout of it,
+    just before its first step that changes the monolith's code: the workspace root becomes a clone of the monolith on
+    the run's feature branch. It is cut from the commit the run has read so far when that is still the base branch,
+    so the code matches what earlier steps analysed, else from the base branch's latest commit. Anything earlier steps
+    wrote at the workspace root is replayed on it; the run's other repositories are moved over as they are."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        ws, project, read = Path(run.workspace), run.project, dict(run.legacy)
+        root_diffs = [(ex.id, ex.stage, ex.attempt, ex.diff) for ex in _chain(s, run, None)]
+    mirror = Path(repos.latest_for_run(project, read["url"], user_id, log))
+    base_branch = base_branch or read.get("branch") or repos.default_branch(mirror)
+    same = base_branch == (read.get("branch") or repos.default_branch(mirror))
+    base_sha = read["sha"] if same else git_ops.git(mirror, "rev-parse", f"{base_branch}^{{commit}}")
+
+    tmp = ws.with_name(ws.name + ".monolith")  # the workspace keeps working until the checkout is complete
+    git_ops.remove_tree(tmp)
+    try:
+        _restore(tmp, project, read["url"], branch, base_sha, None, root_diffs, user_id, f"{DOCS_ROOT}/*", log)
+        nested = ws / ".studio"
+        if nested.exists():
+            nested.rename(tmp / ".studio")
+        exclude_nested(tmp)
+    except Exception:
+        git_ops.remove_tree(tmp)
+        raise
+    git_ops.remove_tree(ws)
+    tmp.rename(ws)
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        run.repository, run.base_branch, run.base_sha, run.legacy = read["url"], base_branch, base_sha, None
+    log(f"Checked out the monolith for the steps that change its code: branch {branch} cut from {base_branch} at "
+        f"{base_sha[:10]}")
+
+
 def release_workspace(run_id: str) -> None:
     """Delete a run's workspace (it is being completed)."""
     with session_scope() as s:

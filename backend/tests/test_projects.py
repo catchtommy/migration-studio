@@ -336,7 +336,10 @@ def test_runs_that_only_read_the_monolith_share_one_read_only_copy(client, tmp_p
     assert git_ops  # imported for symmetry with the other repository tests
 
 
-def test_a_run_whose_steps_change_the_monolith_gets_its_own_checkout(client, tmp_path):
+def test_a_run_gets_its_own_checkout_of_the_monolith_only_when_a_step_changes_it(client, tmp_path):
+    from app import legacy
+    from app.tools import git_ops
+
     upstream = tmp_path / "monolith"
     make_monolith(upstream)
     key = new_project(client, monolith_repo=str(upstream))
@@ -344,10 +347,25 @@ def test_a_run_whose_steps_change_the_monolith_gets_its_own_checkout(client, tmp
     proj.post("/api/domains", json={"key": "d", "name": "D", "description": ""})
     proj.post("/api/domains/d/features", json={"key": "f", "name": "f"})
     wf = proj.get("/api/workflows/standard").json()
-    first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
-    steps = [{**st, "code": {"repository": ""}} if st.get("key") == first else st for st in wf["steps"]]
+    second = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][1]
+    steps = [{**st, "code": {"repository": ""}} if st.get("key") == second else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
-    run = proj.post("/api/runs", json={"domain": "d", "operation": "f"}).json()
+    run = proj.post("/api/runs", json={"domain": "d", "operation": "f", "base_branch": "release/2.4"}).json()
+
+    # The steps before it read the shared read-only copy, of the base branch chosen for the run.
     run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
     detail = proj.get(f"/api/runs/{run['id']}").json()
-    assert detail["legacy"] is None and (Path(detail["workspace"]) / "App.java").read_text() == "main"
+    assert detail["current_stage"] == second and detail["pending_branches"]["repository"]["checked_out"] is False
+    assert detail["legacy"]["branch"] == "release/2.4"
+    assert (legacy.copy_dir(key, detail["legacy"]["sha"]) / "App.java").read_text() == "release"
+    ws = Path(detail["workspace"])
+    assert not (ws / "App.java").exists()
+
+    # Confirming its branches checks the monolith out, at the commit the run has read so far.
+    r = proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": detail["branch"]})
+    assert r.status_code == 200, r.text
+    run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_commit"}, timeout=30)
+    assert run["legacy"] is None and run["base_sha"] == detail["legacy"]["sha"] and run["base_branch"] == "release/2.4"
+    assert (ws / "App.java").read_text() == "release"
+    assert git_ops.git(ws, "rev-parse", "--abbrev-ref", "HEAD") == detail["branch"]
+    assert not ws.with_name(ws.name + ".monolith").exists()

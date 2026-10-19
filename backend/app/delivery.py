@@ -134,7 +134,7 @@ def check_branches(project: str, info: dict) -> None:
     with session_scope() as s:
         unfinished = s.scalars(select(Run).where(Run.project == project, Run.branch == feature,
                                                  Run.status != "completed")).all()
-        busy = {url for run in unfinished for url in [run.repository, *(r["url"] for r in run.repositories or [])]
+        busy = {url for run in unfinished for url in [_monolith_url(run), *(r["url"] for r in run.repositories or [])]
                 if url}
     for r in info["repositories"]:
         where = "the monolith" if r["root"] else r["url"]
@@ -153,6 +153,13 @@ def check_branches(project: str, info: dict) -> None:
 def changes_monolith(stages: list[dict]) -> bool:
     """Whether any step of a workflow changes the monolith's code (so a run needs its own checkout of it)."""
     return any(st.get("kind") == "agent" and st.get("code") and not st["code"].get("repository") for st in stages)
+
+
+def _monolith_url(run: Run) -> str | None:
+    """The monolith, when the run changes its code: checked out already, or to be when its first such step starts."""
+    if run.repository:
+        return run.repository
+    return run.legacy["url"] if workspace.monolith_pending(run) and changes_monolith(run.stage_defs) else None
 
 
 def run_repository(run: Run) -> str | None:
@@ -252,9 +259,14 @@ def confirmation_needed(run_id: str, stage_key: str) -> dict | None:
             return None
         if key == ROOT:
             url = run_repository(run)
-            if not url or not run.base_sha:
+            if workspace.monolith_pending(run):  # read from the shared copy so far: checked out once confirmed
+                repo = {"key": ROOT, "name": "Monolith", "url": run.legacy["url"],
+                        "base_branch": run.base_branch or run.legacy.get("branch") or None, "checked_out": False}
+            elif not url or not run.base_sha:
                 return None  # the workspace isn't a clone of the monolith: nothing to cut (or commit)
-            repo = {"key": ROOT, "name": "Monolith", "url": url, "base_branch": run.base_branch, "checked_out": True}
+            else:
+                repo = {"key": ROOT, "name": "Monolith", "url": url, "base_branch": run.base_branch,
+                        "checked_out": True}
         else:
             r = next(r for r in run.repositories if r["key"] == key)
             repo = {"key": key, "name": r.get("name") or key, "url": r["url"], "base_branch": r.get("base_branch"),
@@ -277,9 +289,11 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
         project, current = run.project, run.branch
         urls = [r["url"] for r in run_repos(run)]
         target = next((r for r in run.repositories or [] if r["key"] == key), None)
+        if key == ROOT and workspace.monolith_pending(run):  # its own checkout is cut once confirmed
+            target = {"url": run.legacy["url"], "base_branch": run.base_branch or run.legacy.get("branch") or None}
         others = s.scalars(select(Run).where(Run.project == project, Run.branch == feature, Run.status != "completed",
                                              Run.id != run_id)).all()
-        busy = {u for o in others for u in [o.repository, *(r["url"] for r in o.repositories or [])] if u}
+        busy = {u for o in others for u in [_monolith_url(o), *(r["url"] for r in o.repositories or [])] if u}
     if target is not None and not target.get("base_sha"):
         urls.append(target["url"])
     for url in urls:
@@ -316,6 +330,12 @@ def apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
             if (path / ".git").exists():
                 git_ops.git(path, "branch", "-m", current, feature)
         log(f"Feature branch renamed to {feature}")
+    if key == ROOT:
+        with session_scope() as s:
+            pending = workspace.monolith_pending(s.get(Run, run_id))
+        if pending:
+            workspace.check_out_monolith(run_id, feature, (answer.get("base_branch") or "").strip() or None,
+                                         user_id, log)
     for r in nested:
         if r["key"] == key and not r.get("base_sha"):
             r["base_branch"] = (answer.get("base_branch") or "").strip() or r.get("base_branch")

@@ -125,16 +125,17 @@ class Runner:
                 run.status, run.error = "running", None
                 domain, operation, workspace, branch = run.domain, run.operation, run.workspace, run.branch
                 repository, source_branch, started_by = delivery.run_repository(run), run.base_branch, run.started_by
-                own_checkout = delivery.changes_monolith(run.stage_defs)
                 projects.set_current(run.project)  # this worker thread now works for the run's project
-            if initial and repository and not own_checkout:
-                # Nothing in this run changes the monolith: it reads the project's shared read-only copy, and its
-                # own workspace holds only documents (and other repositories it changes).
-                shared = legacy.snapshot(projects.current(), started_by)
+            if initial and repository:
+                # The run reads the project's shared read-only copy of the monolith, and its own workspace holds only
+                # documents (and other repositories it changes). A step that changes the monolith's code gets the
+                # run its own checkout just before it starts (workspace.check_out_monolith); the base branch chosen
+                # for that is kept until then.
+                shared = legacy.snapshot(projects.current(), started_by, source_branch)
                 git_ops.init_workspace(Path(workspace), None, branch)
                 with session_scope() as s:
                     run = s.get(Run, run_id)
-                    run.legacy, run.repository, run.base_branch = shared, "", None
+                    run.legacy, run.repository = shared, ""
                 exclude_nested(Path(workspace))
                 emit(run_id, "status", f"Reading the monolith from the shared read-only copy of "
                                        f"{shared['branch'] or 'its default branch'} at {shared['sha'][:10]}"
