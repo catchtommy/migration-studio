@@ -295,8 +295,11 @@ def test_only_a_cross_domain_feature_gets_an_orchestrator_in_the_monolith(client
     assert stages["monolith_orchestrator"]["status"] == "completed"
     assert ("monolith_orchestrator" in ran) is not domain_only  # skipped without an agent when domain-only
     assert ran.index("modular_monolith") < ran.index("microservice_scaffold")
+    assert stages["orchestrator_service"]["status"] == "completed"
+    assert ("orchestrator_service" in ran) is not domain_only  # the orchestrator service too
     if not domain_only:
-        assert ran.index("modular_monolith") < ran.index("monolith_orchestrator") < ran.index("microservice_scaffold")
+        assert ran.index("modular_monolith") < ran.index("monolith_orchestrator") < ran.index("microservice_scaffold") \
+            < ran.index("orchestrator_service") < ran.index("independent_tests")
     [doc] = [a for a in client.get(f"/api/runs/{run['id']}/artifacts").json()
              if a["stage"] == "monolith_orchestrator" and a["name"].endswith(".md")]
     note = client.get(f"/api/artifacts/{doc['id']}").json()["content"]
@@ -319,6 +322,25 @@ def test_standard_workflow_gains_the_orchestrator_step_keeping_its_settings(clie
     assert by_key["monolith_orchestrator"]["code"] == by_key["modular_monolith"]["code"] == \
         {"repository": "", "base_branch": "develop"}  # it changes the same code as the module step
     assert by_key["as_is_doc"]["publish_docs"] and "monolith_orchestrator" in by_key["gate_tests"]["reviews"]
+    with session_scope() as s:
+        s.get(WorkflowDef, (SHARED, "standard")).steps = original
+
+
+def test_standard_workflow_gains_the_orchestrator_service_after_the_domain_service(client):
+    original = client.get("/api/workflows/standard").json()["steps"]
+    previous = [{**st, "code": {"repository": "https://git.example.com/acme/{domain}-service.git"}}
+                if st["key"] == "microservice_scaffold" else st for st in _steps_of_shape(workflow_store._STANDARD_V5)]
+    with session_scope() as s:
+        s.get(WorkflowDef, (SHARED, "standard")).steps = previous
+        s.query(Setting).filter(Setting.key == "_standard_workflow_v6").delete()
+    workflow_store.seed()
+    steps = client.get("/api/workflows/standard").json()["steps"]
+    keys = [st["key"] for st in steps]
+    assert keys[keys.index("microservice_scaffold") + 1] == "orchestrator_service"
+    by_key = {st["key"]: st for st in steps}
+    assert by_key["microservice_scaffold"]["code"]["repository"].endswith("{domain}-service.git")  # kept
+    assert not by_key["orchestrator_service"].get("code")  # its own repository: set on the Workflows page
+    assert "orchestrator_service" in by_key["gate_tests"]["reviews"]
     with session_scope() as s:
         s.get(WorkflowDef, (SHARED, "standard")).steps = original
 

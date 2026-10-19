@@ -31,9 +31,12 @@ def plan(run) -> dict | None:
     except KeyError:
         return None  # the workflow was deleted: nothing to update to
     old = run.stage_defs
-    reached = {e.stage for e in run.stages} | ({run.current_stage} if run.current_stage else set())
     keys = [d["key"] for d in old]
-    cut = max((i for i, k in enumerate(keys) if k in reached), default=-1)
+    if run.current_stage in keys:  # where the run is now: after a re-run from an earlier step, the later steps run again
+        cut = keys.index(run.current_stage)
+    else:
+        reached = {e.stage for e in run.stages}
+        cut = max((i for i, k in enumerate(keys) if k in reached), default=-1)
     new_keys = [d["key"] for d in current]
     if cut >= 0 and keys[cut] not in new_keys:
         return {"blocked": f"The workflow no longer has {old[cut]['title']}, the step this run has reached, so the "

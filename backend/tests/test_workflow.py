@@ -35,11 +35,11 @@ def test_happy_path_runs_every_stage_and_gate(client):
     assert {s["stage"] for s in run["stages"]} == {
         "as_is_doc", "deep_dive", "gate_analysis", "domain_dependencies", "linked_domain_contracts",
         "domain_design", "orchestrator_design", "integration_design", "gate_design", "modular_monolith",
-        "monolith_orchestrator", "microservice_scaffold", "independent_tests", "gate_tests", "modernise", "monolith_integration",
+        "monolith_orchestrator", "microservice_scaffold", "orchestrator_service", "independent_tests", "gate_tests", "modernise", "monolith_integration",
         "gate_release"}
     assert all(s["status"] in ("completed", "approved") for s in run["stages"])
     names = [a["name"] for a in client.get(f"/api/runs/{run_id}/artifacts").json()]
-    assert len([n for n in names if n.endswith(".md")]) == 13  # one document per agent stage
+    assert len([n for n in names if n.endswith(".md")]) == 14  # one document per agent stage
     assert {"cross-domain.yaml", "domain-dependencies.yaml", "integration-decisions.yaml"} <= set(names)
     assert not Path(run["workspace"]).exists()  # a completed run's workspace is removed from the server
 
@@ -269,3 +269,25 @@ def test_a_run_cannot_follow_a_workflow_that_dropped_the_step_it_reached(client)
         update = run_workflow.plan(run)
     assert "no longer has" in update["blocked"]
     assert client.post(f"/api/runs/{run_id}/update-workflow").status_code == 409
+
+
+def test_after_a_rerun_from_an_earlier_step_the_steps_after_it_are_upcoming(client):
+    """A run re-run from an earlier step goes through the later steps again, so a step the workflow gained among them
+    is added by an update, not missed."""
+    from app import run_workflow
+    from app.db.models import Run
+    from app.db.session import session_scope
+
+    run_id = new_run(client)
+    for gate in GATES[:2]:  # past the design gate: the later steps ran before
+        wait_for(client, run_id, {"awaiting_approval"})
+        decide(client, run_id, decision="approve")
+    wait_for(client, run_id, {"awaiting_approval"})
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        keys = [d["key"] for d in run.stage_defs]
+        assert keys.index("orchestrator_service") > keys.index("modular_monolith")
+        run.workflow_stages = [d for d in run.stage_defs if d["key"] != "orchestrator_service"]
+        run.current_stage = "modular_monolith"  # as after a re-run from it
+        update = run_workflow.plan(run)
+    assert update["added"] == ["Orchestrator microservice"] and not update["missed"]

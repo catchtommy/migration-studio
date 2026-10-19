@@ -249,13 +249,15 @@ def _step_target(run: Run, stage: dict) -> str | None:
 
 
 def confirmation_needed(run_id: str, stage_key: str) -> dict | None:
-    """Before a step changes code in a repository for the first time in a run, the user confirms (or changes) its
-    base branch and the feature branch: what to show them, or None when there is nothing to confirm."""
+    """Before every step that changes code (each time it runs), the user confirms (or changes) the feature branch,
+    and the base branch of a repository not checked out yet: what to show them, or None when the step writes
+    documents only (or there is no repository to cut a branch in). `existing_branch` says when the feature branch
+    already exists, and what the step then does."""
     with session_scope() as s:
         run = s.get(Run, run_id)
         stage = next((d for d in run.stage_defs if d["key"] == stage_key), None)
         key = _step_target(run, stage or {})
-        if key is None or key in (run.delivery or {}).get("confirmed", []):
+        if key is None:
             return None
         if key == ROOT:
             url = run_repository(run)
@@ -275,7 +277,21 @@ def confirmation_needed(run_id: str, stage_key: str) -> dict | None:
         title = stage["title"]
     mirror = repos.mirror_dir(project, repo["url"])
     repo["default_branch"] = repos.default_branch(mirror) if mirror.exists() else None
-    return {"kind": "branches", "stage": stage_key, "stage_title": title, "feature_branch": feature, "repository": repo}
+    return {"kind": "branches", "stage": stage_key, "stage_title": title, "feature_branch": feature, "repository": repo,
+            "existing_branch": existing_branch(project, repo, feature, title)}
+
+
+def existing_branch(project: str, repo: dict, feature: str, title: str) -> dict | None:
+    """When the feature branch already exists in the repository: {"in_run": the run already works on it, "message"}.
+    (For a repository not checked out yet this reads the server's copy as last fetched; confirming fetches it.)"""
+    if repo["checked_out"]:
+        return {"in_run": True, "message": f"Branch {feature} already exists in {repo['name']}: this run is working on "
+                                           f"it, and {title} continues on it."}
+    if repos.has_branch(project, repo["url"], feature):
+        base = repo.get("base_branch") or repo.get("default_branch") or "the base branch"
+        return {"in_run": False, "message": f"Branch {feature} already exists in {repo['url']}. {title} continues on "
+                                            f"it, from its latest commit, instead of cutting a new branch from {base}."}
+    return None
 
 
 def check_confirmation(run_id: str, key: str, feature: str, base: str | None, user_id: int | None) -> None:
@@ -287,7 +303,8 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
     with session_scope() as s:
         run = s.get(Run, run_id)
         project, current = run.project, run.branch
-        urls = [r["url"] for r in run_repos(run)]
+        checked_out = [r["url"] for r in run_repos(run)]
+        urls = list(checked_out)
         target = next((r for r in run.repositories or [] if r["key"] == key), None)
         if key == ROOT and workspace.monolith_pending(run):  # its own checkout is cut once confirmed
             target = {"url": run.legacy["url"], "base_branch": run.base_branch or run.legacy.get("branch") or None}
@@ -309,10 +326,14 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
             raise ValueError(f"{target['url']} has no branch or tag {base_branch}")
         if feature == base_branch:
             raise ValueError("The feature branch must differ from the base branch")
-    if feature != current or target is not None:
-        for url in urls:
+    # Renaming the feature branch renames it in every repository the run has checked out, so the new name must be free
+    # there (pushing would clash). In the repository about to be checked out, an existing branch is not a clash: the
+    # step continues on it (apply_confirmation).
+    if feature != current:
+        for url in dict.fromkeys(checked_out):
             if repos.has_branch(project, url, feature):
-                raise ValueError(f"{url} already has a branch {feature}; choose another name")
+                raise ValueError(f"{url} already has a branch {feature}, and renaming the run's branch there would "
+                                 "clash with it; choose another name")
 
 
 def apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
@@ -340,9 +361,12 @@ def apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
         if r["key"] == key and not r.get("base_sha"):
             r["base_branch"] = (answer.get("base_branch") or "").strip() or r.get("base_branch")
             mirror = repos.latest_for_run(project, r["url"], user_id, log)
-            r["base_sha"] = git_ops.init_workspace(ws / r["path"], mirror, feature, source_branch=r["base_branch"])
+            exists = git_ops.commit_info(Path(mirror), f"refs/heads/{feature}") is not None
+            r["base_sha"] = git_ops.init_workspace(ws / r["path"], mirror, feature,
+                                                   source_branch=feature if exists else r["base_branch"])
             r["base_branch"] = r["base_branch"] or repos.default_branch(Path(mirror))
-            log(f"Checked out {r['url']}: branch {feature} cut from {r['base_branch']}")
+            log(f"Checked out {r['url']}: the existing branch {feature}, at its latest commit" if exists else
+                f"Checked out {r['url']}: branch {feature} cut from {r['base_branch']}")
     with session_scope() as s:
         run = s.get(Run, run_id)
         delivery = dict(run.delivery or {})

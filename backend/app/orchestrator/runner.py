@@ -25,6 +25,20 @@ from app.workspace import exclude_nested, release_workspace, start_fresh
 log = logging.getLogger(__name__)
 
 
+
+def _fetch_for_question(run_id: str, url: str) -> None:
+    """A step asks for its branches in a repository the run hasn't checked out: bring the server's copy up to date
+    first, so the question can say whether the feature branch already exists there. Best effort: confirming fetches
+    again and reports a failure."""
+    from app import repos
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        project, user_id = run.project, run.started_by
+    try:
+        repos.fetch(project, url, user_id)
+    except Exception as e:  # network, credentials: the question shows what the last fetch knew
+        log.warning("Could not fetch %s for run %s: %s", url, run_id, e)
+
 class RunBusyError(RuntimeError):
     pass
 
@@ -176,6 +190,8 @@ class Runner:
             with self._lock:
                 self._active.discard(run_id)
 
+        if gate and gate.get("kind") == "branches" and not gate["repository"].get("checked_out"):
+            _fetch_for_question(run_id, gate["repository"]["url"])
         review = error is None and not gate and delivery.wants_review(run_id)
         if error is None and not gate and not review:
             # Finished: nothing on disk is needed any more (documents and diffs are in the database, commits

@@ -459,3 +459,155 @@ def test_a_run_started_before_any_step_changed_code_reviews_its_commits_once_one
         else:
             break
     assert reviewed == [later]
+
+
+def test_a_later_step_cuts_the_feature_branch_in_its_own_repository_after_an_earlier_push(client, tmp_path):
+    """The run pushed its feature branch from an earlier step (to the monolith); a later step that changes another
+    repository cuts the same branch there. The pushed branch is the run's own, so it is no reason to refuse."""
+    upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
+    service = tmp_path / "loan-service"
+    make_monolith(service)
+    wf = proj.get("/api/workflows/standard").json()
+    later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]  # after the first gate
+    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == later else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    paused = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    first = paused["current_stage"]
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={
+        "repo": "monolith", "message": "First step", "branch": run["branch"], "files": [f"studio-stub/{first}.txt"],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    assert git(upstream, "rev-parse", "--verify", run["branch"])  # pushed to the monolith
+
+    while True:  # on to the later step, which asks for its own repository's branches
+        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches", "awaiting_publish"}, timeout=60)
+        if run["status"] == "awaiting_branches":
+            break
+        if run["status"] == "awaiting_publish":
+            assert proj.post(f"/api/runs/{run['id']}/docs/skip").status_code == 204
+        else:
+            assert proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
+    assert run["pending_branches"]["repository"]["url"] == str(service)
+    r = proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    assert r.status_code == 200, r.text  # was refused: "<monolith> already has a branch ..."
+    paused = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert paused["current_stage"] == later
+    repos = {r["url"]: r for r in proj.get(f"/api/runs/{run['id']}/repositories").json()}
+    assert repos[str(service)]["changed"]
+
+
+def test_every_code_step_asks_for_its_branches_and_says_when_the_branch_exists(client, tmp_path):
+    """Each step that changes code asks before it starts, even in a repository the run already works on; then the
+    feature branch exists there, which the question says. Renaming it to a name taken there is still refused."""
+    upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
+    git(upstream, "branch", "taken")
+    wf = proj.get("/api/workflows/standard").json()
+    agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
+    steps = [{**st, "code": {"repository": ""}} if st.get("key") in agents[:2] else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    assert run["current_stage"] == agents[0] and run["pending_branches"]["existing_branch"] is None
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204
+
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)  # the next code step asks again
+    assert run["current_stage"] == agents[1]
+    existing = run["pending_branches"]["existing_branch"]
+    assert existing["in_run"] and f"Branch {run['branch']} already exists" in existing["message"]
+    r = proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": "taken"})
+    assert r.status_code == 422 and "already has a branch taken" in r.text
+    assert proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]}).status_code == 200
+    assert wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)["current_stage"] == agents[1]
+
+
+def test_an_existing_branch_in_a_repository_not_checked_out_yet_is_continued_on(client, tmp_path):
+    """The feature branch already exists in the repository a step is about to check out: the question says so, and
+    the step continues on that branch, from its latest commit, instead of being refused."""
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    service = tmp_path / "loan-service"
+    make_monolith(service)
+    wf = proj.get("/api/workflows/standard").json()
+    first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
+    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == first else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    git(service, "checkout", "-q", "-b", "migration/loan/approve")
+    (service / "EARLIER.md").write_text("work from an earlier attempt\n")
+    git(service, "add", "-A")
+    git(service, "commit", "-q", "-m", "earlier work")
+    tip = git(service, "rev-parse", "HEAD")
+    git(service, "checkout", "-q", "main")
+
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    assert run["branch"] == "migration/loan/approve"
+    r = proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    assert r.status_code == 200, r.text  # was refused: "already has a branch"
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    with session_scope() as s:
+        from app.db.models import AuditEvent, Run
+        started = {r["url"]: r["base_sha"] for r in s.get(Run, run["id"]).repositories}
+        log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == run["id"])))
+    assert started[str(service)] == tip  # on the existing branch, not cut afresh from main
+    assert "the existing branch migration/loan/approve" in log
+
+
+
+def test_a_step_set_to_change_code_while_the_run_waits_at_a_commit_review_uses_its_repository(client, tmp_path):
+    """The workflow's next step gets its repository while the run waits to commit the previous step's code: going on
+    after the review picks it up, so the step asks for that repository's branches instead of running without it."""
+    upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
+    service = tmp_path / "loan-orchestrator"
+    make_monolith(service)
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+
+    wf = proj.get("/api/workflows/standard").json()
+    following = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][1]  # the very next step
+    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == following else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+
+    assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204  # go on without committing yet
+    paused = wait_for(proj, run["id"], {"awaiting_branches", "awaiting_commit", "awaiting_approval"}, timeout=30)
+    assert paused["status"] == "awaiting_branches" and paused["current_stage"] == following
+    assert paused["pending_branches"]["repository"]["url"] == str(service)
+
+
+def test_a_step_never_falls_back_to_the_monolith_for_a_repository_the_run_has_not_checked_out():
+    from app.orchestrator.graph import _code_dir
+    from app.orchestrator.stages import StageDef
+
+    stage = StageDef("orchestrator_service", "Orchestrator microservice", "agent", "",
+                     code={"repository": "https://git.example.com/acme/{domain}-orchestrator.git"})
+    checked_out = [{"url": "https://git.example.com/acme/loan-orchestrator.git", "path": ".studio/repos/orch"}]
+    assert _code_dir(stage, checked_out, "loan") == ".studio/repos/orch"
+    assert _code_dir(stage, [], "loan") is None  # not the monolith (".")
+    assert _code_dir(StageDef("modular_monolith", "Module", "agent", "", code={"repository": ""}), [], "loan") == "."
+
+
+def test_an_existing_branch_in_the_monolith_is_shown_and_continued_on(client, tmp_path):
+    upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
+    git(upstream, "checkout", "-q", "-b", "migration/loan/approve")
+    (upstream / "EARLIER.md").write_text("work from an earlier attempt\n")
+    git(upstream, "add", "-A")
+    git(upstream, "commit", "-q", "-m", "earlier work")
+    tip = git(upstream, "rev-parse", "HEAD")
+    git(upstream, "checkout", "-q", "main")
+
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    existing = run["pending_branches"]["existing_branch"]
+    assert existing and not existing["in_run"] and "continues on it, from its latest commit" in existing["message"]
+    r = proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    assert r.status_code == 200, r.text
+    run = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert run["base_sha"] == tip and (Path(run["workspace"]) / "EARLIER.md").is_file()  # on the existing branch

@@ -587,6 +587,22 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
               </span>
             </span>
           </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={(form.checks ?? []).includes("orchestrator_service_guardrails")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "orchestrator_service_guardrails", e.target.checked))}
+            />
+            <span>
+              Orchestrator service guardrails
+              <span className="block text-xs text-subtle">
+                Before finishing, a git comparison must pass: no database of any kind in the service, the monolith untouched, the orchestrator module's code copied
+                unchanged apart from package and import lines, Java 25 on Spring Boot, and exactly the declared operations.
+              </span>
+            </span>
+          </label>
         </div>
 
       </>

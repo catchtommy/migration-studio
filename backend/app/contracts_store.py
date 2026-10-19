@@ -34,6 +34,7 @@ LINKED_CONTRACTS_FILE = "linked-domain-contracts.yaml"  # written by the linked-
 MICROSERVICE_EXTRACTION_FILE = "microservice-extraction.yaml"  # the microservice step's declaration
 MODULE_EXTRACTION_FILE = "module-extraction.yaml"  # the Module in monolith step's declaration of what it changed
 ORCHESTRATOR_EXTRACTION_FILE = "orchestrator-extraction.yaml"  # the Orchestrator in monolith step's declaration
+ORCHESTRATOR_SERVICE_FILE = "orchestrator-service-extraction.yaml"  # the Orchestrator microservice step's declaration
 COORDINATES = re.compile(r"^[\w.\-]+:[\w.\-]+$")  # Maven groupId:artifactId
 DOMAIN_DESIGN_FILE = "domain-design.yaml"  # the domain design's declaration against the guardrails
 # Lists in domain-design.yaml that must stay empty unless the user approved an exception for that rule.
@@ -390,6 +391,81 @@ def _orchestrator_extraction_problems(output_dir: Path, declaration: dict) -> li
     return problems
 
 
+def parse_orchestrator_service(text: str) -> dict:
+    """What the Orchestrator microservice step declares the service exposes and calls (or `orchestrator: none`)."""
+    data = _load(text, ORCHESTRATOR_SERVICE_FILE)
+    where = ORCHESTRATOR_SERVICE_FILE
+    _require(data, ("feature", "domain", "orchestrator"), where)
+    _one_of(data["orchestrator"], ("service", "none"), f"{where} orchestrator")
+    if data["orchestrator"] == "none":
+        if not str(data.get("reason") or "").strip():
+            raise InvalidDocument(f"{where}: give the reason there is no orchestrator service")
+        if data.get("operations") or data.get("domain_api"):
+            raise InvalidDocument(f"{where}: orchestrator is none, so list no operations or domain_api")
+        return data
+    _require(data, ("module_commit", "openapi"), where)
+    for field, needs in (("operations", ("method", "operation_id")), ("domain_api", ("method", "operation_id")),
+                         ("replaced", ("file", "reason"))):
+        value = data.get(field)
+        if field == "operations" and not value:
+            raise InvalidDocument(f"{where}: list the operations the service exposes")
+        if value is not None and not isinstance(value, list):
+            raise InvalidDocument(f"{where}: {field} must be a list")
+        for i, item in enumerate(value or [], 1):
+            if not isinstance(item, dict):
+                raise InvalidDocument(f"{where} {field} {i} must be a mapping")
+            _require(item, needs, f"{where} {field} {i}")
+    if data.get("contracts") is not None and not isinstance(data["contracts"], list):
+        raise InvalidDocument(f"{where}: contracts must be a list of contract keys")
+    return data
+
+
+def _orchestrator_service_problems(output_dir: Path, declaration: dict) -> list[str]:
+    """Check the service against the documents next to it: there is an orchestrator to lift, the service exposes
+    every operation of the orchestrator module, and it calls only domain operations and linked-domain contracts."""
+    if declaration["orchestrator"] == "none":
+        return []
+    from app.service_guardrails import openapi_operation_ids
+
+    problems = []
+    built = output_dir / ORCHESTRATOR_EXTRACTION_FILE
+    module = None
+    if not built.is_file():
+        problems.append(f"{ORCHESTRATOR_SERVICE_FILE}: {ORCHESTRATOR_EXTRACTION_FILE} of the Orchestrator in monolith "
+                        "step is missing; the service lifts the orchestrator module it declares")
+    else:
+        try:
+            module = parse_orchestrator_extraction(built.read_text(encoding="utf-8"))
+        except InvalidDocument:
+            module = None
+        if module and module["orchestrator"] == "none":
+            problems.append(f"{ORCHESTRATOR_SERVICE_FILE}: the Orchestrator in monolith step built no orchestrator "
+                            f"({module['reason']}), so there is no orchestrator service: write orchestrator: none")
+    if module and module["orchestrator"] == "module":
+        exposed = {str(o["method"]) for o in declaration["operations"]}
+        problems += [f"{ORCHESTRATOR_SERVICE_FILE}: {o['method']} of the orchestrator module is not an operation of the "
+                     "service; the monolith calls every one through it" for o in module.get("operations") or []
+                     if str(o["method"]) not in exposed]
+    api = output_dir / str(declaration["openapi"])
+    if not api.is_file():
+        problems.append(f"{ORCHESTRATOR_SERVICE_FILE}: the service's API {declaration['openapi']} does not exist")
+    domain_api = output_dir / "openapi.yaml"
+    if domain_api.is_file() and declaration.get("domain_api"):
+        ids, _missing = openapi_operation_ids(domain_api.read_text(encoding="utf-8"))
+        problems += [f"{ORCHESTRATOR_SERVICE_FILE}: domain operation {o['operation_id']} ({o['method']}) is not in the "
+                     "domain's openapi.yaml" for o in declaration["domain_api"] if str(o["operation_id"]) not in ids]
+    linked = output_dir / LINKED_CONTRACTS_FILE
+    if linked.is_file() and declaration.get("contracts"):
+        try:
+            keys = {c["key"] for c in parse_linked_domain_contracts(linked.read_text(encoding="utf-8"))}
+        except InvalidDocument:
+            keys = None
+        if keys is not None:
+            problems += [f"{ORCHESTRATOR_SERVICE_FILE}: contract {c} is not in {LINKED_CONTRACTS_FILE}"
+                         for c in declaration["contracts"] if c not in keys]
+    return problems
+
+
 def _module_extraction_problems(output_dir: Path, declaration: dict) -> list[str]:
     problems = []
     deps = output_dir / DOMAIN_DEPENDENCIES_FILE
@@ -505,6 +581,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
                         (DOMAIN_DESIGN_FILE, parse_domain_design),
                         (MODULE_EXTRACTION_FILE, parse_module_extraction),
                         (ORCHESTRATOR_EXTRACTION_FILE, parse_orchestrator_extraction),
+                        (ORCHESTRATOR_SERVICE_FILE, parse_orchestrator_service),
                         (MICROSERVICE_EXTRACTION_FILE, parse_microservice_extraction),
                         (DECISIONS_FILE, lambda text: parse_decisions(text, {c["key"] for c in linked}))):
         f = output_dir / name
@@ -526,6 +603,8 @@ def validate_outputs(output_dir: Path) -> list[str]:
             problems += _module_extraction_problems(output_dir, parsed)
         if name == ORCHESTRATOR_EXTRACTION_FILE:
             problems += _orchestrator_extraction_problems(output_dir, parsed)
+        if name == ORCHESTRATOR_SERVICE_FILE:
+            problems += _orchestrator_service_problems(output_dir, parsed)
         if name == DECISIONS_FILE:
             for c in parsed["contracts"]:
                 if c.get("spec") and not (output_dir / c["spec"]).is_file():

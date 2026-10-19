@@ -112,11 +112,16 @@ STANDARD = Workflow((
     StageDef("microservice_scaffold", "Spring Boot microservice", "agent",
              "Lift the module into its own service (same Spring 3.2 / iBatis stack, executable jar) exposing the approved REST "
              "contract; code and SQL copied unchanged."),
+    StageDef("orchestrator_service", "Orchestrator microservice", "agent",
+             "Only when the feature has an orchestrator: lift the orchestrator module into its own Spring Boot "
+             "service. It calls the domain microservice and the other domains over their APIs, and holds no "
+             "database."),
     StageDef("independent_tests", "Independent tests", "agent",
              "Contract, integration and characterization tests covering every scenario."),
     StageDef("gate_tests", "Approve tests", "gate",
              "Review the module, microservice and scenario coverage.",
-             ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "independent_tests")),
+             ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service",
+              "independent_tests")),
     StageDef("modernise", "Modernisation", "agent",
              "Java 25, Spring Boot 4, iBatis → Spring Data JPA on the existing tables, code improvements."),
     StageDef("monolith_integration", "Monolith integration", "agent",

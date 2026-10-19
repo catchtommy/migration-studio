@@ -546,7 +546,9 @@ def commit_changes(run_id: str, body: CommitIn, db: Session = Depends(get_db),
 
 
 def _go_on(run_id: str) -> None:
-    """Resume a run that waits right after a step for its code to be committed."""
+    """Resume a run that waits right after a step (to commit its code, or publish its documents). Like every way a
+    run goes on, it first picks up the workflow's current code settings for the steps still to run."""
+    delivery.refresh_code_settings(run_id)
     with session_scope() as s:
         s.get(Run, run_id).status = "running"
     get_runner().resume(run_id, {"go_on": True})

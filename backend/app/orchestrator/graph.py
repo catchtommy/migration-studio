@@ -127,14 +127,15 @@ def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
     return [ArtifactOut(name=note.name, path=ctx.rel(note), kind="markdown")]
 
 
-def _code_dir(stage: StageDef, nested: list[dict], domain: str) -> str:
+def _code_dir(stage: StageDef, nested: list[dict], domain: str) -> str | None:
     """Where the step changes code, relative to the workspace: the root (the monolith), or the run's checkout of the
-    repository the step names (see app/delivery.py)."""
+    repository the step names (see app/delivery.py). None when the step names a repository the run has not checked
+    out: it must not change the monolith instead."""
     repository = (stage.code or {}).get("repository")
     if not repository:
         return "."
     url = repository.replace("{domain}", domain)
-    return next((r["path"] for r in nested if r["url"] == url), ".")
+    return next((r["path"] for r in nested if r["url"] == url), None)
 
 
 def _repository_notes(nested: list[dict]) -> list[dict]:
@@ -201,6 +202,8 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             config = None
         domain = state["domain"]
         code_dir = _code_dir(stage, nested, domain)
+        missing = None if code_dir is not None else (stage.code or {}).get("repository", "").replace("{domain}", domain)
+        code_dir = code_dir or "."
         discovery = domain == discovery_store.MONOLITH or state["operation"] == discovery_store.FEATURES_OP
         workspace.materialize_documents(run_id, ws)  # the documents in effect, from the database, for this step
         if not discovery and contracts_store.export_specs(ws):
@@ -229,6 +232,10 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             skipped = modulith_scope.skip_reason(stage.key, ctx.output_dir)
             if skipped:
                 outputs = _skip(ctx, stage, skipped)
+            elif missing:
+                raise RuntimeError(f"{stage.title} changes code in {missing}, but this run has not checked it out, so "
+                                   "it would change the wrong repository. Retry the run: it picks up the workflow's "
+                                   "current settings and asks for that repository's branches")
             else:
                 outputs = get_agent(stage.key, config, settings["ai_provider"]).run(ctx)
         except Exception as e:

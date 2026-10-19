@@ -5,7 +5,8 @@ import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 
-from app import boundary_check, module_guardrails, orchestrator_guardrails, service_guardrails
+from app import (boundary_check, module_guardrails, orchestrator_guardrails, orchestrator_service_guardrails,
+                 service_guardrails)
 from app.text import decode, decode_with, encode_like
 from app.agents.base_agent import DOCS_ROOT, AgentContext
 
@@ -79,6 +80,15 @@ SCHEMAS: dict[str, dict] = {
                        "Run it after every step and before finishing. Needs orchestrator-extraction.yaml.",
         "input_schema": _obj({}, []),
     },
+    "check_orchestrator_service_guardrails": {
+        "description": "Check everything you changed in the orchestrator service's repository since this step started "
+                       "against the step's limits: no database of any kind (data access, transactions, SQL, data "
+                       "libraries, datasource settings), the monolith untouched, the orchestrator module's code "
+                       "copied unchanged apart from package and import lines unless listed under replaced, Java 25 "
+                       "on Spring Boot, no secrets, no other domain's code, and exactly the declared operations. Run "
+                       "it after every step and before finishing. Needs orchestrator-service-extraction.yaml.",
+        "input_schema": _obj({}, []),
+    },
     "check_service_guardrails": {
         "description": "Check everything you changed in the service repository since this step started against the "
                        "step's limits: the monolith untouched, the copied code equal to the module's apart from "
@@ -148,9 +158,10 @@ class Toolbox:
         self.docs_only = ctx.stage_def is not None and not ctx.stage_def.code
         tools = ctx.config.get("tools", [])
         if ctx.base_sha is None and {"check_module_guardrails", "check_orchestrator_guardrails",
-                                     "check_service_guardrails"} & set(tools):
+                                     "check_service_guardrails", "check_orchestrator_service_guardrails"} & set(tools):
             ctx.base_sha = module_guardrails.head(self.root / ctx.code_dir)
-        if ctx.monolith_sha is None and "check_service_guardrails" in tools and ctx.code_dir not in (".", ""):
+        if ctx.monolith_sha is None and {"check_service_guardrails", "check_orchestrator_service_guardrails"} & set(tools) \
+                and ctx.code_dir not in (".", ""):
             ctx.monolith_sha = module_guardrails.head(self.root)  # the monolith checkout the service copies from
 
     def run(self, name: str, args: dict) -> str:
@@ -296,6 +307,9 @@ class Toolbox:
 
     def check_orchestrator_guardrails(self) -> str:
         return orchestrator_guardrails.report(orchestrator_guardrails.for_context(self.ctx))
+
+    def check_orchestrator_service_guardrails(self) -> str:
+        return orchestrator_service_guardrails.report(orchestrator_service_guardrails.for_context(self.ctx))
 
     def check_service_guardrails(self) -> str:
         return service_guardrails.report(service_guardrails.for_context(self.ctx))

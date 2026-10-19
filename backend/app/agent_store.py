@@ -24,7 +24,8 @@ LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
                   "_added_discovery_agents": ["bounded_contexts", "domain_features"],
                   "_added_modulith_design_agents": ["domain_dependencies", "domain_design",
                                                     "wrapper_design", "orchestrator_design"],
-                  "_added_monolith_orchestrator": ["monolith_orchestrator"]}
+                  "_added_monolith_orchestrator": ["monolith_orchestrator"],
+                  "_added_orchestrator_service": ["orchestrator_service"]}
 
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
@@ -49,7 +50,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                       "e5ac314731ee2cea532d10917f03304365e33b91c1f7358103bbe9d314ddd8db"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
-    "orchestrator_design": {"44b0788e38d118d0b1a4a7cf2de98d2dbcf3bee334a7885bc8ce8788bac6c365",
+    "orchestrator_design": {"fec9b1a759bfbb513210a58472431041d014335317139309281fd8546c42b34a",
+                            "44b0788e38d118d0b1a4a7cf2de98d2dbcf3bee334a7885bc8ce8788bac6c365",
                             "35da265d3395dafb7b16aaa1477ff1c3fba106c2c0bc11ca340c8f05da063b62",
                             "81cf9ffa985d209c21d9d32644ff19055335c8fbb6b7941d140ccae39c05d133",
         "8ee1b3ec61e2994c53791f681523bed3f44c8861ae4576a7cd6c01a9b509bfe7",
@@ -69,10 +71,12 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "50062f4c3b3dcc7aab9e4ace195d0134977a341a4a81a22518962ed7f87474c2",
         "22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
                               "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5"},
-    "independent_tests": {"97d564115dc60807860254fee3ecfa541ca999e29cf9870d487a5efe93031f02",
+    "independent_tests": {"8a7b319eb255ecea335e60322b4e11c207a2c23e3e698999b749ea81f442b27a",
+                          "97d564115dc60807860254fee3ecfa541ca999e29cf9870d487a5efe93031f02",
                           "4b1b34967d2944c200b2b4bd8c0a81768cd6292da94cac47c000f9ba30d0de8e",
                           "d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
-    "microservice_scaffold": {"433fa24641180e7ee1a61b9c122707e5088afd85fcfff8238ad9953a37aafe56",
+    "microservice_scaffold": {"d10bb3879c92380cc05bd23f1c91a377749a367067c79bb40d4ad7c4733530e9",
+                              "433fa24641180e7ee1a61b9c122707e5088afd85fcfff8238ad9953a37aafe56",
                               "181fe29546e7075f3e007a79554c5c168620b9e23364fea592f1aea97673972c",
                               "775065ebf6599df3036965a91a20399a3bc78702ef5ac7ae7f8b1a107ed59c21",
                               "869be47dce9dcbb7f70c95cf4c4ab19d00772b4b0c5851c71c9e23c481319145",
@@ -87,7 +91,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                          "9bf4007e9337fafdab89a901c912245fcd3d44a29989b7732603c7fcada2129b",
                          "164e46fabe89f188ecce8525da9ebda4b9fea4d35b97992f92542414da55c7b9",
                          "db8c731241fbb0878e4b93b12357d93ff4cd2f2160b350346523dcdd883e9765"},
-    "monolith_integration": {"11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
+    "monolith_integration": {"29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
+                             "11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
                              "686fec3600f472af2216b6e1805795367b9dd761933e094e3bf424dfbbf8d6b1",
                              "08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
     "as_is_doc": {"9fb0392d1747e6a478a3e0cd6d77ea8cd4564fd9e815959b5baf2f48ee52c892"},
@@ -95,7 +100,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v14"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v15"
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.

@@ -172,6 +172,32 @@ exceptions: []
             lines += ["orchestrator: none", 'reason: "[stub] The feature is domain-only: controllers call the domain '
                       'module directly"']
         files["orchestrator-extraction.yaml"] = "\n".join(lines) + "\n"
+    if "orchestrator-service-extraction.yaml" in outputs:  # the orchestrator lifted into its own service, if any
+        module = None
+        built = ctx.output_dir / contracts_store.ORCHESTRATOR_EXTRACTION_FILE
+        if built.is_file():
+            try:
+                module = contracts_store.parse_orchestrator_extraction(built.read_text(encoding="utf-8"))
+            except contracts_store.InvalidDocument:
+                pass
+        lines = ["# [stub] sample orchestrator service declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}"]
+        if module and module["orchestrator"] == "module":
+            name, resource = _ident(ctx.domain), f"{_ident(ctx.domain)}Orchestration"
+            files["orchestrator-openapi.yaml"] = sample_openapi(
+                f"{ctx.domain} orchestrator – {ctx.operation} (stub)", f"/internal/api/v1/{ctx.domain}/orchestrator",
+                resource, f"What the monolith calls for {ctx.operation}; the orchestrator calls the {ctx.domain} service.")
+            taken = [str(op["method"]) for op in module.get("operations") or []]
+            methods = [*taken, *(f"{name}Orchestrator#{verb}" for verb in ("list", "get", "delete"))]
+            ids = [f"{verb}{resource}" for verb in ("create", "list", "get", "delete")]
+            lines += ["orchestrator: service", "module_commit: 0000000000000000000000000000000000000000",
+                      "openapi: orchestrator-openapi.yaml", "operations:",
+                      *(f"  - {{method: '{m}', operation_id: {i}}}" for m, i in zip(methods, ids)),
+                      "domain_api:", f"  - {{method: '{name}Service#create', operation_id: create{name}}}",
+                      f"contracts: [{query}]", "replaced: []"]
+        else:
+            lines += ["orchestrator: none",
+                      'reason: "[stub] The feature has no orchestrator: the monolith calls the domain service directly"']
+        files["orchestrator-service-extraction.yaml"] = "\n".join(lines) + "\n"
     if "linked-domain-contracts.yaml" in outputs:
         files["linked-domain-contracts.yaml"] = f"""# [stub] sample linked-domain contracts
 feature: {ctx.operation}

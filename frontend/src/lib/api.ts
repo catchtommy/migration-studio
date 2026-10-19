@@ -71,6 +71,7 @@ export interface PendingBranches {
   stage_title: string;
   feature_branch: string;
   repository: { key: string; name: string; url: string; base_branch: string | null; checked_out: boolean; default_branch: string | null };
+  existing_branch?: { in_run: boolean; message: string } | null; // the feature branch already exists there
 }
 
 /** Approved AS-IS documents and how they compare with the monolith's base branch. */

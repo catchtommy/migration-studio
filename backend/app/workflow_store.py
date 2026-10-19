@@ -41,7 +41,8 @@ def steps_of(workflow: Workflow) -> list[dict]:
 
 STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → Modulith design (linked-domain contracts, domain, "
                         "orchestrator) → cross-domain integration → module → orchestrator (cross-domain features) → "
-                        "microservice → tests → modernisation → integration, with four approval gates.")
+                        "microservice → orchestrator service (when there is an orchestrator) → tests → modernisation "
+                        "→ integration, with four approval gates.")
 
 
 def _shape(steps: list[dict]) -> list[tuple]:
@@ -76,6 +77,20 @@ _STANDARD_V4 = [*_HEAD, ("agent", "domain_dependencies", ()), ("agent", "linked_
                                          "orchestrator_design", "integration_design")), *_TAIL]
 
 
+# Fifth release: Orchestrator in monolith after the module; no orchestrator microservice yet.
+_STANDARD_V5 = [*_STANDARD_V4[:_STANDARD_V4.index(("agent", "modular_monolith", ())) + 1],
+                ("agent", "monolith_orchestrator", ()), ("agent", "microservice_scaffold", ()),
+                ("agent", "independent_tests", ()),
+                ("gate", "gate_tests", ("modular_monolith", "monolith_orchestrator", "microservice_scaffold",
+                                        "independent_tests")), *_TAIL[4:]]
+# The releases a stored standard workflow (shared, or a project's copy) is brought up from, by marker.
+_RELEASES = (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2),
+             ("_standard_workflow_v4", _STANDARD_V3), ("_standard_workflow_v5", _STANDARD_V4),
+             ("_standard_workflow_v6", _STANDARD_V5))
+# Projects' copies are upgraded from these releases on (copies older than that were never upgraded, so stay as they are).
+_PROJECT_RELEASES = (("_standard_project_copies_v5", _STANDARD_V4), ("_standard_project_copies_v6", _STANDARD_V5))
+
+
 def _upgraded(steps: list[dict]) -> list[dict]:
     """The current STANDARD, keeping the settings of the stored steps (code, uses, publishing). A step new in this
     release that changes the same code as an earlier one (the orchestrator, after the module) gets its settings."""
@@ -99,29 +114,26 @@ def seed() -> None:
         if s.scalar(select(WorkflowDef).limit(1)) is None:
             s.add(WorkflowDef(project=SHARED, key=STANDARD_KEY, name="Standard migration", steps=steps_of(STANDARD),
                               description=STANDARD_DESCRIPTION))
-            s.add(Setting(key="_standard_workflow_v2", value=True))
-            s.add(Setting(key="_standard_workflow_v3", value=True))
-            s.add(Setting(key="_standard_workflow_v4", value=True))
-            s.add(Setting(key="_standard_workflow_v5", value=True))
-            s.add(Setting(key="_standard_project_copies_v5", value=True))
+            for marker, _previous in (*_RELEASES, *_PROJECT_RELEASES):  # it is the current release already
+                s.add(Setting(key=marker, value=True))
             s.add(Setting(key="_standard_publishes_as_is_docs", value=True))
         else:
             # Upgrade the standard workflow only if nobody has changed it; customised ones are left alone.
-            for marker, previous in (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2),
-                                     ("_standard_workflow_v4", _STANDARD_V3), ("_standard_workflow_v5", _STANDARD_V4)):
+            for marker, previous in _RELEASES:
                 if s.get(Setting, (GLOBAL, marker)) is None:
                     standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
                     if standard is not None and _shape(standard.steps) == previous:
                         standard.steps, standard.description = _upgraded(standard.steps), STANDARD_DESCRIPTION
                     s.add(Setting(key=marker, value=True))
-        if s.get(Setting, (GLOBAL, "_standard_project_copies_v5")) is None:
-            # Projects' copies of the standard workflow whose steps are still the previous release's (only their
-            # settings differ, such as the documents a step reads) get the Orchestrator in monolith step too.
-            for copy in s.scalars(select(WorkflowDef).where(WorkflowDef.key == STANDARD_KEY,
-                                                            WorkflowDef.project != SHARED)):
-                if _shape(copy.steps) == _STANDARD_V4:
-                    copy.steps = _upgraded(copy.steps)
-            s.add(Setting(key="_standard_project_copies_v5", value=True))
+        for marker, previous in _PROJECT_RELEASES:
+            if s.get(Setting, (GLOBAL, marker)) is None:
+                # Projects' copies of the standard workflow whose steps are still a previous release's (only their
+                # settings differ, such as the documents a step reads) get the new steps too.
+                for copy in s.scalars(select(WorkflowDef).where(WorkflowDef.key == STANDARD_KEY,
+                                                                WorkflowDef.project != SHARED)):
+                    if _shape(copy.steps) == previous:
+                        copy.steps = _upgraded(copy.steps)
+                s.add(Setting(key=marker, value=True))
         if s.get(Setting, (GLOBAL, "_standard_publishes_as_is_docs")) is None:
             # The standard workflow's AS-IS steps publish their approved documents to the monolith's docs folder.
             standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))

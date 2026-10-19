@@ -188,6 +188,10 @@ def check_out_monolith(run_id: str, branch: str, base_branch: str | None, user_i
     base_branch = base_branch or read.get("branch") or repos.default_branch(mirror)
     same = base_branch == (read.get("branch") or repos.default_branch(mirror))
     base_sha = read["sha"] if same else git_ops.git(mirror, "rev-parse", f"{base_branch}^{{commit}}")
+    if branch != base_branch and git_ops.commit_info(mirror, f"refs/heads/{branch}") is not None:
+        # The feature branch already exists in the monolith: the run continues on it, from its latest commit.
+        base_sha = git_ops.git(mirror, "rev-parse", f"refs/heads/{branch}^{{commit}}")
+        log(f"The monolith already has branch {branch}: the run continues on it, at {base_sha[:10]}")
 
     tmp = ws.with_name(ws.name + ".monolith")  # the workspace keeps working until the checkout is complete
     git_ops.remove_tree(tmp)
