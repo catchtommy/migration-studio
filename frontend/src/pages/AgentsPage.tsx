@@ -633,6 +633,7 @@ export function AgentsPage() {
   const { data: agents } = useAgents();
   const { data: catalog } = useQuery({ queryKey: ["agentCatalog"], queryFn: api.agentCatalog, staleTime: Infinity });
   const [adding, setAdding] = useState(false);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (!selected && agents?.length) navigate(`/agents/${agents[0].key}`, { replace: true });
@@ -640,6 +641,8 @@ export function AgentsPage() {
 
   if (!agents || !catalog) return <p className="text-subtle">Loading…</p>;
   const config = agents.find((a) => a.key === selected);
+  const query = search.trim().toLowerCase();
+  const shown = query ? agents.filter((a) => [a.title, a.key, a.description].some((s) => s.toLowerCase().includes(query))) : agents;
 
   return (
     <div className="space-y-6">
@@ -653,7 +656,16 @@ export function AgentsPage() {
       {adding && <NewAgentForm onCancel={() => setAdding(false)} />}
       <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
         <nav className="space-y-0.5 lg:sticky lg:top-4 lg:self-start">
-          {agents.map((a) => (
+          <input
+            type="search"
+            aria-label="Search agents"
+            className={`${inputClass} mb-2`}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search agents…"
+          />
+          {shown.length === 0 && <p className="px-2 py-1.5 text-sm text-subtle">No agent matches “{search.trim()}”.</p>}
+          {shown.map((a) => (
             <NavLink
               key={a.key}
               to={`/agents/${a.key}`}

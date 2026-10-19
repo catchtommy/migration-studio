@@ -3,8 +3,14 @@ uvicorn[standard]>=0.30
 sqlalchemy>=2.1
 pydantic-settings>=2.5
 langgraph>=1.2
-langgraph-checkpoint-sqlite>=3.1
-langchain-anthropic>=1.7
+alembic>=1.14
+psycopg[binary]>=3.2
+oracledb>=2.5
+cryptography>=43
+github-copilot-sdk>=1.0.16
+truststore>=0.10
+pyyaml>=6
+anthropic>=1.11
 sse-starlette>=3.5
 
 [dev]

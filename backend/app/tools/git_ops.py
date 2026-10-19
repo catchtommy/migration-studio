@@ -11,6 +11,20 @@ from pathlib import Path
 _AUTHOR = ["-c", "user.name=Migration Studio", "-c", "user.email=studio@localhost"]
 
 
+def _allow_long_paths() -> None:
+    """On Windows, let git create files whose full path is longer than 260 characters (deep Java packages under a
+    run's workspace), which otherwise fail with "Filename too long". Set through the environment so it applies to
+    every git command the studio and its agents run, clones included."""
+    if os.name != "nt":
+        return
+    n = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+    os.environ[f"GIT_CONFIG_KEY_{n}"], os.environ[f"GIT_CONFIG_VALUE_{n}"] = "core.longpaths", "true"
+    os.environ["GIT_CONFIG_COUNT"] = str(n + 1)
+
+
+_allow_long_paths()
+
+
 class GitError(RuntimeError):
     pass
 

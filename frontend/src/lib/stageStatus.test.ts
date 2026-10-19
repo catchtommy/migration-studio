@@ -36,3 +36,21 @@ test("progress index", () => {
   expect(progressIndex(stages, "b", "running")).toBe(1);
   expect(progressIndex(stages, null, "completed")).toBe(3);
 });
+
+test("a step being re-run shows as running, and the steps after it as pending, before its agent starts", () => {
+  const s = stageStatuses(stages, { ...run([ex("a", "completed"), ex("b", "completed"), ex("g", "approved")]), status: "running", current_stage: "a" } as RunDetail);
+  expect(s.get("a")!.status).toBe("running");
+  expect(s.get("b")!.status).toBe("pending");
+  expect(s.get("g")!.status).toBe("pending");
+});
+
+test("a step waiting for its branches shows as waiting", () => {
+  const s = stageStatuses(stages, { ...run([ex("a", "completed")]), status: "awaiting_branches", current_stage: "b" } as RunDetail);
+  expect(s.get("a")!.status).toBe("completed");
+  expect(s.get("b")!.status).toBe("awaiting_approval");
+});
+
+test("an approved gate stays approved while the run moves on", () => {
+  const s = stageStatuses(stages, { ...run([ex("a", "completed"), ex("b", "completed"), ex("g", "approved")]), status: "running", current_stage: "g" } as RunDetail);
+  expect(s.get("g")!.status).toBe("approved");
+});

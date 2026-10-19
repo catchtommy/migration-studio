@@ -137,3 +137,23 @@ def test_fresh_restart_keeps_earlier_in_place_reruns(client):
     assert "## Re-run" in doc(run, "as_is_doc").read_text()
     assert "## Re-run" not in doc(run, "deep_dive").read_text()
     assert not doc(run, "modernise").exists()
+
+
+def test_gate_waiting_when_the_run_restarts_asks_again_after_the_rerun(client):
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    assert client.post(f"/api/runs/{run_id}/restart", json={"stage": "as_is_doc"}).status_code == 200
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    gate = attempts(run, "gate_analysis")
+    assert len(gate) == 1 and gate[0]["status"] == "awaiting_approval"
+    assert gate[0]["id"] > max(s["id"] for s in run["stages"] if s["stage"] != "gate_analysis")  # not superseded
+
+    approve(client, run_id)
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    assert attempts(run, "gate_analysis")[-1]["status"] == "approved"
+
+
+def test_restart_moves_the_run_to_the_stage_at_once(client):
+    run = completed_run(client)
+    r = client.post(f"/api/runs/{run['id']}/restart", json={"stage": "deep_dive"})
+    assert r.status_code == 200 and r.json()["current_stage"] == "deep_dive"

@@ -294,8 +294,9 @@ def restart(run_id: str, body: Restart, db: Session = Depends(get_db),
                            .order_by(Approval.id.desc()).limit(1))
         if latest is not None and latest.decision == "reject":
             db.delete(latest)  # the held rejection never took effect; the restart replaces it
-    before = run.status
-    run.status, run.error, run.pending_rerun = "running", None, None
+    before, before_stage = run.status, run.current_stage
+    # current_stage moves now, so the timeline shows the step re-running at once, not only once its agent starts.
+    run.status, run.error, run.pending_rerun, run.current_stage = "running", None, None, body.stage
     db.commit()
     later = sum(1 for s in run.stage_defs[run.stage_defs.index(step) + 1:] if s["kind"] == "agent")
     how = ("starting fresh: the workspace is rolled back and the documents regenerated" if body.fresh else
@@ -307,7 +308,7 @@ def restart(run_id: str, body: Restart, db: Session = Depends(get_db),
     try:
         get_runner().restart(run_id, body.stage, body.notes, fresh=body.fresh)
     except RunBusyError as e:
-        run.status = before
+        run.status, run.current_stage = before, before_stage
         db.commit()
         raise HTTPException(409, str(e))
     return run

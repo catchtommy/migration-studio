@@ -9,7 +9,9 @@ from pathlib import Path
 from langgraph.graph import START
 from langgraph.types import Command
 
-from app.db.models import Run
+from sqlalchemy import delete
+
+from app.db.models import Run, StageExecution
 from app.db.session import emit, session_scope
 from app import delivery, legacy, projects, repos
 from app.orchestrator import questions
@@ -89,10 +91,23 @@ class Runner:
         with self._lock:
             if run_id in self._active:
                 raise RunBusyError(f"Run {run_id} is already executing")
+        with session_scope() as s:
+            # The dropped gate never got a decision. Left as it is, the gate would reuse it when the workflow reaches
+            # it again, older than the steps re-run since, so the timeline would show the gate as superseded.
+            s.execute(delete(StageExecution).where(StageExecution.run_id == run_id,
+                                                   StageExecution.status == "awaiting_approval"))
         self.graph_for(run_id).update_state(self._config(run_id), values, as_node=previous)
         self._submit(run_id, None, prepare=(lambda: start_fresh(run_id, stage)) if fresh else None)
 
     def retry(self, run_id: str) -> None:
+        if not self.graph_for(run_id).get_state(self._config(run_id)).values:
+            # It failed before the first step started (e.g. preparing its workspace), so nothing was saved to resume
+            # from: start it again, without what a failed checkout may have left behind.
+            with session_scope() as s:
+                ws = Path(s.get(Run, run_id).workspace)
+            git_ops.remove_tree(ws)
+            self._submit(run_id, None, initial=True)
+            return
         # Invoking with None continues from the last checkpoint, re-running the node that failed.
         self._submit(run_id, None)
 

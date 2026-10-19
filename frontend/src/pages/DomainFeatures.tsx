@@ -65,6 +65,10 @@ function ListingSetup({ domain, onStarted, onCancel }: { domain: Domain; onStart
 }
 
 const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
+
+/** Whether a feature matches the search: by name, key, description, entry point or table. */
+const matches = (f: Feature, query: string) =>
+  [f.name, f.key, f.description, ...f.entry_points, ...f.tables].some((s) => s.toLowerCase().includes(query));
 const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "awaiting_publish", "failed"];
 
 /** A link to start migrating a feature: the New migration form, with the domain and feature chosen. */
@@ -226,6 +230,9 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
     queryKey: ["features", domain.key, listing?.status],
     queryFn: () => api.features(domain.key),
   });
+  const [search, setSearch] = useState("");
+  const query = search.trim().toLowerCase();
+  const shown = features && query ? features.filter((f) => matches(f, query)) : features;
   const [editing, setEditing] = useState<string | null>(null); // "" while adding a feature (editing has its own page)
   const location = useLocation();
   // Back from a feature's page: scroll to the feature edited, so a long list keeps its place.
@@ -285,6 +292,21 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
         </p>
       ) : (
         <section className="card overflow-x-auto">
+          <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-2.5">
+            <input
+              type="search"
+              aria-label="Search features"
+              className={`${inputClass} max-w-sm`}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name, key, entry point or table…"
+            />
+            {query && (
+              <span className="text-xs text-subtle">
+                {shown!.length} of {features.length}
+              </span>
+            )}
+          </div>
           <table className="w-full min-w-[52rem] text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-subtle">
               <tr>
@@ -297,9 +319,16 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
               </tr>
             </thead>
             <tbody>
-              {features.map((f) => (
+              {shown!.map((f) => (
                 <FeatureRow key={f.key} domain={domain} feature={f} names={names} />
               ))}
+              {shown!.length === 0 && (
+                <tr className="border-t border-border">
+                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-subtle">
+                    No feature matches “{search.trim()}”.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </section>

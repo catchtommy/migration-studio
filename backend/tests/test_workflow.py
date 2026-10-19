@@ -172,3 +172,26 @@ def test_held_rejection_can_be_withdrawn(client):
     assert run["status"] == "awaiting_approval" and run["approvals"] == []
     decide(client, run_id, decision="approve")
     assert wait_for(client, run_id, {"awaiting_approval"})["pending_gate"]["gate"] == "gate_design"
+
+
+def test_run_that_failed_before_its_first_step_can_be_retried(client, monkeypatch):
+    original = git_ops.init_workspace
+    calls = {"n": 0}
+
+    def checkout_fails_once(path, *args, **kwargs):
+        if calls["n"] == 0:
+            calls["n"] += 1
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "half-checked-out.txt").write_text("left by the failed checkout")
+            raise git_ops.GitError("unable to create file: Filename too long")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(git_ops, "init_workspace", checkout_fails_once)
+    run_id = new_run(client)
+    run = wait_for(client, run_id, {"failed"})
+    assert "Filename too long" in run["error"] and run["stages"] == []
+
+    assert client.post(f"/api/runs/{run_id}/retry").status_code == 200
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    assert [e["status"] for e in executions(run, "as_is_doc")] == ["completed"]
+    assert not (Path(run["workspace"]) / "half-checked-out.txt").exists()
