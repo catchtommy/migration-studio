@@ -60,8 +60,10 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "50062f4c3b3dcc7aab9e4ace195d0134977a341a4a81a22518962ed7f87474c2",
         "22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
                               "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5"},
-    "independent_tests": {"d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
-    "microservice_scaffold": {"869be47dce9dcbb7f70c95cf4c4ab19d00772b4b0c5851c71c9e23c481319145",
+    "independent_tests": {"4b1b34967d2944c200b2b4bd8c0a81768cd6292da94cac47c000f9ba30d0de8e",
+                          "d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
+    "microservice_scaffold": {"775065ebf6599df3036965a91a20399a3bc78702ef5ac7ae7f8b1a107ed59c21",
+                              "869be47dce9dcbb7f70c95cf4c4ab19d00772b4b0c5851c71c9e23c481319145",
                               "c2ad8fdcb1f1c9011741b780496fed42b80971e5d67bd0ba1c8a1d1402270ba1"},
     "modernise": {"a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457"},
     "modular_monolith": {"07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee",
@@ -70,11 +72,12 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                          "9bf4007e9337fafdab89a901c912245fcd3d44a29989b7732603c7fcada2129b",
                          "164e46fabe89f188ecce8525da9ebda4b9fea4d35b97992f92542414da55c7b9",
                          "db8c731241fbb0878e4b93b12357d93ff4cd2f2160b350346523dcdd883e9765"},
-    "monolith_integration": {"08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
+    "monolith_integration": {"686fec3600f472af2216b6e1805795367b9dd761933e094e3bf424dfbbf8d6b1",
+                             "08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v11"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v12"
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.

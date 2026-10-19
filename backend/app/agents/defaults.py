@@ -648,13 +648,19 @@ Hard rules for this step. A tool (`check_service_guardrails`) checks them agains
 - No authentication in this step (the service runs on the internal network only). Record that as a known limitation. No credentials, keys or connection strings in the repository: they come from configuration or the environment.
 - No endpoint beyond the approved OpenAPI operations, apart from health.
 
+The REST layer implements these rules, whatever the legacy code returns today; where `openapi.yaml` departs from \
+them, follow the rules and list the difference under deviations in `microservice.md`:
+
+{_REST_RULES}
+
 Read first: `module-extraction.yaml` (where the module is, in the monolith checkout at the workspace root, and its events), `domain-design.yaml`, `openapi.yaml`, `integration-decisions.yaml`, `orchestrator-design.md` when it exists, and the module itself.
 
 Procedure:
 1. Baseline. Record the monolith commit you copy from (`git rev-parse HEAD` in the monolith checkout) as `module_commit`. Write the ordered checklist of the steps below at the top of `microservice.md`.
 2. Skeleton: a POM for Java 8 with only the allowed dependencies, a main class that starts the embedded server, a Spring context, the health endpoint. It must build and start.
 3. Copy the module's code, SQL maps and tests (the domain module, and the orchestrator module when there is one). The bridge package of the monolith is never copied: its context adapters become request-header adapters, and its `local` adapters and bindings are replaced by the adapters below. The copied tests must pass.
-4. The REST layer: one operation per public method of the module's API, with the operationId of the OpenAPI document; thin controllers that delegate to the module's API; every exception mapped to a documented status and body. Add contract tests against the OpenAPI document, and JSON round-trip tests for dates (explicit format and time zone), decimals, nulls and enums.
+4. The REST layer: one operation per public method of the module's API, with the operationId of the OpenAPI document; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
+service), the request headers read and the response headers echoed on every response (a filter). Add contract tests against the OpenAPI document, and JSON round-trip tests for dates (explicit format and time zone), decimals, nulls and enums.
 5. Context adapters from request headers, one per context port.
 6. Integration, from `integration-decisions.yaml`: adapters for the ports of other domains (REST clients to the monolith, chosen by configuration, base URLs from configuration, a timeout on every call, no automatic retry of a call that is not safe to repeat); the designed events published to Azure Service Bus after commit; consumers of the events the domain uses; sagas and compensations only where the integration design decided them.
 7. Audit the callers in the monolith without changing them: write under `open_decisions` every caller that calls the module's methods inside a larger transaction, and every call inside a loop. Over HTTP the first loses atomicity and the second becomes many calls. Do not solve them; the integration step needs them.
@@ -677,10 +683,12 @@ Stop and ask with ask_user when: the module's build or tests are not green; a co
 ### Open decisions: the transactional callers and the loops found in step 7
 ### Rollback: delete the service repository branch; the monolith is unchanged""",
 
-    "independent_tests": """You write tests that prove the microservice and the in-monolith module behave the same as \
+    "independent_tests": f"""You write tests that prove the microservice and the in-monolith module behave the same as \
 the original code, for every scenario in the deep dive's test scenario catalogue.
 
-- Contract tests against the OpenAPI document.
+- Contract tests against the OpenAPI document, including the REST rules: 201 for POST and 200 otherwise, \
+{{"status": "Success"}} where nothing is returned, the request and response headers, and the error body (with \
+`errors` only for a 400).
 - Contract tests for each cross-domain dependency: stub providers generated from their OpenAPI contracts (e.g. \
 WireMock) and checks that published events match their AsyncAPI contracts.
 - Integration tests against the existing schema.
@@ -709,7 +717,11 @@ Summarise the changes, any query differences, and the test results.""",
 the contracts the service consumes from domains still in the monolith, an OUTBOX table and relay that publishes the \
 monolith's events to Azure Service Bus (the Azure Service Bus Java SDK supports Java 8), and subscribers for the \
 service's events that the monolith still needs.
+- The facade endpoints are new REST APIs and follow the REST rules below. The REST client sends the request headers \
+they name, filled from the monolith's session and thread-locals, and reads the error body they define.
 - Build the monolith and run its tests with the flag in both positions.
+
+{_REST_RULES}
 
 Document how to switch the flag, rollback steps, and what to monitor after the switch.""",
 

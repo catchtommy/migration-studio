@@ -176,13 +176,9 @@ contracts:
       delegates_to: ["com.acme.{other}.{other.capitalize()}Service#get{other.capitalize()}Summary"]
       remove_when: The {other} service provides this contract
 """
-        files[f"contracts/{query}.yaml"] = f"""openapi: 3.1.0
-info: {{title: "{other} summary (stub)", version: "1"}}
-paths:
-  /internal/api/v1/{other}/summary/{{id}}:
-    get:
-      responses: {{"200": {{description: Summary}}}}
-"""
+        files[f"contracts/{query}.yaml"] = sample_openapi(
+            f"{other} summary (stub)", f"/internal/api/v1/{other}", f"{other}Summary",
+            f"What {ctx.domain} needs to know about a {other} record, served by {other}.")
     if "integration-decisions.yaml" in outputs:
         files["integration-decisions.yaml"] = f"""# [stub] sample integration decisions
 decisions:
@@ -266,8 +262,25 @@ def _ident(text: str) -> str:
     return "".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", text) if part)
 
 
+_REQUEST_HEADERS = ["x-context-agency-id", "x-context-user-id", "x-correlation-id", "x-trace-id", "x-ms-client-id"]
+_RESPONSE_HEADERS = ["x-correlation-id", "x-trace-id", "x-ms-client-id"]
+
+
 def sample_openapi(title: str, base: str, resource: str, description: str) -> str:
-    """A small but complete OpenAPI 3.1 document: list, get and create a resource, with schemas, errors and examples."""
+    """A small but complete OpenAPI 3.1 document: list, get, create and delete a resource, with schemas, errors and
+    examples, following the REST design rules (defaults._REST_RULES): POST 201 and 200 otherwise, {"status": "Success"}
+    when there is nothing to return, the context headers on every request, the tracing headers on every response, and
+    the problem body (with `errors` only for a 400)."""
+    code = _ident(resource)[:4].upper() or "API"
+    params = "\n".join(f"        - $ref: '#/components/parameters/{_ident(h)}'" for h in _REQUEST_HEADERS)
+    headers = "\n".join(f"            {h}: {{$ref: '#/components/headers/{_ident(h)}'}}" for h in _RESPONSE_HEADERS)
+    shared_headers = "\n".join(f"        {h}: {{$ref: '#/components/headers/{_ident(h)}'}}" for h in _RESPONSE_HEADERS)
+    errors = "\n".join(f"        \"{status}\": {{$ref: '#/components/responses/{name}'}}"
+                       for status, name in (("400", "BadRequest"), ("404", "NotFound"), ("500", "ServerError")))
+    component_params = "\n".join(f"    {_ident(h)}:\n      name: {h}\n      in: header\n      required: true\n"
+                                 f"      schema: {{type: string}}" for h in _REQUEST_HEADERS)
+    component_headers = "\n".join(f"    {_ident(h)}:\n      description: Echoes the request's {h}\n"
+                                  f"      schema: {{type: string}}" for h in _RESPONSE_HEADERS)
     return f"""openapi: 3.1.0
 info:
   title: "{title}"
@@ -285,6 +298,7 @@ paths:
       operationId: list{resource}
       summary: List {resource} records
       parameters:
+{params}
         - name: page
           in: query
           schema: {{type: integer, minimum: 0, default: 0}}
@@ -294,15 +308,20 @@ paths:
       responses:
         "200":
           description: A page of records
+          headers:
+{headers}
           content:
             application/json:
               schema:
                 type: array
                 items: {{$ref: '#/components/schemas/{resource}'}}
+{errors}
     post:
       tags: [{resource}]
       operationId: create{resource}
       summary: Create a {resource} record
+      parameters:
+{params}
       requestBody:
         required: true
         content:
@@ -311,16 +330,19 @@ paths:
       responses:
         "201":
           description: Created
+          headers:
+{headers}
           content:
             application/json:
               schema: {{$ref: '#/components/schemas/{resource}'}}
-        "400": {{$ref: '#/components/responses/BadRequest'}}
+{errors}
   {base}/{{id}}:
     get:
       tags: [{resource}]
       operationId: get{resource}
       summary: Get one {resource} record
       parameters:
+{params}
         - name: id
           in: path
           required: true
@@ -328,12 +350,37 @@ paths:
       responses:
         "200":
           description: The record
+          headers:
+{headers}
           content:
             application/json:
               schema: {{$ref: '#/components/schemas/{resource}'}}
               example: {{id: "R-1001", status: ACTIVE, createdAt: "2026-01-31T09:30:00Z"}}
-        "404": {{$ref: '#/components/responses/NotFound'}}
+{errors}
+    delete:
+      tags: [{resource}]
+      operationId: delete{resource}
+      summary: Delete one {resource} record
+      parameters:
+{params}
+        - name: id
+          in: path
+          required: true
+          schema: {{type: string}}
+      responses:
+        "200":
+          description: Deleted; nothing to return
+          headers:
+{headers}
+          content:
+            application/json:
+              schema: {{$ref: '#/components/schemas/Success'}}
+{errors}
 components:
+  parameters:
+{component_params}
+  headers:
+{component_headers}
   schemas:
     {resource}:
       type: object
@@ -348,24 +395,66 @@ components:
       properties:
         reference: {{type: string, description: Business reference from the caller}}
         notes: {{type: string}}
+    Success:
+      type: object
+      description: The answer of an operation with nothing to return
+      required: [status]
+      properties:
+        status: {{type: string, const: Success}}
     Problem:
       type: object
-      description: RFC 9457 problem details
+      description: The body of every HTTP error other than 400 (RFC 7807 style)
+      required: [type, title, detail, errorCode, instance]
       properties:
-        type: {{type: string, format: uri}}
-        title: {{type: string}}
-        status: {{type: integer}}
+        type: {{type: string, format: uri, example: "https://api.example.com/problems/not-found"}}
+        title: {{type: string, example: Not Found}}
         detail: {{type: string}}
+        errorCode: {{type: string, description: "<KIND>-<DOMAIN>-<number>", example: NF-{code}-001}}
+        instance: {{type: string, example: "{base}/123"}}
+    ValidationProblem:
+      description: The body of a 400, the problem body with the field errors
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          required: [errors]
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                required: [field, message]
+                properties:
+                  field: {{type: string}}
+                  message: {{type: string}}
   responses:
     BadRequest:
-      description: The request is invalid
+      description: Validation failed
+      headers:
+{shared_headers}
       content:
-        application/problem+json:
-          schema: {{$ref: '#/components/schemas/Problem'}}
+        application/json:
+          schema: {{$ref: '#/components/schemas/ValidationProblem'}}
+          example:
+            type: "https://api.example.com/problems/validation-error"
+            title: Validation Failed
+            detail: one or more field validation errors
+            errorCode: VAL-{code}-001
+            instance: "{base}/123"
+            errors:
+              - {{field: reference, message: reference is required}}
     NotFound:
       description: No such record
+      headers:
+{shared_headers}
       content:
-        application/problem+json:
+        application/json:
+          schema: {{$ref: '#/components/schemas/Problem'}}
+    ServerError:
+      description: Unexpected error
+      headers:
+{shared_headers}
+      content:
+        application/json:
           schema: {{$ref: '#/components/schemas/Problem'}}
 """
 
