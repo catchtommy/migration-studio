@@ -535,7 +535,7 @@ def _sample_api_files(ctx: AgentContext) -> list[ArtifactOut]:
     without AI: the feature's REST API, the wrappers' API, and the domain events of the feature."""
     outputs = ctx.config.get("outputs") or []
     resource = _ident(ctx.domain)
-    base = f"/api/v1/{ctx.domain}"
+    base = f"/internal/api/v1/{ctx.domain}"
     files: dict[str, str] = {}
     if "openapi.yaml" in outputs:
         files["openapi.yaml"] = sample_openapi(f"{ctx.domain} – {ctx.operation} (stub)", base, resource,

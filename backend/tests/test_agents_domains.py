@@ -391,3 +391,34 @@ def test_a_migration_is_scoped_to_its_feature_not_the_domains_others(client, mon
     from app.agents.defaults import default_config
     finder = default_config("domain_dependencies")["instructions"]
     assert "Trace only from this feature's entry points" in finder and "Left out (other" in finder
+
+
+def test_shared_texts_are_edited_reset_and_follow_new_defaults_until_edited(client, monkeypatch):
+    import hashlib
+    from app import shared_texts
+    from app.agents.defaults import SHARED_TEXTS
+    from app.db.models import SHARED, SharedText
+    from app.db.session import session_scope
+
+    texts = {t["key"]: t for t in client.get("/api/shared-texts").json()}
+    assert "Modulith design: Domain" in texts["rest_rules"]["used_by"] and not texts["rest_rules"]["customised"]
+    r = client.put("/api/shared-texts/rest_rules", json={"text": "Our REST rules."})
+    assert r.status_code == 200 and r.json()["customised"]
+    assert "Our REST rules." in shared_texts.expand("{{rest_rules}}")
+    assert client.put("/api/shared-texts/rest_rules", json={"text": "See {{legacy}}"}).status_code == 422
+    assert client.put("/api/shared-texts/nope", json={"text": "x"}).status_code == 404
+    assert client.post("/api/shared-texts/rest_rules/reset").json()["text"] == SHARED_TEXTS["rest_rules"][2]
+
+    agent = client.get("/api/agents/domain_design").json()
+    r = client.put("/api/agents/domain_design", json={**agent, "instructions": "Use {{rest_rulez}}"})
+    assert r.status_code == 422 and "rest_rulez" in r.json()["detail"]
+
+    # A release changes a default: a text still holding an earlier default follows it; an edited one is kept.
+    old = "Earlier REST rules."
+    monkeypatch.setitem(shared_texts.PREVIOUS_DEFAULT_HASHES, "rest_rules", {hashlib.sha256(old.encode()).hexdigest()})
+    for value, expected in ((old, SHARED_TEXTS["rest_rules"][2]), ("Edited rules.", "Edited rules.")):
+        with session_scope() as s:
+            s.get(SharedText, (SHARED, "rest_rules")).text = value
+        shared_texts.seed()
+        assert shared_texts.text("rest_rules") == expected
+    client.post("/api/shared-texts/rest_rules/reset")

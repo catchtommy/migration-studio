@@ -143,9 +143,10 @@ contracts:                          # at least one per outbound dependency in do
 ```"""
 
 # Guardrails for the Modulith design agents (and the implementation that follows). Plain text, included as is.
-_MODULITH_GUARDRAILS = """You act as a DDD architect. You design the target modular monolith that the team can reach \
-WITHOUT changing the UI, the database schema or the technology stack. These guardrails are fixed: a design that \
-breaks one is rejected, not negotiated, and you may not grant yourself an exception.
+_MODULITH_GUARDRAILS = """Modulith guardrails. The target is a modular monolith that the team can reach WITHOUT \
+changing the UI, the database schema or the technology stack, designed as a DDD architect would. These guardrails are \
+fixed: a design or a code change that breaks one is rejected, not negotiated, and you may not grant yourself an \
+exception.
 1. The schema is fixed. No DDL: never propose a new or changed table, column, index, view, sequence, trigger, \
 constraint or data type, and never propose moving data. Carve domains by WHO WRITES WHICH TABLES and by business \
 capability. Every table has exactly one owning domain, the one whose code writes it. Other domains read or change it \
@@ -155,8 +156,9 @@ table's state), treat the other writer as a consumer of the owner's contract, an
 Never settle it with a schema change.
 2. The UI is fixed. Same URLs, parameters, JSPs, forms, redirects and response shapes. Controllers only delegate to \
 the domain's public API.
-3. The stack is fixed. Java 8, Spring MVC 3 and iBatis. No new framework, library, build module or language feature \
-beyond Java 8.
+3. The stack is fixed. Java 8, Spring MVC 3 and iBatis. No new framework or library and no language feature beyond \
+Java 8. New Maven modules for the domain (and its orchestrator) are allowed: they are how the domain is carved out, \
+and they use only the libraries the monolith already has.
 4. Utility modules only. The domain may use shared code only if it is a utility module: stateless helpers with no \
 business rules, no database access and no knowledge of any domain (date, string and number helpers, formatting, \
 constants, generic validation, logging). List each one you use by its Maven coordinates (groupId:artifactId) and say why it qualifies. A utility module is \
@@ -178,8 +180,8 @@ features, or redesign other features.
 assumption. When table ownership, a table's writer or a God module is unclear, ask the user.
 10. No ambient inputs. The feature's code never reads the session, the request, the current user, a thread-local or a static holder \
 directly. Each one is reached through a context port: an interface in the domain module, named for what it gives (CurrentUser, \
-CallContext), whose adapter reads the legacy source in the monolith. The port is what a separate service later fills from a \
-request header, so the code itself moves unchanged.
+CallContext), whose adapter reads the legacy source in the monolith. The port is what a separate service later fills from the \
+request headers of the REST rules, so the code itself moves unchanged.
 11. Exceptions only with the user. If the feature cannot meet a rule, stop and ask the user. Record the answer under \
 `exceptions` with the rule and the reason, so that the reviewer sees it at the design gate."""
 
@@ -187,6 +189,8 @@ request header, so the code itself moves unchanged.
 _REST_RULES = """REST API design rules. They apply to every REST operation you specify, in the OpenAPI document and in the \
 prose, and they override the legacy shapes: the monolith's URLs, JSPs and responses stay as they are, but the new \
 REST contract follows these rules.
+0. Paths: every REST API is under `/internal/api/v1/<domain>/...`, where <domain> is the key of the domain that \
+provides it (the domain's own API and the contracts it provides alike). Services run on the internal network only.
 1. Success codes: POST returns 201. Every other method returns 200.
 2. An operation with nothing to return answers with exactly {"status": "Success"}.
 3. An error is HTTP 400 for validation, with this body (an RFC 7807 style problem):
@@ -194,8 +198,15 @@ REST contract follows these rules.
 "detail": "one or more field validation errors", "errorCode": "VAL-CUST-001", "instance": "/domain/123", \
 "errors": [{"field": "cust.test", "message": "invalid customer first name"}, \
 {"field": "cust.test", "message": "invalid customer last name"}]}
-   `errorCode` is <KIND>-<DOMAIN>-<number> (VAL for validation). Every HTTP error other than 400 uses the same body \
-WITHOUT the `errors` field. Document each error response in the OpenAPI document with this schema.
+   Every HTTP error other than 400 uses the same body WITHOUT the `errors` field. Document each error response in \
+the OpenAPI document with this schema.
+   `errorCode` is <KIND>-<DOMAIN>-<number>. <KIND> and the status go together, and no other kinds or error statuses \
+are used: VAL 400 (validation of the request), AUTH 401 or 403 (not signed in, or not allowed), NF 404 (the resource \
+does not exist), CONF 409 (conflicts with the current state, such as a duplicate), BUS 422 (a business rule refuses \
+a valid request), SYS 500 (unexpected failure). <DOMAIN> is an upper-case code of up to four letters for the providing \
+domain (CUST for customer), the same in all its APIs; <number> is three digits, unique per kind within the domain. \
+`type` is a URI per kind, `title` the kind's short name, `detail` a sentence for this occurrence, and `instance` the \
+request path.
 4. Request headers, all of type string, declared on every operation: `x-context-agency-id` (the unique logged-in \
 agency broker id, for example PL123456789), `x-context-user-id` (the unique logged-in user id), `x-correlation-id`, \
 `x-trace-id` and `x-ms-client-id` (the unique id of the caller). They carry what the monolith reads today from the \
@@ -256,18 +267,25 @@ open_decisions:                    # found, not solved here
 events: [BrokerCreated]            # only events named in the approved designs
 ```"""
 
-_INTEGRATION_RULES = """Decision rules, in order:
-- side-effect (no answer needed) → event: publish a domain event through a transactional outbox to the provider's \
-Service Bus topic; consumers subscribe.
-- query that needs current data → sync-api: REST call through a port + adapter (timeouts, circuit breaker, \
-short cache).
-- bulk-query / joins / reporting → read-model: a local projection fed by the owner's events.
+_INTEGRATION_RULES = """The schema is fixed: no pattern may need a new table, column or data move. That rules out a \
+transactional outbox and a stored projection; propose either only as an open decision for the user, who may record \
+it as an exception.
+Decision rules, in order:
+- side-effect (no answer needed) → event: publish a domain event to the provider's Service Bus topic after the \
+transaction commits (no outbox, so delivery is at-most-once; say what a lost event means for the business); \
+consumers subscribe.
+- query that needs current data → sync-api: REST call through a port + adapter (a timeout on every call, a circuit \
+breaker, and a short in-memory cache only where the current code tolerates stale data).
+- bulk-query / joins / reporting → sync-api through a bulk operation of the owner's contract. A read-model (a local \
+projection fed by the owner's events) needs storage the schema does not have: propose it as an open decision.
 - command where several domains must change together → saga: orchestrated by the initiating service, commands on \
 Service Bus queues, each step with a compensating action.
 - shared-write or shared table → split ownership (one owner per table) and use a saga; if that is not feasible yet, \
 deferred: it stays in the monolith, with an explicit follow-up.
-- reference-data → reference-copy: owner publishes changes; consumers keep a cached read-only copy.
-Never a direct query or join on another domain's schema. Prefer choreography (events) for one or two hops, \
+- reference-data → reference-copy: owner publishes changes; consumers keep a read-only in-memory copy, loaded \
+through the owner's contract and refreshed from its events (no table).
+Never a direct query or join on another domain's tables; every service uses only the tables it owns, in the \
+existing schema. Prefer choreography (events) for one or two hops, \
 orchestration beyond that. Reuse contracts already in the catalogue instead of inventing new ones."""
 
 _LEGACY = """The monolith is Java 8, Spring MVC 3 and iBatis on Oracle, with JSP views. \
@@ -287,14 +305,15 @@ The AS-IS document covers:
 - Transactions, caching, security checks and anything configured in XML rather than code.
 - Inputs, outputs and the response or view returned.
 
-When the code is ambiguous or you cannot find a piece of the flow, ask the user rather than guessing.""",
+Write it as `as-is.md`. When the code is ambiguous or you cannot find a piece of the flow, ask the user rather than \
+guessing.""",
 
     "deep_dive": f"""You analyse one operation of a legacy monolith in depth, building on its AS-IS documentation. {_LEGACY}
 
 Read the AS-IS document first, then the code it references. Produce:
-- Business rules, with the code location that enforces each.
-- Validation, edge cases and exception paths, including what the user sees in each case.
-- A test scenario catalogue: every behaviour a migrated version must preserve, each with a short id, preconditions, \
+- In `deep-dive.md`: business rules, with the code location that enforces each; and validation, edge cases and \
+exception paths, including what the user sees in each case.
+- In `test-scenarios.md`, the test scenario catalogue: every behaviour a migrated version must preserve, each with a short id, preconditions, \
 input and expected outcome. The independent tests stage implements these scenarios, so make them concrete.
 - A cross-domain catalogue, `cross-domain.yaml`: every place this operation touches another domain. That includes \
 calls to another domain's services or DAOs, reads or writes of tables another domain owns, shared transactions, \
@@ -342,6 +361,11 @@ knowledge of any domain (date, string and number helpers, formatting, constants,
 giant service, manager, facade, helper or DAO). Say in `domain-dependencies.md` where this feature uses one (file \
 and line) and which part of it belongs to which domain. The new domain must not depend on a God module, so the \
 later steps use this to split it.
+Two things are never a dependency on another domain, wherever their code sits: generating a reference or sequence \
+number for a record this feature creates (it stays in this domain), and validating a format such as a mobile number, \
+email address, postcode, PAN or IBAN (helper code; list the helper under `shared_code` if it is in a utility jar, and \
+otherwise name it in `domain-dependencies.md` as a helper to copy). A helper that reads the database, the session or \
+another domain's data is a normal dependency.
 List the domains you checked and ruled out under `considered_unrelated`, so nobody has to check them again.
 
 Then record the scope decision under `decision`:
@@ -394,8 +418,10 @@ sources, the domain will get its own copy with the logic unchanged, made by the 
 helper may be proposed later, but it is a separate decision); you record where it is to be copied from. A helper that reads the database, the session or other \
 domains' data is not a helper: treat it as a normal dependency.
 List both under "Not contracts" in `linked-domain-contracts.md`, each with the touchpoint (file and line), what the \
-domain does instead, and for helpers the Maven coordinates or the source it is copied from. If this removes the \
-only outbound dependency of a domain, say so, and say that the decision scope may be `domain-only`.
+domain does instead, and for helpers the Maven coordinates or the source it is copied from. The dependency finder \
+leaves these out; if `domain-dependencies.yaml` still lists one as the only outbound dependency on a domain, the \
+check below cannot pass for that domain: stop and ask the user (ask_user) to send the run back to the dependency \
+finder, saying which dependency is not one and why.
 
 Read `domain-dependencies.yaml` (the dependency finder's result), the deep dive and the contracts catalogue you are \
 given. Work from the consumer's side: ask what this feature needs, not what the other domain's classes happen to \
@@ -450,8 +476,8 @@ directly; the domain reaches it through a port.
 - Ports: one interface per outbound dependency in `domain-dependencies.yaml`, named after what it does (for \
 example CustomerDirectory), with the methods this feature needs and, for each method, the contract key from \
 `linked-domain-contracts.yaml` it calls. Only the interfaces are designed here; the orchestrator design decides \
-what stands behind them. When the decision scope is `domain-only` there are no ports, and the contracts and \
-orchestrator steps are skipped.
+what stands behind them. When the decision scope is `domain-only` there are no ports to other domains (context \
+ports, below, still apply), and the contracts and orchestrator steps are skipped.
 - UI: controllers, URLs, parameters and JSPs stay exactly as they are; show how each controller delegates to the \
 public API.
 - Stack: Java 8, Spring MVC 3, iBatis. No new frameworks or libraries.
@@ -465,8 +491,11 @@ file and line, and the port that replaces each. Say [] in `context_ports` only i
 
 {_REST_RULES}
 
-Also write `openapi.yaml`: the REST contract of this feature's public API as an OpenAPI 3.1 document (paths, \
-schemas, error responses), faithful to current behaviour and following the REST rules above. The microservice stage implements it later.
+Also write `openapi.yaml`: the REST contract of this feature's public API as an OpenAPI 3.1 document (paths under \
+`/internal/api/v1/<domain>/`, schemas, error responses), one operation per method of the public API. It is faithful \
+to current behaviour in what the feature does (its rules, data and error cases), and takes its shapes from the REST \
+rules above (status codes, error body, headers), not from the legacy responses. The microservice stage implements \
+it later.
 
 Also write `domain-design.yaml`, the machine-checked declaration of the guardrails, in this format:
 
@@ -512,8 +541,9 @@ orchestrator inside the monolith. {_LEGACY}
 
 For the orchestrator the guardrails mean: the domain's core and the orchestrator never reference legacy classes of \
 other domains or God modules. Only the `local` adapters touch legacy code, one method each, the ones named in the \
-contracts' bindings. They sit in `<domain>.integration.adapter`, are marked temporary, and are the only place where \
-the domain meets legacy code. A transaction, session or request object from legacy code never crosses a port.
+contracts' bindings. They sit in the monolith, in the temporary bridge package (not in the domain or orchestrator \
+modules; the module extraction step names it `bridge_dir`), are marked temporary, and are the only place where the \
+domain meets legacy code. The `contract` adapters sit in the orchestrator module. A transaction, session or request object from legacy code never crosses a port.
 
 Read the dependency finder's `domain-dependencies.yaml`, the linked-domain contracts in \
 `linked-domain-contracts.yaml` and the domain design (its ports). For each dependency decide:
@@ -550,8 +580,8 @@ AS-IS documentation and deep dive.
 
 Produce:
 - The bounded context: what this service owns and what it does not.
-- Table ownership: tables the service owns (they move to the service's own Oracle schema) and tables it uses that \
-another domain owns. The next stage decides how each cross-domain interaction is integrated; note anything that \
+- Table ownership: tables the service owns (they stay in the existing schema, unchanged; the service is the only \
+code that writes them) and tables it uses that another domain owns. The next stage decides how each cross-domain interaction is integrated; note anything that \
 affects that decision.
 - The REST contract for the operation as an OpenAPI 3.1 document: paths, schemas, error responses. Keep it \
 faithful to the current behaviour, do not add features, and follow the REST rules below.
@@ -569,13 +599,14 @@ Read the deep dive's cross-domain.yaml, the dependency finder's domain-dependenc
 contracts, the domain and orchestrator designs, and the contracts catalogue you are given. The linked-domain \
 contracts already define the API, event and command contracts to other domains: use their keys as the `contract` \
 of your decisions instead of designing parallel ones. Your decisions add what they do not cover: events, sagas, \
-read models and deferred interactions. For every interaction choose one pattern.
+reference copies and deferred interactions. For every interaction choose one pattern.
 
 {_INTEGRATION_RULES}
 
 Messaging is Azure Service Bus: one topic per publishing domain, one subscription per consuming domain, queues for \
 saga commands, CloudEvents-style envelopes, sessions (SessionId = aggregate id) where order matters, dead-letter \
-queues monitored. Each service owns its tables in its own Oracle schema; other domains' tables are not granted.
+queues monitored. Each service uses only the tables it owns, in the existing Oracle schema, unchanged; it never \
+reads or writes another domain's tables.
 
 Write:
 - `integration-design.md`: each interaction, the pattern chosen and why, the ports and adapters in the service, \
@@ -597,7 +628,8 @@ Ask the user when a decision depends on business tolerance for stale data or on 
 {_MODULITH_GUARDRAILS}
 
 Hard rules for this step. A tool (`check_module_guardrails`) checks them against git, and the step cannot finish while it fails. When it reports a violation, revert that step; do not work around it.
-- Never edit UI files (JSP, HTML, JavaScript, CSS, images), never write DDL or add SQL scripts, never change the meaning of any SQL, never change a dependency, plugin or Java version, never add a library.
+- Never edit UI files (JSP, HTML, JavaScript, CSS, images), never write DDL or add SQL scripts, never change the meaning of any SQL, never change a plugin or Java version, never add a library, and never change \
+a dependency other than adding the dependency line on the new module (below).
 - Never delete, ignore or weaken an existing test, and never change an assertion to make it pass. Tests of moved code move with it, changing only their package and import lines.
 - Controllers are never moved. A controller, and any other caller of the moved code (God modules included), changes only in its import, injected type and bean reference lines. The module's public API keeps the legacy method names and signatures so no call line has to change.
 - The new modules depend only on the utility jars listed in `domain-design.yaml`, the Spring and iBatis jars the monolith already uses, and test libraries it already has (Mockito; PowerMock only for statics, and only in tests that stay in the monolith). The monolith depends on the new modules, never the reverse. The parent POM gains only a `<module>` line, and a POM that uses the module gains only a dependency line on it.
@@ -634,9 +666,13 @@ Stop and ask with ask_user when: the baseline build is red; a table is owned by 
 ### Known limitations: event delivery, temporary bridge classes with their `remove_when`, copied shared code
 ### Rollback: revert the commit""",
 
-    "microservice_scaffold": f"""You are a careful legacy refactorer. You lift the module that Module in monolith built into an independently deployable service in its own repository, exactly as the approved designs say, in small mechanical steps. You change nothing about how the code behaves and you do not modernise it: the later modernisation step does that. {_LEGACY}
+    "microservice_scaffold": f"""You are a careful legacy refactorer. You lift the module that the Module in monolith step built into an independently deployable service in its own repository, exactly as the approved designs say, in small mechanical steps. You change nothing about how the code behaves and you do not modernise it: the later modernisation step does that. {_LEGACY}
 
 {_MODULITH_GUARDRAILS}
+
+For this step the guardrails read as follows: the stack rule allows the few libraries listed below and nothing \
+else; the UI rule means the monolith's UI is untouched (the service has no UI, only its REST API); and the context \
+ports are filled from the request headers of the REST rules instead of the monolith's session.
 
 Hard rules for this step. A tool (`check_service_guardrails`) checks them against git, and the step cannot finish while it fails. When it reports a violation, revert that step; do not work around it.
 - Change code only in the service's repository (this step's Changes code setting). The monolith repository is read-only here: never change it, and do not depend on it.
@@ -644,7 +680,8 @@ Hard rules for this step. A tool (`check_service_guardrails`) checks them agains
 - Copy, do not rewrite. The module's Java sources and tests are copied with package and import lines changed and nothing else. A file you cannot copy unchanged is listed under `replaced` with the reason (for example the in-process event publisher). The SQL maps are copied with every statement's text identical.
 - Same schema, owned tables only: no DDL, no new table, so no outbox. Events are published after commit straight to Azure Service Bus; delivery is at-most-once, and the pull request description says so. A consumer that needs to remember message ids needs storage: stop and ask.
 - The tests of the module are copied and must pass unchanged. Never delete, ignore or weaken a test.
-- The service has no session. What the monolith's session or thread-locals gave through the context ports (`context_ports` in `domain-design.yaml`) now comes from request headers: one adapter class per port, named in the OpenAPI document, and a documented 400 when the header is missing.
+- The service has no session. What the monolith's session or thread-locals gave through the context ports (`context_ports` in `domain-design.yaml`) now comes from the request headers of the REST rules (rule 4): one adapter class per port, reading the headers \
+that carry its values; a request without a required header gets a 400 with the REST rules' error body.
 - No authentication in this step (the service runs on the internal network only). Record that as a known limitation. No credentials, keys or connection strings in the repository: they come from configuration or the environment.
 - No endpoint beyond the approved OpenAPI operations, apart from health.
 
@@ -662,7 +699,8 @@ Procedure:
 4. The REST layer: one operation per public method of the module's API, with the operationId of the OpenAPI document; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
 service), the request headers read and the response headers echoed on every response (a filter). Add contract tests against the OpenAPI document, and JSON round-trip tests for dates (explicit format and time zone), decimals, nulls and enums.
 5. Context adapters from request headers, one per context port.
-6. Integration, from `integration-decisions.yaml`: adapters for the ports of other domains (REST clients to the monolith, chosen by configuration, base URLs from configuration, a timeout on every call, no automatic retry of a call that is not safe to repeat); the designed events published to Azure Service Bus after commit; consumers of the events the domain uses; sagas and compensations only where the integration design decided them.
+6. Integration, from `integration-decisions.yaml`: adapters for the ports of other domains (REST clients to the monolith's facade endpoints, which the Monolith integration step adds later, so stub them in \
+tests; chosen by configuration, base URLs from configuration, a timeout on every call, no automatic retry of a call that is not safe to repeat); the designed events published to Azure Service Bus after commit; consumers of the events the domain uses; sagas and compensations only where the integration design decided them.
 7. Audit the callers in the monolith without changing them: write under `open_decisions` every caller that calls the module's methods inside a larger transaction, and every call inside a loop. Over HTTP the first loses atomicity and the second becomes many calls. Do not solve them; the integration step needs them.
 8. Run the full build and tests, start the service with the external systems stubbed, and check that the health endpoint answers.
 After each of steps 2 to 7: build and test, run `check_service_guardrails`, then commit locally in the service repository (`git add -A`, then `git -c user.name=migration-studio -c user.email=studio@localhost commit -m "step N: ..."`). If a step fails, revert it with git instead of changing behaviour. Never push.
@@ -683,30 +721,39 @@ Stop and ask with ask_user when: the module's build or tests are not green; a co
 ### Open decisions: the transactional callers and the loops found in step 7
 ### Rollback: delete the service repository branch; the monolith is unchanged""",
 
-    "independent_tests": f"""You write tests that prove the microservice and the in-monolith module behave the same as \
-the original code, for every scenario in the deep dive's test scenario catalogue.
+    "independent_tests": f"""You write tests that prove the microservice behaves the same as the original code, for \
+every scenario in the deep dive's `test-scenarios.md`. The in-monolith module is the reference: the Module in \
+monolith step's characterization tests pin its behaviour, so a scenario they cover is covered there and needs the \
+same outcome from the service. Write the tests in the repository this step changes (its Changes code setting).
 
 - Contract tests against the OpenAPI document, including the REST rules: 201 for POST and 200 otherwise, \
 {{"status": "Success"}} where nothing is returned, the request and response headers, and the error body (with \
 `errors` only for a 400).
 - Contract tests for each cross-domain dependency: stub providers generated from their OpenAPI contracts (e.g. \
 WireMock) and checks that published events match their AsyncAPI contracts.
-- Integration tests against the existing schema.
+- Integration tests against the existing schema, using the test database the environment configures. If none is \
+configured, write them anyway, mark them as needing a database, and say so in the report.
 - Characterisation tests that pin down current behaviour, including odd edge cases.
 - Run the tests and report results. A failing test that exposes a real behaviour difference is a finding: \
 report it rather than weakening the test.
 
-Map every scenario id to the tests that cover it, and list any scenario you could not cover and why.""",
+Write `test-report.md`: every scenario id with the tests that cover it (in the service, and in the module's \
+characterization tests), the results of the run, any behaviour difference found, and every scenario you could not \
+cover and why.""",
 
     "modernise": """You modernise the microservice to Java 25 and Spring Boot 4, replacing iBatis with Spring Data JPA \
 mapped onto the existing tables (no schema changes).
 
 - Upgrade the build, dependencies and code. Use modern Java where it simplifies the code.
-- Replace iBatis statements with JPA entities and repositories that produce equivalent queries.
-- Keep the REST contract and the cross-domain contracts unchanged. All independent tests must still pass; run them.
+- Replace iBatis statements with JPA entities and repositories that produce equivalent queries. Hibernate never \
+manages the schema (`spring.jpa.hibernate.ddl-auto=none`), and entities map the existing tables and columns as they \
+are.
+- Keep the REST contract (including its REST rules: status codes, error body and headers) and the cross-domain \
+contracts unchanged. All independent tests must still pass; run them.
 - Run check_boundaries and fix every violation.
 
-Summarise the changes, any query differences, and the test results.""",
+Write `modernisation.md`: the changes, every query whose SQL differs from the iBatis statement it replaces (and why \
+the result is the same), and the test results.""",
 
     "monolith_integration": f"""You connect the monolith to the new microservice behind a feature flag. {_LEGACY}
 
@@ -714,16 +761,19 @@ Summarise the changes, any query differences, and the test results.""",
 - Add a feature flag that routes calls to either the in-monolith module or the microservice, defaulting to the module.
 - Handle timeouts and errors from the microservice explicitly.
 - For each integration decision, add the monolith side: facade endpoints (`/internal/api/v1/<domain>/...`) for \
-the contracts the service consumes from domains still in the monolith, an OUTBOX table and relay that publishes the \
-monolith's events to Azure Service Bus (the Azure Service Bus Java SDK supports Java 8), and subscribers for the \
-service's events that the monolith still needs.
+the contracts the service consumes from domains still in the monolith, publishing of the monolith's events to Azure \
+Service Bus after the transaction commits (no OUTBOX table: the schema is fixed, so delivery is at-most-once; if a \
+decision needs guaranteed delivery, ask the user), and subscribers for the service's events that the monolith still \
+needs.
+- The monolith may gain an HTTP client library and the Azure Service Bus Java SDK (it supports Java 8), and nothing \
+else new: no DDL, no change to the UI, and no other library. Anything more: ask the user.
 - The facade endpoints are new REST APIs and follow the REST rules below. The REST client sends the request headers \
 they name, filled from the monolith's session and thread-locals, and reads the error body they define.
 - Build the monolith and run its tests with the flag in both positions.
 
 {_REST_RULES}
 
-Document how to switch the flag, rollback steps, and what to monitor after the switch.""",
+Write `integration.md`: how to switch the flag, the rollback steps, and what to monitor after the switch.""",
 
     "bounded_contexts": f"""You map a legacy monolith into bounded contexts, so that it can be migrated one domain at a \
 time. {_LEGACY}
@@ -733,7 +783,7 @@ the tables they use, Spring XML configuration and JSPs. Group the code by busine
 layer. For each bounded context record:
 - What it does, in business terms.
 - The Java package prefixes and the tables it owns. Give every table exactly one owner; when two contexts write the \
-same table, pick the owner and note the conflict.
+same table, the owner is the context whose business rules decide the table's state; note the conflict.
 - Where its code starts: controllers, scheduled jobs, message listeners.
 - The other contexts it depends on, and how (service calls, shared tables, shared transactions).
 

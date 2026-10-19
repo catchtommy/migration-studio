@@ -4,10 +4,11 @@ legacy stack, the Modulith guardrails, the REST rules, the machine-readable form
 
 Instructions include a block with its placeholder, `{{key}}`, filled in from the database when a step starts, so a
 change to a block reaches every agent that uses it, edited or not. The texts in app/agents/defaults.py are only the
-defaults: the database is seeded with them once (blocks added in later releases are added then), and Reset puts one
-back.
+defaults: the database is seeded with them once (blocks added in later releases are added then), a text nobody has
+edited follows its default when a release changes it, and Reset puts one back.
 """
 
+import hashlib
 import re
 from typing import Any
 
@@ -20,6 +21,14 @@ from app.db.session import NotConfigured, session_scope
 PLACEHOLDER = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
 _TEMPLATED_MARKER = "_agents_use_shared_texts"  # existing agents' instructions were given placeholders once
 
+# SHA-256 of default texts from earlier releases. A shared text still holding one of these was never edited, so it is
+# safe to bring it up to the current default.
+PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
+    "modulith_guardrails": {"cd47ed977ecce9c1a15de5b4984f282c89332c4f04a203af06941579dbf4bea5"},
+    "rest_rules": {"b54eabfb50dbc3fa6638c9e39678892b4304ff9da150d634520049bb3444ba98"},
+    "integration_rules": {"4b3eb1458b581abd4d48dbc3c1c691ffce3bcba4268a97f844490928070abbd7"},
+}
+
 
 def _as_dict(row: SharedText) -> dict[str, Any]:
     default = SHARED_TEXTS.get(row.key)
@@ -29,15 +38,19 @@ def _as_dict(row: SharedText) -> dict[str, Any]:
 
 
 def seed() -> None:
-    """Add the shared texts the database doesn't have yet, then (once) give existing agents' instructions placeholders
-    wherever they still hold a block's default text word for word, so later changes to the block reach them."""
+    """Add the shared texts the database doesn't have yet, bring the ones never edited up to the current defaults,
+    then (once) give existing agents' instructions placeholders wherever they still hold a block's default text word
+    for word, so later changes to the block reach them."""
     from app.agents.defaults import templated
 
     with session_scope() as s:
-        have = set(s.scalars(select(SharedText.key).where(SharedText.project == SHARED)))
+        have = {r.key: r for r in s.scalars(select(SharedText).where(SharedText.project == SHARED))}
         for key, (title, description, text) in SHARED_TEXTS.items():
-            if key not in have:
+            row = have.get(key)
+            if row is None:
                 s.add(SharedText(project=SHARED, key=key, title=title, description=description, text=text))
+            elif hashlib.sha256((row.text or "").encode()).hexdigest() in PREVIOUS_DEFAULT_HASHES.get(key, ()):
+                row.text, row.description = text, description
         if s.get(Setting, (GLOBAL, _TEMPLATED_MARKER)) is None:
             for agent in s.scalars(select(Agent)):
                 agent.instructions = templated(agent.instructions or "")
