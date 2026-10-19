@@ -105,6 +105,10 @@ STANDARD = Workflow((
               "integration_design")),
     StageDef("modular_monolith", "Module in monolith", "agent",
              "Extract a Java 8 / Spring 3 / iBatis module shaped like the future microservice."),
+    StageDef("monolith_orchestrator", "Orchestrator in monolith", "agent",
+             "Cross-domain features only: build the feature's orchestrator as its own Java module in the monolith "
+             "(controller → orchestrator → domain module). It sequences the domain API and the calls to other "
+             "domains, and holds no database access."),
     StageDef("microservice_scaffold", "Spring Boot microservice", "agent",
              "Lift the module into its own service (same Spring 3.2 / iBatis stack, executable jar) exposing the approved REST "
              "contract; code and SQL copied unchanged."),
@@ -112,7 +116,7 @@ STANDARD = Workflow((
              "Contract, integration and characterization tests covering every scenario."),
     StageDef("gate_tests", "Approve tests", "gate",
              "Review the module, microservice and scenario coverage.",
-             ("modular_monolith", "microservice_scaffold", "independent_tests")),
+             ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "independent_tests")),
     StageDef("modernise", "Modernisation", "agent",
              "Java 25, Spring Boot 4, iBatis → Spring Data JPA on the existing tables, code improvements."),
     StageDef("monolith_integration", "Monolith integration", "agent",

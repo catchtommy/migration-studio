@@ -1,7 +1,7 @@
 """Guardrails of the Module in monolith step, checked from git rather than trusted from the agent's word.
 
-The step extracts one feature into new Maven modules (a domain module and, for cross-domain features, an orchestrator
-module) and re-points the callers. Compared with the commit the step started from, only these changes may exist:
+The step extracts one feature into a new Maven module (the domain module; the Orchestrator in monolith step adds the
+orchestrator, see orchestrator_guardrails.py) and re-points the callers. Compared with the commit the step started from, only these changes may exist:
 
 - inside the new modules: anything, except what the checks below forbid (other domains' tables and packages, God
   modules, dependencies beyond the allow-list, SQL that is not copied from the monolith);
@@ -218,9 +218,12 @@ def base_pom_info(root: Path, base: str) -> tuple[set[tuple[str, str]], dict[tup
 # ---- The check --------------------------------------------------------------------------------------------------
 
 def check(root: Path, base: str, declaration: dict | None, design: dict | None, ownership: dict[str, dict],
-          domain: str, god_modules: list[str] | None = None) -> list[str]:
+          domain: str, god_modules: list[str] | None = None, extra_artifacts: list[str] | None = None,
+          extra_names: list[str] | None = None) -> list[str]:
     """Violations of the step's limits since `base`. `declaration` is module-extraction.yaml (parsed) and `design` is
-    domain-design.yaml (parsed); either may be None while the agent has not written it yet."""
+    domain-design.yaml (parsed); either may be None while the agent has not written it yet. `extra_artifacts` are
+    modules built by an earlier step (groupId:artifactId) that the new modules may depend on, and `extra_names` classes
+    whose imports, declarations and bean references callers may change as for a moved class."""
     try:
         diff = changes(root, base)
     except (RuntimeError, OSError) as e:
@@ -242,6 +245,7 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
     moved = {_simple(c.path) for c in inside if c.path.endswith(".java") and c.status in "AR"}
     moved |= {_simple(c.path) for c in diff if c.path.endswith(".java") and c.status == "D"}
     moved |= {_simple(c.old_path) for c in diff if c.status == "R" and (c.old_path or "").endswith(".java")}
+    moved |= set(extra_names or [])
     moved.discard("package-info")
     word = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(moved))) + r")\b") if moved else None
 
@@ -282,6 +286,7 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
     used, versions, monolith_group = base_pom_info(root, base)
     utility = {str(u) for u in (design or {}).get("utility_modules", [])}
     own = {tuple(m["artifact"].split(":", 1)) for m in decl_modules if ":" in (m.get("artifact") or "")}
+    own |= {tuple(a.split(":", 1)) for a in extra_artifacts or [] if ":" in a}
     for c in inside:
         if Path(c.path).name != "pom.xml" or c.status == "D":
             continue

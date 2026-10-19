@@ -148,8 +148,6 @@ exceptions: []
                 pass
         base = f"{ctx.domain}-domain/{ctx.operation}"
         modules = [("domain", f"{base}/domain", f"com.example:{ctx.domain}-{ctx.operation}-domain")]
-        if scope == "cross-domain":
-            modules.append(("orchestrator", f"{base}/orchestrator", f"com.example:{ctx.domain}-{ctx.operation}-orchestrator"))
         lines = ["# [stub] sample module extraction declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
                  f"scope: {scope}", "modules:"]
         for kind, path, artifact in modules:
@@ -158,6 +156,22 @@ exceptions: []
             lines.append(f"bridge_dir: src/main/java/com/example/{ctx.domain}/legacybridge")
         lines += ["outside_changes: []", "shared_copies: []", "events: []"]
         files["module-extraction.yaml"] = "\n".join(lines) + "\n"
+    if "orchestrator-extraction.yaml" in outputs:  # the orchestrator of a cross-domain feature, beside its domain module
+        lines = ["# [stub] sample orchestrator extraction declaration", f"feature: {ctx.operation}",
+                 f"domain: {ctx.domain}"]
+        if _scope(ctx) == "cross-domain":
+            name = _ident(ctx.domain)
+            lines += ["orchestrator: module", "module:",
+                      f"  path: {ctx.domain}-domain/{ctx.operation}/orchestrator",
+                      f"  artifact: com.example:{ctx.domain}-{ctx.operation}-orchestrator", "operations:",
+                      f"  - method: {name}Orchestrator#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
+                      f"    replaces: {name}Service#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
+                      "    callers: []", "ports:", f"  - port: {_ident(other)}Directory", f"    contract: {query}",
+                      f"    property: {ctx.domain}.{other}-directory.mode", "    default: local", "outside_changes: []"]
+        else:
+            lines += ["orchestrator: none", 'reason: "[stub] The feature is domain-only: controllers call the domain '
+                      'module directly"']
+        files["orchestrator-extraction.yaml"] = "\n".join(lines) + "\n"
     if "linked-domain-contracts.yaml" in outputs:
         files["linked-domain-contracts.yaml"] = f"""# [stub] sample linked-domain contracts
 feature: {ctx.operation}
@@ -255,6 +269,17 @@ components:
         f.write_text(content, encoding="utf-8")
         written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
     return written
+
+
+def _scope(ctx: AgentContext) -> str:
+    """The dependency finder's scope decision in this run's documents (domain-only when there is none)."""
+    deps = ctx.output_dir / "domain-dependencies.yaml"
+    if deps.is_file():
+        try:
+            return contracts_store.load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"]
+        except contracts_store.InvalidDocument:
+            pass
+    return "domain-only"
 
 
 def _ident(text: str) -> str:

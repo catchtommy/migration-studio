@@ -5,7 +5,7 @@ import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 
-from app import boundary_check, module_guardrails, service_guardrails
+from app import boundary_check, module_guardrails, orchestrator_guardrails, service_guardrails
 from app.text import decode, decode_with, encode_like
 from app.agents.base_agent import DOCS_ROOT, AgentContext
 
@@ -69,6 +69,14 @@ SCHEMAS: dict[str, dict] = {
                        "modules, SQL text identical to the monolith's, only allowed dependencies, no God module, no "
                        "other domain's tables or packages, no existing test weakened. Run it after every step and "
                        "before finishing. Needs module-extraction.yaml.",
+        "input_schema": _obj({}, []),
+    },
+    "check_orchestrator_guardrails": {
+        "description": "Check everything you changed since this step started against the step's limits: no database "
+                       "access (DAO, iBatis, JDBC, SQL maps) and no transactions in the orchestrator module, the "
+                       "domain module unchanged, no UI, DDL, version or build changes, only the allowed call-site and "
+                       "wiring edits outside the orchestrator module, no other domain's code or tables, no God module. "
+                       "Run it after every step and before finishing. Needs orchestrator-extraction.yaml.",
         "input_schema": _obj({}, []),
     },
     "check_service_guardrails": {
@@ -139,7 +147,8 @@ class Toolbox:
         # A step not set to change code (Workflows page) writes its documents and nothing else.
         self.docs_only = ctx.stage_def is not None and not ctx.stage_def.code
         tools = ctx.config.get("tools", [])
-        if ctx.base_sha is None and ("check_module_guardrails" in tools or "check_service_guardrails" in tools):
+        if ctx.base_sha is None and {"check_module_guardrails", "check_orchestrator_guardrails",
+                                     "check_service_guardrails"} & set(tools):
             ctx.base_sha = module_guardrails.head(self.root / ctx.code_dir)
         if ctx.monolith_sha is None and "check_service_guardrails" in tools and ctx.code_dir not in (".", ""):
             ctx.monolith_sha = module_guardrails.head(self.root)  # the monolith checkout the service copies from
@@ -284,6 +293,9 @@ class Toolbox:
 
     def check_module_guardrails(self) -> str:
         return module_guardrails.report(module_guardrails.for_context(self.ctx))
+
+    def check_orchestrator_guardrails(self) -> str:
+        return orchestrator_guardrails.report(orchestrator_guardrails.for_context(self.ctx))
 
     def check_service_guardrails(self) -> str:
         return service_guardrails.report(service_guardrails.for_context(self.ctx))

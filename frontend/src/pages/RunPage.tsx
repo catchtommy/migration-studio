@@ -14,6 +14,7 @@ import { BranchConfirmation } from "../components/BranchConfirmation";
 import { PublishDocsPanel } from "../components/PublishDocsPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
+import { WorkflowUpdate } from "../components/WorkflowUpdate";
 
 export function RunPage() {
   const canRetry = useCan("runs.start");
@@ -88,6 +89,7 @@ export function RunPage() {
             working on the commit it started from; a new run starts from the latest.
           </p>
         )}
+        <WorkflowUpdate run={run} workflowName={workflowName ?? null} canUpdate={canRetry} />
         {run.inputs && (run.inputs.paths.length > 0 || run.inputs.notes) && (
           <details className="mt-2 text-sm">
             <summary className="cursor-pointer text-subtle hover:text-fg">{run.scope === "operation" ? "Operation inputs" : "Paths and notes"} given to the agents</summary>

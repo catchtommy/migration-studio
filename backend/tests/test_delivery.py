@@ -375,3 +375,87 @@ def test_a_finished_runs_workspace_is_removed_and_a_rerun_starts_from_the_pushed
     assert r.status_code == 200, r.text
     assert git(upstream, "rev-parse", f"{run['branch']}^") == teammate  # built on the teammate's commit
     assert git(upstream, "show", f"{run['branch']}:Teammate.java") == "by a teammate"
+
+
+def test_a_run_waiting_for_branches_follows_the_workflows_current_code_settings(client, tmp_path):
+    """The workflow's repository or base branch for a step changes while a run waits to confirm that step's branches:
+    the question shows the new settings at once, a repository no step uses any more is dropped, and confirming
+    works on the new one."""
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    service = tmp_path / "loan-service"
+    make_monolith(service)
+    base = git(service, "rev-parse", "--abbrev-ref", "HEAD")
+    git(service, "branch", "develop")
+    wf = proj.get("/api/workflows/standard").json()
+    first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
+
+    def code(repository, base_branch=""):
+        steps = [{**st, "code": {"repository": repository, "base_branch": base_branch}} if st.get("key") == first else st
+                 for st in wf["steps"]]
+        r = proj.put("/api/workflows/standard?library=project", json={"steps": steps})
+        assert r.status_code == 200, r.text
+
+    code(str(tmp_path / "old-service"))
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    assert paused["pending_branches"]["repository"]["url"] == str(tmp_path / "old-service")
+
+    code(str(service), "develop")  # fixed in the workflow while the run waits
+    paused = proj.get(f"/api/runs/{run['id']}").json()
+    assert paused["pending_branches"]["repository"]["url"] == str(service)
+    assert paused["pending_branches"]["repository"]["base_branch"] == "develop"
+    assert [r["url"] for r in paused["repositories"]] == [str(service)]  # the old one is gone
+
+    code(str(service), base)  # and the branch alone, too
+    assert proj.get(f"/api/runs/{run['id']}").json()["pending_branches"]["repository"]["base_branch"] == base
+
+    run = finish_workflow(proj, run["id"])
+    assert run["status"] == "awaiting_commit"  # the end of a run that changed code: its commit is offered
+    repos = {r["url"]: r for r in proj.get(f"/api/runs/{run['id']}/repositories").json()}
+    assert repos[str(service)]["changed"]
+
+
+def test_a_workflow_step_needs_a_complete_repository_url(client):
+    wf = client.get("/api/workflows/standard").json()
+    first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
+    for bad in ("https://", "https://github.com", "https://github.com/"):
+        steps = [{**st, "code": {"repository": bad}} if st.get("key") == first else st for st in wf["steps"]]
+        r = client.put("/api/workflows/standard?library=project", json={"steps": steps})
+        assert r.status_code == 422 and "isn't a complete repository URL" in r.text, bad
+
+
+def test_a_run_started_before_any_step_changed_code_reviews_its_commits_once_one_does(client, tmp_path):
+    """A run created while no step changed code had nothing to commit. When a step changes code later (the workflow's
+    code settings, picked up as the run goes on), the step's change is offered for review and commit."""
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    service = tmp_path / "loan-service"
+    make_monolith(service)
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)
+    with session_scope() as s:
+        from app.db.models import Run
+        r = s.get(Run, run["id"])
+        r.repository, r.legacy, r.base_sha, r.delivery = "", None, None, {"commit": False}  # as such a run was made
+    wf = proj.get("/api/workflows/standard").json()
+    later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]  # the first step after the first gate
+    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == later else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+
+    reviewed = []
+    while True:
+        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches", "awaiting_commit", "awaiting_publish",
+                                         "completed"}, timeout=60)
+        if run["status"] == "awaiting_publish":
+            assert proj.post(f"/api/runs/{run['id']}/docs/skip").status_code == 204
+        elif run["status"] == "awaiting_branches":
+            proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+        elif run["status"] == "awaiting_commit" and run["current_stage"]:
+            reviewed.append(run["pending_commit"]["stage"])
+            changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "loan-service"}).json()
+            assert f"studio-stub/{later}.txt" in [f["path"] for f in changes["files"]]  # the diff to review
+            break
+        elif run["status"] == "awaiting_approval":
+            assert proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
+        else:
+            break
+    assert reviewed == [later]

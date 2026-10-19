@@ -19,11 +19,13 @@ TOOLS = {
                                 "module's, allowed libraries only, exactly the approved operations",
     "check_module_guardrails": "Check the module extraction against its limits: no UI, DDL or version changes, only "
                                "call-site and wiring edits outside the new modules",
+    "check_orchestrator_guardrails": "Check the orchestrator module against its limits: no database access or "
+                                     "transactions, domain module unchanged, only call-site and wiring edits outside it",
 }
 READ_ONLY = ["list_files", "read_file", "search_code", "ask_user"]
 DOCS = [*READ_ONLY, "write_file"]
 CODE = [*READ_ONLY, "write_file", "edit_file", "run_command", "check_boundaries"]
-CHECKS = ("boundary", "module_guardrails", "service_guardrails")  # verifications an agent can be configured to pass before it may finish
+CHECKS = ("boundary", "module_guardrails", "orchestrator_guardrails", "service_guardrails")  # verifications an agent can be configured to pass before it may finish
 
 # Machine-readable files the cross-domain stages produce. Migration Studio validates them before the agent finishes
 # and records the decisions and contracts in its catalogue when the design is approved.
@@ -239,9 +241,9 @@ domain: broker
 scope: domain-only            # copy of decision.scope in domain-dependencies.yaml
 modules:
   - path: broker-domain/broker-profile/domain     # folder of the new Maven module
-    kind: domain              # domain | orchestrator (cross-domain features add an orchestrator module)
+    kind: domain              # the domain module, the only one this step creates (the next step adds the orchestrator)
     artifact: com.acme:broker-profile-domain
-# bridge_dir: web/src/main/java/com/acme/broker/legacybridge   # temporary adapters in the monolith: context ports, local adapters, bindings (cross-domain, or when the design has context_ports)
+# bridge_dir: web/src/main/java/com/acme/broker/legacybridge   # temporary adapters in the monolith: context ports and local adapters (cross-domain, or when the design has context_ports)
 outside_changes:              # every existing file outside the modules you changed: call sites, wiring, SQL maps, tests
   - web/src/main/java/com/acme/web/BrokerController.java
 shared_copies:                # copied, not moved, because another feature of this domain still uses the original
@@ -265,6 +267,28 @@ open_decisions:                    # found, not solved here
   - topic: transactions
     detail: OrderService#place calls BrokerService#create and #update in one transaction
 events: [BrokerCreated]            # only events named in the approved designs
+```"""
+
+ORCHESTRATOR_EXTRACTION_SCHEMA = """```yaml
+# orchestrator-extraction.yaml: what this step created and changed. A tool compares it with git before you may finish.
+feature: create-loan
+domain: loan
+orchestrator: module          # module | none (no orchestrator: give the reason and nothing else)
+# reason: The feature is domain-only   # only with orchestrator: none
+module:
+  path: loan-domain/create-loan/orchestrator   # folder of the new Maven module
+  artifact: com.acme:create-loan-orchestrator
+operations:                   # what the controllers now call
+  - method: LoanOrchestrator#create            # same name and signature as the domain API method it takes over
+    replaces: LoanService#create               # the domain API method the controllers called before
+    callers: [web/src/main/java/com/acme/web/LoanController.java]
+ports:                        # ports of other domains, each with its mode switch
+  - port: CustomerDirectory
+    contract: customer.get-kyc-status          # key in linked-domain-contracts.yaml
+    property: loan.customer-directory.mode     # local | contract
+    default: local
+outside_changes:              # every existing file you changed outside the module and the bridge package (controllers,
+  - web/src/main/java/com/acme/web/LoanController.java   # Spring wiring), not POMs
 ```"""
 
 _INTEGRATION_RULES = """The schema is fixed: no pattern may need a new table, column or data move. That rules out a \
@@ -535,7 +559,9 @@ Ask the user when a service's behaviour cannot be exposed as it is, for example 
 
     "orchestrator_design": f"""You design how this feature keeps working exactly as it does today while the other \
 domains it depends on are not ready, and how it moves to their real services later. The result is an \
-orchestrator inside the monolith. {_LEGACY}
+orchestrator inside the monolith, which the Orchestrator in monolith step builds as its own Maven module: a request \
+flows controller → orchestrator → domain module, and the orchestrator holds no database access and no transaction \
+of its own. Not every feature needs one: a domain-only feature has none. {_LEGACY}
 
 {_MODULITH_GUARDRAILS}
 
@@ -556,8 +582,9 @@ that service and only the configuration changes.
 base address is configured, with defaults.
 
 Write `orchestrator-design.md` covering:
-- The orchestrator: its classes, the ports it uses, and the order of calls for the feature in each mode (sequence \
-diagrams as text).
+- The orchestrator: its classes, the controllers it takes over, the ports it uses, and the order of calls for the \
+feature in each mode (sequence diagrams as text). For each operation, say which calls to other domains the domain \
+module makes itself (through its ports, as the moved code does today) and which the orchestrator makes.
 - Transactions: in `local` mode the feature keeps its single transaction; in `contract` mode a call crosses a \
 transaction boundary. Say what changes for each shared transaction, and how failures are handled (retry, \
 compensation, or an explicit follow-up).
@@ -649,7 +676,7 @@ Procedure:
    e. Spring: a context file in the module with its beans, `<alias>` entries for the old bean ids so callers wired by name need no edit, and one import line in the monolith's root context.
    f. Delete the old moved code from the monolith, then compile. The errors list every call site; fix each with import, type and bean-reference lines only.
    g. Events: only those the approved designs name, with their classes and a small event port in the domain module. Publish them with Spring's own event publishing after the transaction commits (register a transaction synchronization; Spring 3.2 has no after-commit listener). There is no outbox, so delivery is not guaranteed; say so in `modular-monolith.md`.
-   h. Cross-domain features only: the orchestrator module holds the ports and the orchestration from `orchestrator-design.md`, with `contract` adapters for the linked-domain contracts. The `local` adapters and the contract bindings live in the monolith, in the temporary package named by `bridge_dir`: one class per binding, calling only the single legacy method it names, resolving that bean lazily (setter injection or a lookup on first use; never constructor injection). The mode defaults to `local`. For a domain-only feature there is no orchestrator and no contract binding: callers use the domain's public API directly. A bridge package exists only when there are context-port adapters or, for a cross-domain feature, local adapters and bindings.
+   h. Cross-domain features only: every call the moved code makes to another domain goes through a port of the domain module (the ports in `domain-design.md`). Its `local` adapter lives in the monolith, in the temporary package named by `bridge_dir`: one class per contract binding, calling only the single legacy method it names, resolving that bean lazily (setter injection or a lookup on first use; never constructor injection), registered as the port's bean. Do not build an orchestrator module, contract adapters or mode switches: the Orchestrator in monolith step builds them next, and until then the controllers call the domain's public API. For a domain-only feature there are no such ports and no bindings. A bridge package exists only when there are context-port adapters or, for a cross-domain feature, local adapters.
    i. A wiring test, with the test libraries that exist, showing that the old bean ids resolve to the module's beans. If none of them can load the Spring context, ask the user.
 5. Finish. Write `module-extraction.yaml` in this format, run `check_module_guardrails` until it passes, build and test the affected modules once more, and write `modular-monolith.md`.
 
@@ -664,6 +691,102 @@ Stop and ask with ask_user when: the baseline build is red; a table is owned by 
 ### How behaviour was proven unchanged: the characterization tests (classes, scenario counts), existing tests all passing and none modified or ignored, SQL text of moved statements identical, old bean ids resolve (the wiring test)
 ### Guardrails: the `check_module_guardrails` result, and the number of files changed outside the modules
 ### Known limitations: event delivery, temporary bridge classes with their `remove_when`, copied shared code
+### Rollback: revert the commit""",
+
+    "monolith_orchestrator": f"""You are a careful legacy refactorer. You build the orchestrator of ONE cross-domain \
+feature as its own Maven module in the monolith, exactly as `orchestrator-design.md` says, on top of the domain module \
+that the Module in monolith step built. Afterwards a request flows controller → orchestrator → domain module: the \
+orchestrator sequences the calls to the domain's public API and to the other domains, and the domain module keeps the \
+feature's business logic and data access. You change nothing about how the feature behaves. {_LEGACY}
+
+{_MODULITH_GUARDRAILS}
+
+**Not every feature has an orchestrator.** Only a cross-domain feature has one. If `domain-dependencies.yaml` has \
+`decision.scope: domain-only`, Migration Studio skips this step. If you are run anyway, or `orchestrator-design.md` \
+is missing or says there is nothing to orchestrate, create no module and change no code: write \
+`orchestrator-extraction.yaml` with `orchestrator: none` and the `reason`, `orchestrator-module.md` as a short note \
+saying why there is no orchestrator, and stop.
+
+Hard rules for this step. A tool (`check_orchestrator_guardrails`) checks them against git, and the step cannot \
+finish while it fails. When it reports a violation, revert that step; do not work around it.
+- The orchestrator holds no database access: no DAO, mapper or iBatis statement, no SQL map, no JDBC, `DataSource`, \
+`SqlMapClient` or `JdbcTemplate`, and no transaction of its own (`@Transactional`, `TransactionTemplate`, a \
+transaction manager). Data access and transactions stay in the domain module. If `orchestrator-design.md` needs one \
+transaction across calls the orchestrator makes, stop and ask.
+- The domain module is not changed. The orchestrator uses its public API as it is; if the orchestration needs an \
+operation the API does not have, stop and ask (the Module in monolith step adds it).
+- The orchestrator module depends on the domain module, never the reverse, and otherwise only on libraries the \
+monolith already uses: it calls contracts over REST with Spring's `RestTemplate`. No other domain's classes, packages \
+or tables and no God module: other domains are reached only through ports.
+- Controllers change only in import, injected type and bean reference lines. So the orchestrator offers the feature's \
+operations with the same method names and signatures as the domain API methods the controllers call today: a \
+controller keeps its field name and its call lines, and only the field's type and bean change.
+- Never edit UI files, write DDL, change SQL, add a library or change a version, and never delete, ignore or weaken \
+a test.
+- No ambient inputs: the session, request and current user reach the orchestrator through the domain's context \
+ports, as in the domain module.
+
+Read first: `orchestrator-design.md` (the calls, their order, the modes and their configuration), \
+`module-extraction.yaml` (the domain module, its artifact and `bridge_dir`), `domain-design.md` and \
+`domain-design.yaml` (the public API and the ports), `linked-domain-contracts.yaml` with the contract specs, \
+`domain-dependencies.yaml`, and the domain module's code.
+
+What the orchestrator module holds:
+- One orchestrator class per domain API entry the controllers use (for example `LoanOrchestrator`). Each operation \
+makes the calls `orchestrator-design.md` lists, in that order: calls to other domains through their ports, and calls \
+to the domain's public API. It never repeats a call the domain module makes itself. Business rules stay in the domain \
+module; the orchestrator decides only which call comes next and what the caller gets when one fails, as the design \
+says.
+- The implementation of each port to another domain, whether the domain module or the orchestrator calls it: a mode \
+switch, set by the configuration property `orchestrator-design.md` names and defaulting to `local`. In `local` mode it \
+calls the `local` adapter in the bridge package, which the Module in monolith step made; in `contract` mode it calls \
+the contract adapter.
+- A contract adapter per linked-domain contract the feature uses: a REST client for the contract's spec (base \
+address and timeout from configuration) that sends the request headers and maps the error body of the REST rules \
+below to the results the legacy code gave, as `orchestrator-design.md` says.
+
+{_REST_RULES}
+
+Procedure:
+1. Baseline. Build and test the domain module and the modules that use it. If it is not green before you change \
+anything, stop and report with ask_user.
+2. Characterization tests first: for every controller entry the orchestrator will take over, tests (Mockito) that \
+pin today's results through the domain API, including each error branch, with the ports mocked. Run them on the \
+current code; they must pass. Commit them.
+3. Write the ordered checklist of the steps below, for this feature, at the top of `orchestrator-module.md`.
+4. Do the steps one at a time. After each: compile and test the affected modules, run \
+`check_orchestrator_guardrails`, then commit locally (`git add -A`, then `git -c user.name=migration-studio -c \
+user.email=studio@localhost commit -m "step N: ..."`). If a step fails, revert it with git; fix forward only when the \
+fix is mechanical. Never push.
+   a. Module skeleton: a POM that inherits everything from the parent (no versions, plugins or Java level) and \
+depends on the domain module and only on libraries the monolith already uses; the `<module>` line in the parent; the \
+dependency line in the POM of the web application.
+   b. The port implementations with their mode switch, and the contract adapters, with tests for both modes \
+(`contract` mode against a stub of the contract).
+   c. The orchestrator classes, with tests that check the calls of each operation and their order in each mode.
+   d. Spring: a context file in the orchestrator module with its beans and the defaults of the mode properties, one \
+import line in the monolith's root context, and the port beans pointed at the mode switches instead of the local \
+adapters.
+   e. Re-point the controllers: import, injected type and bean reference lines only. Run the characterization tests \
+again; they must pass unchanged.
+5. Finish. Write `orchestrator-extraction.yaml` in this format, run `check_orchestrator_guardrails` until it passes, \
+build and test once more, and write `orchestrator-module.md`.
+
+{ORCHESTRATOR_EXTRACTION_SCHEMA}
+
+Stop and ask with ask_user when: the baseline build is red; the orchestration needs a database call, a transaction \
+or a domain API operation that does not exist; a controller would need more than import, type and bean reference \
+changes (for example because it calls other domains' services itself today); a library the monolith does not use \
+seems necessary; or a behaviour cannot be preserved. Decide everything else yourself and record it.
+
+`orchestrator-module.md` is the pull request description, in this form:
+## <domain> / <feature>: orchestrator
+### Checklist (the steps you took)
+### Flow: controller → orchestrator → domain module, with the calls of each operation in order, in each mode
+### What was added or changed (a table: item, where, notes)
+### How behaviour was proven unchanged: the characterization tests passing before and after, the mode tests
+### Guardrails: the `check_orchestrator_guardrails` result
+### Configuration: each mode property, its default (`local`) and how to switch it
 ### Rollback: revert the commit""",
 
     "microservice_scaffold": f"""You are a careful legacy refactorer. You lift the module that the Module in monolith step built into an independently deployable service in its own repository, exactly as the approved designs say, in small mechanical steps. You change nothing about how the code behaves and you do not modernise it: the later modernisation step does that. {_LEGACY}
@@ -690,12 +813,12 @@ them, follow the rules and list the difference under deviations in `microservice
 
 {_REST_RULES}
 
-Read first: `module-extraction.yaml` (where the module is, in the monolith checkout at the workspace root, and its events), `domain-design.yaml`, `openapi.yaml`, `integration-decisions.yaml`, `orchestrator-design.md` when it exists, and the module itself.
+Read first: `module-extraction.yaml` (where the module is, in the monolith checkout at the workspace root, and its events), `orchestrator-extraction.yaml` when it exists (the orchestrator module), `domain-design.yaml`, `openapi.yaml`, `integration-decisions.yaml`, `orchestrator-design.md` when it exists, and the module itself.
 
 Procedure:
 1. Baseline. Record the monolith commit you copy from (`git rev-parse HEAD` in the monolith checkout) as `module_commit`. Write the ordered checklist of the steps below at the top of `microservice.md`.
 2. Skeleton: a POM for Java 8 with only the allowed dependencies, a main class that starts the embedded server, a Spring context, the health endpoint. It must build and start.
-3. Copy the module's code, SQL maps and tests (the domain module, and the orchestrator module when there is one). The bridge package of the monolith is never copied: its context adapters become request-header adapters, and its `local` adapters and bindings are replaced by the adapters below. The copied tests must pass.
+3. Copy the module's code, SQL maps and tests (the domain module, and the orchestrator module of `orchestrator-extraction.yaml` when there is one). The bridge package of the monolith is never copied: its context adapters become request-header adapters, and its `local` adapters are replaced by the adapters below. The orchestrator's mode switches are copied unchanged and configured to `contract` mode, since the local adapters stay in the monolith. The copied tests must pass.
 4. The REST layer: one operation per public method of the module's API, with the operationId of the OpenAPI document; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
 service), the request headers read and the response headers echoed on every response (a filter). Add contract tests against the OpenAPI document, and JSON round-trip tests for dates (explicit format and time zone), decimals, nulls and enums.
 5. Context adapters from request headers, one per context port.
@@ -827,6 +950,7 @@ OUTPUTS = {
     "boundary_design": ["boundary-design.md", "openapi.yaml"],
     "integration_design": ["integration-design.md", "integration-decisions.yaml"],
     "modular_monolith": ["modular-monolith.md", "module-extraction.yaml"],
+    "monolith_orchestrator": ["orchestrator-module.md", "orchestrator-extraction.yaml"],
     "microservice_scaffold": ["microservice.md", "microservice-extraction.yaml"],
     "independent_tests": ["test-report.md"],
     "modernise": ["modernisation.md"],
@@ -841,8 +965,11 @@ _MODERN_JDK = {"modernise", "monolith_integration"}
 _ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "linked_domain_contracts", "domain_design",
              "wrapper_design", "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts",
              "domain_features"}
-_GUARDRAIL_TOOLS = {"modular_monolith": ["check_module_guardrails"], "microservice_scaffold": ["check_service_guardrails"]}
-_CHECKS = {"modular_monolith": ["module_guardrails"], "microservice_scaffold": ["boundary", "service_guardrails"],
+_GUARDRAIL_TOOLS = {"modular_monolith": ["check_module_guardrails"],
+                    "monolith_orchestrator": ["check_orchestrator_guardrails"],
+                    "microservice_scaffold": ["check_service_guardrails"]}
+_CHECKS = {"modular_monolith": ["module_guardrails"], "monolith_orchestrator": ["orchestrator_guardrails"],
+           "microservice_scaffold": ["boundary", "service_guardrails"],
            "modernise": ["boundary"]}
 
 
@@ -891,6 +1018,7 @@ SHARED_TEXTS: dict[str, tuple[str, str, str]] = {
     "linked_domain_contracts_format": ("Format: linked-domain contracts", _FORMAT_NOTE, LINKED_DOMAIN_CONTRACTS_SCHEMA),
     "domain_design_format": ("Format: domain design", _FORMAT_NOTE, DOMAIN_DESIGN_SCHEMA),
     "module_extraction_format": ("Format: module extraction", _FORMAT_NOTE, MODULE_EXTRACTION_SCHEMA),
+    "orchestrator_extraction_format": ("Format: orchestrator extraction", _FORMAT_NOTE, ORCHESTRATOR_EXTRACTION_SCHEMA),
     "service_extraction_format": ("Format: microservice extraction", _FORMAT_NOTE, SERVICE_EXTRACTION_SCHEMA),
 }
 

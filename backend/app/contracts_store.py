@@ -33,6 +33,7 @@ MODULITH_SCOPES = ("domain-only", "cross-domain")
 LINKED_CONTRACTS_FILE = "linked-domain-contracts.yaml"  # written by the linked-domain contracts step
 MICROSERVICE_EXTRACTION_FILE = "microservice-extraction.yaml"  # the microservice step's declaration
 MODULE_EXTRACTION_FILE = "module-extraction.yaml"  # the Module in monolith step's declaration of what it changed
+ORCHESTRATOR_EXTRACTION_FILE = "orchestrator-extraction.yaml"  # the Orchestrator in monolith step's declaration
 COORDINATES = re.compile(r"^[\w.\-]+:[\w.\-]+$")  # Maven groupId:artifactId
 DOMAIN_DESIGN_FILE = "domain-design.yaml"  # the domain design's declaration against the guardrails
 # Lists in domain-design.yaml that must stay empty unless the user approved an exception for that rule.
@@ -260,9 +261,9 @@ def parse_module_extraction(text: str) -> dict:
     if data["scope"] == "domain-only" and "orchestrator" in kinds:
         raise InvalidDocument(f"{where}: the feature is domain-only, so there is no orchestrator module; callers use "
                               "the domain's public API directly")
-    if data["scope"] == "cross-domain" and ("orchestrator" not in kinds or not data.get("bridge_dir")):
-        raise InvalidDocument(f"{where}: the feature is cross-domain, so add an orchestrator module and the "
-                              "bridge_dir (the temporary legacy bridge package in the monolith)")
+    if data["scope"] == "cross-domain" and not data.get("bridge_dir"):
+        raise InvalidDocument(f"{where}: the feature is cross-domain, so add the bridge_dir (the temporary legacy "
+                              "bridge package in the monolith, with the local adapters)")
     for field in ("outside_changes", "events"):
         if data.get(field) is not None and not isinstance(data[field], list):
             raise InvalidDocument(f"{where}: {field} must be a list")
@@ -305,6 +306,88 @@ def parse_microservice_extraction(text: str) -> dict:
     if data.get("events") is not None and not isinstance(data["events"], list):
         raise InvalidDocument(f"{where}: events must be a list")
     return data
+
+
+def parse_orchestrator_extraction(text: str) -> dict:
+    """What the Orchestrator in monolith step declares it created and changed (or `orchestrator: none` and why)."""
+    data = _load(text, ORCHESTRATOR_EXTRACTION_FILE)
+    where = ORCHESTRATOR_EXTRACTION_FILE
+    _require(data, ("feature", "domain", "orchestrator"), where)
+    _one_of(data["orchestrator"], ("module", "none"), f"{where} orchestrator")
+    if data["orchestrator"] == "none":
+        if not str(data.get("reason") or "").strip():
+            raise InvalidDocument(f"{where}: give the reason there is no orchestrator")
+        if data.get("module") or data.get("operations") or data.get("ports"):
+            raise InvalidDocument(f"{where}: orchestrator is none, so list no module, operations or ports")
+        return data
+    module = data.get("module")
+    if not isinstance(module, dict):
+        raise InvalidDocument(f"{where}: module must be a mapping with path and artifact")
+    _require(module, ("path", "artifact"), f"{where} module")
+    if str(module["path"]).startswith("/") or ".." in Path(str(module["path"])).parts:
+        raise InvalidDocument(f"{where} module: path must be inside the repository")
+    if not COORDINATES.match(str(module["artifact"])):
+        raise InvalidDocument(f"{where} module: artifact must be Maven coordinates, groupId:artifactId")
+    for field, needs in (("operations", ("method", "replaces")), ("ports", ("port", "contract", "property"))):
+        value = data.get(field)
+        if field == "operations" and not value:
+            raise InvalidDocument(f"{where}: list the operations the controllers now call")
+        if value is not None and not isinstance(value, list):
+            raise InvalidDocument(f"{where}: {field} must be a list")
+        for i, item in enumerate(value or [], 1):
+            if not isinstance(item, dict):
+                raise InvalidDocument(f"{where} {field} {i} must be a mapping")
+            _require(item, needs, f"{where} {field} {i}")
+    for i, port in enumerate(data.get("ports") or [], 1):
+        if str(port.get("default", "local")) != "local":
+            raise InvalidDocument(f"{where} port {i}: the mode defaults to local, which keeps today's behaviour")
+    if data.get("outside_changes") is not None and not isinstance(data["outside_changes"], list):
+        raise InvalidDocument(f"{where}: outside_changes must be a list")
+    return data
+
+
+def _orchestrator_extraction_problems(output_dir: Path, declaration: dict) -> list[str]:
+    """Check the orchestrator against the documents next to it: only a cross-domain feature has one, it is a module
+    of its own beside the domain module, and its ports call linked-domain contracts."""
+    problems = []
+    scope = None
+    deps = output_dir / DOMAIN_DEPENDENCIES_FILE
+    if deps.is_file():
+        try:
+            scope = load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"]
+        except InvalidDocument:
+            pass
+    if declaration["orchestrator"] == "none":
+        return problems
+    if scope == "domain-only":
+        problems.append(f"{ORCHESTRATOR_EXTRACTION_FILE}: {DOMAIN_DEPENDENCIES_FILE} decides this feature is "
+                        "domain-only, so it has no orchestrator: write orchestrator: none")
+    module_file = output_dir / MODULE_EXTRACTION_FILE
+    if not module_file.is_file():
+        problems.append(f"{ORCHESTRATOR_EXTRACTION_FILE}: {MODULE_EXTRACTION_FILE} of the Module in monolith step is "
+                        "missing; the orchestrator is built on the domain module it declares")
+    else:
+        try:
+            modules = parse_module_extraction(module_file.read_text(encoding="utf-8"))["modules"]
+        except InvalidDocument:
+            modules = []
+        path = str(declaration["module"]["path"]).strip("/")
+        for m in modules:
+            other = str(m["path"]).strip("/")
+            if path == other or path.startswith(other + "/") or other.startswith(path + "/"):
+                problems.append(f"{ORCHESTRATOR_EXTRACTION_FILE}: the orchestrator module {path} overlaps the "
+                                f"{m['kind']} module {other}; it is a module of its own")
+    linked = output_dir / LINKED_CONTRACTS_FILE
+    if linked.is_file():
+        try:
+            keys = {c["key"] for c in parse_linked_domain_contracts(linked.read_text(encoding="utf-8"))}
+        except InvalidDocument:
+            keys = None
+        if keys is not None:
+            problems += [f"{ORCHESTRATOR_EXTRACTION_FILE}: port {p['port']} calls {p['contract']}, which is not a "
+                         f"contract in {LINKED_CONTRACTS_FILE}" for p in declaration.get("ports") or []
+                         if p["contract"] not in keys]
+    return problems
 
 
 def _module_extraction_problems(output_dir: Path, declaration: dict) -> list[str]:
@@ -421,6 +504,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
                         (LINKED_CONTRACTS_FILE, parse_linked_domain_contracts),
                         (DOMAIN_DESIGN_FILE, parse_domain_design),
                         (MODULE_EXTRACTION_FILE, parse_module_extraction),
+                        (ORCHESTRATOR_EXTRACTION_FILE, parse_orchestrator_extraction),
                         (MICROSERVICE_EXTRACTION_FILE, parse_microservice_extraction),
                         (DECISIONS_FILE, lambda text: parse_decisions(text, {c["key"] for c in linked}))):
         f = output_dir / name
@@ -440,6 +524,8 @@ def validate_outputs(output_dir: Path) -> list[str]:
             problems += _domain_design_problems(output_dir, parsed)
         if name == MODULE_EXTRACTION_FILE:
             problems += _module_extraction_problems(output_dir, parsed)
+        if name == ORCHESTRATOR_EXTRACTION_FILE:
+            problems += _orchestrator_extraction_problems(output_dir, parsed)
         if name == DECISIONS_FILE:
             for c in parsed["contracts"]:
                 if c.get("spec") and not (output_dir / c["spec"]).is_file():

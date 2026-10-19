@@ -203,6 +203,17 @@ export interface RunDetail extends Run {
   pending_rerun: { gate: string; target_stage: string; comments: string | null } | null; // rejection held for amendments
   base_sha: string | null; // the monolith commit the run started from
   monolith_behind: number | null; // commits the project's base branch has gained since (as last fetched)
+  workflow_update: WorkflowUpdate | null; // the run's workflow changed since it started: what updating it would do
+}
+
+/** What bringing a waiting run up to date with its workflow would change (step titles), or why it can't. */
+export interface WorkflowUpdate {
+  added?: string[];
+  removed?: string[];
+  changed?: string[];
+  missed?: string[]; // new steps before the point the run has reached: this run won't run them
+  reordered?: boolean;
+  blocked?: string;
 }
 
 /** The server's copy of a project's monolith repository, shared by its runs. */
@@ -656,6 +667,7 @@ export const api = {
   backToReview: (id: string) => request<Run>(`/runs/${id}/back-to-review`, { method: "POST" }),
   updateRunInputs: (id: string, inputs: AgentInputs) => request<RunDetail>(`/runs/${id}/inputs`, json("PUT", inputs)),
   retry: (id: string) => request<Run>(`/runs/${id}/retry`, { method: "POST" }),
+  updateRunWorkflow: (id: string) => request<Run>(`/runs/${id}/update-workflow`, { method: "POST" }),
   restart: (id: string, stage: string, notes?: string, fresh = false) => request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh })),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),

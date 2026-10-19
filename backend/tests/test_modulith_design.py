@@ -285,6 +285,63 @@ def test_domain_only_feature_skips_linked_domain_contracts_and_orchestrator(clie
     assert "Skipped Modulith design: Linked-domain contracts" in log
 
 
+@pytest.mark.parametrize("domain_only", [True, False])
+def test_only_a_cross_domain_feature_gets_an_orchestrator_in_the_monolith(client, monkeypatch, domain_only):
+    run, ran = _run_to_design_gate(client, "customer", domain_only, monkeypatch)
+    assert _approve(client, run["id"]).status_code == 200
+    run = wait_for(client, run["id"], {"awaiting_approval"})
+    assert run["pending_gate"]["gate"] == "gate_tests"
+    stages = {s["stage"]: s for s in run["stages"]}
+    assert stages["monolith_orchestrator"]["status"] == "completed"
+    assert ("monolith_orchestrator" in ran) is not domain_only  # skipped without an agent when domain-only
+    assert ran.index("modular_monolith") < ran.index("microservice_scaffold")
+    if not domain_only:
+        assert ran.index("modular_monolith") < ran.index("monolith_orchestrator") < ran.index("microservice_scaffold")
+    [doc] = [a for a in client.get(f"/api/runs/{run['id']}/artifacts").json()
+             if a["stage"] == "monolith_orchestrator" and a["name"].endswith(".md")]
+    note = client.get(f"/api/artifacts/{doc['id']}").json()["content"]
+    assert ("no orchestrator to build" in note) is domain_only
+
+
+def test_standard_workflow_gains_the_orchestrator_step_keeping_its_settings(client):
+    original = client.get("/api/workflows/standard").json()["steps"]
+    previous = _steps_of_shape(workflow_store._STANDARD_V4)
+    previous = [{**st, "code": {"repository": "", "base_branch": "develop"}} if st["key"] == "modular_monolith"
+                else {**st, "publish_docs": True} if st["key"] == "as_is_doc" else st for st in previous]
+    with session_scope() as s:
+        s.get(WorkflowDef, (SHARED, "standard")).steps = previous
+        s.query(Setting).filter(Setting.key == "_standard_workflow_v5").delete()
+    workflow_store.seed()
+    steps = client.get("/api/workflows/standard").json()["steps"]
+    keys = [st["key"] for st in steps]
+    assert keys[keys.index("modular_monolith") + 1] == "monolith_orchestrator"
+    by_key = {st["key"]: st for st in steps}
+    assert by_key["monolith_orchestrator"]["code"] == by_key["modular_monolith"]["code"] == \
+        {"repository": "", "base_branch": "develop"}  # it changes the same code as the module step
+    assert by_key["as_is_doc"]["publish_docs"] and "monolith_orchestrator" in by_key["gate_tests"]["reviews"]
+    with session_scope() as s:
+        s.get(WorkflowDef, (SHARED, "standard")).steps = original
+
+
+def test_a_projects_copy_of_the_standard_workflow_gains_the_orchestrator_step_unless_its_steps_changed(client):
+    previous = [{**st, "uses": ["deep_dive"]} if st["key"] == "domain_dependencies" else st
+                for st in _steps_of_shape(workflow_store._STANDARD_V4)]  # a setting differs: still upgraded
+    changed = [st for st in previous if st["key"] != "modernise"]  # a step removed: left alone
+    with session_scope() as s:
+        for project, steps in (("p-same", previous), ("p-changed", changed)):
+            s.add(WorkflowDef(project=project, key="standard", name="Standard migration", steps=steps))
+        s.query(Setting).filter(Setting.key == "_standard_project_copies_v5").delete()
+    workflow_store.seed()
+    with session_scope() as s:
+        same, kept = (s.get(WorkflowDef, (p, "standard")) for p in ("p-same", "p-changed"))
+        keys = [st["key"] for st in same.steps]
+        assert keys[keys.index("modular_monolith") + 1] == "monolith_orchestrator"
+        assert next(st for st in same.steps if st["key"] == "domain_dependencies")["uses"] == ["deep_dive"]
+        assert "monolith_orchestrator" not in [st["key"] for st in kept.steps]
+        s.delete(same)
+        s.delete(kept)
+
+
 def test_cross_domain_feature_runs_every_modulith_step(client, monkeypatch):
     run, ran = _run_to_design_gate(client, "customer", False, monkeypatch)
     assert [s for s in ran if s in MODULITH] == MODULITH
@@ -297,6 +354,8 @@ def test_skip_follows_the_decision_in_the_workspace(tmp_path):
     assert "domain-only" in modulith_scope.skip_reason("linked_domain_contracts", tmp_path)
     assert "domain-only" in modulith_scope.skip_reason("orchestrator_design", tmp_path)
     assert "domain-only" in modulith_scope.skip_reason("wrapper_design", tmp_path)  # the superseded step, if used
+    assert "domain-only" in modulith_scope.skip_reason("monolith_orchestrator", tmp_path)  # nothing to build
+    assert modulith_scope.skip_reason("modular_monolith", tmp_path) is None
     assert modulith_scope.skip_reason("domain_design", tmp_path) is None  # only these two are ever skipped
     assert modulith_scope.skip_reason("integration_design", tmp_path) is None
     f.write_text(GOOD)  # a reviewer's edit to cross-domain brings the steps back

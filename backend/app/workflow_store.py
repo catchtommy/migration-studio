@@ -5,6 +5,7 @@ workflows of its own.
 """
 
 import re
+from urllib.parse import urlsplit
 from typing import Any
 
 from sqlalchemy import select
@@ -39,8 +40,8 @@ def steps_of(workflow: Workflow) -> list[dict]:
 
 
 STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → Modulith design (linked-domain contracts, domain, "
-                        "orchestrator) → cross-domain integration → module → microservice → tests → modernisation "
-                        "→ integration, with four approval gates.")
+                        "orchestrator) → cross-domain integration → module → orchestrator (cross-domain features) → "
+                        "microservice → tests → modernisation → integration, with four approval gates.")
 
 
 def _shape(steps: list[dict]) -> list[tuple]:
@@ -68,6 +69,31 @@ _STANDARD_V3 = [*_HEAD, ("agent", "domain_dependencies", ()), ("agent", "domain_
                                          "orchestrator_design", "integration_design")), *_TAIL]
 
 
+# Fourth release: linked-domain contracts instead of the wrapper; no Orchestrator in monolith step yet.
+_STANDARD_V4 = [*_HEAD, ("agent", "domain_dependencies", ()), ("agent", "linked_domain_contracts", ()),
+                ("agent", "domain_design", ()), ("agent", "orchestrator_design", ()), ("agent", "integration_design", ()),
+                ("gate", "gate_design", ("domain_dependencies", "linked_domain_contracts", "domain_design",
+                                         "orchestrator_design", "integration_design")), *_TAIL]
+
+
+def _upgraded(steps: list[dict]) -> list[dict]:
+    """The current STANDARD, keeping the settings of the stored steps (code, uses, publishing). A step new in this
+    release that changes the same code as an earlier one (the orchestrator, after the module) gets its settings."""
+    stored = {st["key"]: st for st in steps if st.get("kind") == "agent"}
+    inherit = {"monolith_orchestrator": "modular_monolith"}
+    out = []
+    for st in steps_of(STANDARD):
+        if st["kind"] == "agent":
+            source = stored.get(st["key"]) or stored.get(inherit.get(st["key"], ""))
+            if source and source.get("code"):
+                st = {**st, "code": source["code"]}
+            if st["key"] in stored:
+                st = {**st, **{k: stored[st["key"]][k] for k in ("uses", "include_content", "publish_docs")
+                               if k in stored[st["key"]]}}
+        out.append(st)
+    return out
+
+
 def seed() -> None:
     with session_scope() as s:
         if s.scalar(select(WorkflowDef).limit(1)) is None:
@@ -76,16 +102,26 @@ def seed() -> None:
             s.add(Setting(key="_standard_workflow_v2", value=True))
             s.add(Setting(key="_standard_workflow_v3", value=True))
             s.add(Setting(key="_standard_workflow_v4", value=True))
+            s.add(Setting(key="_standard_workflow_v5", value=True))
+            s.add(Setting(key="_standard_project_copies_v5", value=True))
             s.add(Setting(key="_standard_publishes_as_is_docs", value=True))
         else:
             # Upgrade the standard workflow only if nobody has changed it; customised ones are left alone.
             for marker, previous in (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2),
-                                     ("_standard_workflow_v4", _STANDARD_V3)):
+                                     ("_standard_workflow_v4", _STANDARD_V3), ("_standard_workflow_v5", _STANDARD_V4)):
                 if s.get(Setting, (GLOBAL, marker)) is None:
                     standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
                     if standard is not None and _shape(standard.steps) == previous:
-                        standard.steps, standard.description = steps_of(STANDARD), STANDARD_DESCRIPTION
+                        standard.steps, standard.description = _upgraded(standard.steps), STANDARD_DESCRIPTION
                     s.add(Setting(key=marker, value=True))
+        if s.get(Setting, (GLOBAL, "_standard_project_copies_v5")) is None:
+            # Projects' copies of the standard workflow whose steps are still the previous release's (only their
+            # settings differ, such as the documents a step reads) get the Orchestrator in monolith step too.
+            for copy in s.scalars(select(WorkflowDef).where(WorkflowDef.key == STANDARD_KEY,
+                                                            WorkflowDef.project != SHARED)):
+                if _shape(copy.steps) == _STANDARD_V4:
+                    copy.steps = _upgraded(copy.steps)
+            s.add(Setting(key="_standard_project_copies_v5", value=True))
         if s.get(Setting, (GLOBAL, "_standard_publishes_as_is_docs")) is None:
             # The standard workflow's AS-IS steps publish their approved documents to the monolith's docs folder.
             standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
@@ -177,6 +213,11 @@ def _code(code: dict | None, i: int, title: str) -> dict | None:
     base = str(code.get("base_branch") or "").strip()
     if repository.startswith("-") or any(c.isspace() for c in repository):
         raise WorkflowInvalid(f"Step {i}: {title!r} needs a git URL or path for its repository")
+    if "://" in repository:
+        parts = urlsplit(repository)
+        if not parts.netloc or parts.path.strip("/") == "":
+            raise WorkflowInvalid(f"Step {i}: {title!r}: {repository!r} isn't a complete repository URL; give the "
+                                  "host and the repository, e.g. https://github.com/acme/broker-service.git")
     unknown = set(re.findall(r"{(\w+)}", repository)) - {"domain"}
     if unknown:
         raise WorkflowInvalid(f"Step {i}: unknown placeholder {{{sorted(unknown)[0]}}} in the repository; use {{domain}}")

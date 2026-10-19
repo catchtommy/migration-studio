@@ -16,7 +16,8 @@ from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import auth, contracts_store, delivery, discovery_store, docs_publish, projects, repos, settings_store, workflow_store, workspace
+from app import (auth, contracts_store, delivery, discovery_store, docs_publish, projects, repos, run_workflow,
+                 settings_store, workflow_store, workspace)
 from app.auth import CurrentUser, require
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
@@ -123,6 +124,9 @@ def git_plan(domain: str, feature: str, workflow: str | None = None, db: Session
 @router.get("/runs/{run_id}", response_model=RunDetail)
 def get_run(run_id: str, db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id)
+    branches = _branches_to_confirm(run_id) if run.status == "awaiting_branches" else None
+    if branches:
+        db.refresh(run)  # the workflow's current code settings, picked up while it waits
     detail = RunDetail.model_validate(run)
     if run.scope == "operation":
         detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
@@ -131,12 +135,35 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
     if run.status in ("awaiting_approval", "changes_requested"):
         detail.pending_gate = get_runner().pending_gate(run_id)
     if run.status == "awaiting_branches":
-        detail.pending_branches = get_runner().pending_gate(run_id)
+        detail.pending_branches = branches or get_runner().pending_gate(run_id)
     if run.status == "awaiting_commit" and run.current_stage:
         detail.pending_commit = get_runner().pending_gate(run_id)
     if run.status == "awaiting_publish":
         detail.pending_publish = get_runner().pending_gate(run_id)
+    update = None if get_runner().is_active(run_id) else run_workflow.plan(run)
+    detail.workflow_update = update and {k: v for k, v in update.items() if k != "stages"}
     return detail
+
+
+@router.post("/runs/{run_id}/update-workflow", response_model=RunOut)
+def update_workflow(run_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("runs.start"))):
+    """Bring the steps this run has not reached yet up to date with its workflow. The steps it has reached stay as
+    they ran; the run then goes on with the workflow's current steps."""
+    run = _run_or_404(db, run_id)
+    if get_runner().is_active(run_id):
+        raise HTTPException(409, "The run is working; wait for it to stop or reach a gate, then update it")
+    update = run_workflow.plan(run)
+    if update is None:
+        raise HTTPException(422, "The run's upcoming steps already match its workflow")
+    if "blocked" in update:
+        raise HTTPException(409, update["blocked"])
+    run.workflow_stages = update["stages"]
+    db.commit()
+    emit(run_id, "status", f"{user.display_name} updated the run to the workflow's current steps: "
+                           f"{run_workflow.summary(update)}", run.current_stage)
+    delivery.refresh_code_settings(run_id)  # repositories the new steps change, checked out when first needed
+    db.refresh(run)
+    return run
 
 
 @router.post("/runs/{run_id}/decision", response_model=ApprovalOut)
@@ -541,6 +568,19 @@ def finish_without_commit(run_id: str, db: Session = Depends(get_db),
         workspace.release_if_completed(run_id)
 
 
+def _branches_to_confirm(run_id: str) -> dict | None:
+    """What a run waiting at a branch confirmation asks, with the workflow's current code settings: a change to the
+    step's repository or base branch since the run got there shows (and applies) at once. The step works out the same
+    question when it goes on, so the answer fits it."""
+    if get_runner().is_active(run_id):
+        return None
+    pending = get_runner().pending_gate(run_id)
+    if not pending or pending.get("kind") != "branches":
+        return None
+    delivery.refresh_code_settings(run_id)
+    return delivery.confirmation_needed(run_id, pending["stage"])
+
+
 class BranchesIn(BaseModel):
     feature_branch: str = Field(min_length=1, max_length=255)
     base_branch: str | None = Field(default=None, max_length=255)  # for a repository not checked out yet
@@ -554,6 +594,7 @@ def confirm_branches(run_id: str, body: BranchesIn, db: Session = Depends(get_db
     pending = get_runner().pending_gate(run_id) if run.status == "awaiting_branches" else None
     if not pending or pending.get("kind") != "branches":
         raise HTTPException(409, "The run isn't waiting for branches to be confirmed")
+    pending = _branches_to_confirm(run_id) or pending  # as the step will see it when it goes on
     key = pending["repository"]["key"]
     db.close()
     try:

@@ -560,6 +560,22 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
             <input
               type="checkbox"
               className="mt-1"
+              checked={(form.checks ?? []).includes("orchestrator_guardrails")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "orchestrator_guardrails", e.target.checked))}
+            />
+            <span>
+              Orchestrator guardrails
+              <span className="block text-xs text-subtle">
+                Before finishing, a git comparison with the commit the step started from must pass: no database access or transactions in the orchestrator
+                module, the domain module unchanged, and only call-site and wiring edits outside the orchestrator module.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
               checked={(form.checks ?? []).includes("service_guardrails")}
               onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "service_guardrails", e.target.checked))}
             />

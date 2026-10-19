@@ -418,16 +418,18 @@ def test_the_stub_declaration_is_valid_for_both_scopes(tmp_path):
     from app import contracts_store
     from app.agents import stub
 
-    for scope, expect in (("domain-only", 1), ("cross-domain", 2)):
+    for scope, orchestrator in (("domain-only", "none"), ("cross-domain", "module")):
         ctx = _ctx(tmp_path, None)
-        ctx.config["outputs"] = ["module-extraction.yaml"]
+        ctx.config["outputs"] = ["module-extraction.yaml", "orchestrator-extraction.yaml"]
         (ctx.output_dir / "domain-dependencies.yaml").write_text(
             "decision: {scope: %s, reason: r}\ndependencies: %s\n" % (
                 scope, "[{domain: customer, relation: calls, touchpoints: [{kind: service, ref: a.B#c}]}]"
                 if scope == "cross-domain" else "[]"))
-        [out] = [a for a in stub._sample_cross_domain_files(ctx) if a.name == "module-extraction.yaml"]
-        parsed = contracts_store.parse_module_extraction((tmp_path / out.path).read_text())
-        assert len(parsed["modules"]) == expect and parsed["scope"] == scope
+        written = {a.name: (tmp_path / a.path).read_text() for a in stub._sample_cross_domain_files(ctx)}
+        parsed = contracts_store.parse_module_extraction(written["module-extraction.yaml"])
+        assert [m["kind"] for m in parsed["modules"]] == ["domain"] and parsed["scope"] == scope  # no orchestrator here
+        parsed = contracts_store.parse_orchestrator_extraction(written["orchestrator-extraction.yaml"])
+        assert parsed["orchestrator"] == orchestrator
 
 
 def test_modules_may_not_read_the_session_or_user_directly(repo):

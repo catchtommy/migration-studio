@@ -35,11 +35,11 @@ def test_happy_path_runs_every_stage_and_gate(client):
     assert {s["stage"] for s in run["stages"]} == {
         "as_is_doc", "deep_dive", "gate_analysis", "domain_dependencies", "linked_domain_contracts",
         "domain_design", "orchestrator_design", "integration_design", "gate_design", "modular_monolith",
-        "microservice_scaffold", "independent_tests", "gate_tests", "modernise", "monolith_integration",
+        "monolith_orchestrator", "microservice_scaffold", "independent_tests", "gate_tests", "modernise", "monolith_integration",
         "gate_release"}
     assert all(s["status"] in ("completed", "approved") for s in run["stages"])
     names = [a["name"] for a in client.get(f"/api/runs/{run_id}/artifacts").json()]
-    assert len([n for n in names if n.endswith(".md")]) == 12  # one document per agent stage
+    assert len([n for n in names if n.endswith(".md")]) == 13  # one document per agent stage
     assert {"cross-domain.yaml", "domain-dependencies.yaml", "integration-decisions.yaml"} <= set(names)
     assert not Path(run["workspace"]).exists()  # a completed run's workspace is removed from the server
 
@@ -217,3 +217,55 @@ def test_code_changes_of_a_step_that_writes_documents_only_are_undone(client, mo
     with session_scope() as s:
         messages = [e.message for e in s.query(AuditEvent).filter(AuditEvent.run_id == run_id)]
     assert any("documents only" in m and "src/Sneaky.java" in m for m in messages)
+
+
+def test_a_waiting_run_can_be_updated_to_its_workflows_current_steps(client):
+    """A run keeps the steps it started with; updating it picks up steps added to its workflow since, after the point
+    it has reached, and the run then goes on through them."""
+    wf = client.get("/api/workflows/standard").json()
+    without = [{**st, "reviews": [r for r in st.get("reviews") or [] if r != "monolith_orchestrator"]}
+               if st["kind"] == "gate" else st for st in wf["steps"] if st["key"] != "monolith_orchestrator"]
+    assert client.put("/api/workflows/standard?library=project", json={"steps": without}).status_code == 200
+    try:
+        run_id = new_run(client)
+        run = wait_for(client, run_id, {"awaiting_approval"})
+        assert run["pending_gate"]["gate"] == "gate_analysis" and run["workflow_update"] is None
+        assert "monolith_orchestrator" not in [s["key"] for s in run["workflow_stages"]]
+    finally:
+        assert client.post("/api/workflows/standard/revert").status_code == 200  # back to the shared workflow
+
+    run = client.get(f"/api/runs/{run_id}").json()
+    assert run["workflow_update"]["added"] == ["Orchestrator in monolith"]
+    assert run["workflow_update"]["changed"] == ["Approve tests"] and not run["workflow_update"]["missed"]
+    assert "monolith_orchestrator" not in [s["key"] for s in run["workflow_stages"]]  # nothing changes on its own
+
+    r = client.post(f"/api/runs/{run_id}/update-workflow")
+    assert r.status_code == 200, r.text
+    keys = [s["key"] for s in r.json()["workflow_stages"]]
+    assert keys[keys.index("modular_monolith") + 1] == "monolith_orchestrator"
+    assert client.get(f"/api/runs/{run_id}").json()["workflow_update"] is None
+    assert client.post(f"/api/runs/{run_id}/update-workflow").status_code == 422  # already up to date
+
+    for gate in GATES:
+        run = wait_for(client, run_id, {"awaiting_approval"})
+        assert run["pending_gate"]["gate"] == gate
+        decide(client, run_id, decision="approve")
+    run = wait_for(client, run_id, {"completed"})
+    assert [e["status"] for e in executions(run, "monolith_orchestrator")] == ["completed"]
+    assert [e["status"] for e in executions(run, "as_is_doc")] == ["completed"]  # reached steps did not run again
+
+
+def test_a_run_cannot_follow_a_workflow_that_dropped_the_step_it_reached(client):
+    from app import run_workflow
+    from app.db.models import Run
+    from app.db.session import session_scope
+
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        run.workflow_stages = [{**d, "key": "gate_old"} if d["key"] == "gate_analysis" else d for d in run.stage_defs]
+        run.current_stage = "gate_old"
+        update = run_workflow.plan(run)
+    assert "no longer has" in update["blocked"]
+    assert client.post(f"/api/runs/{run_id}/update-workflow").status_code == 409

@@ -239,6 +239,13 @@ def for_context(ctx) -> list[str]:
         return [str(e)]
     if module_decl is None:
         return [f"{cs.MODULE_EXTRACTION_FILE} of the Module in monolith step is missing: it says where the module is"]
+    try:  # the orchestrator module, when the Orchestrator in monolith step built one, is lifted with the domain module
+        orchestrator = load(cs.ORCHESTRATOR_EXTRACTION_FILE, cs.parse_orchestrator_extraction)
+    except cs.InvalidDocument as e:
+        return [str(e)]
+    if orchestrator and orchestrator["orchestrator"] == "module":
+        module_decl = {**module_decl, "modules": [*module_decl["modules"],
+                                                  {**orchestrator["module"], "kind": "orchestrator"}]}
     openapi = out / "openapi.yaml"
     root_is_git = mg.head(ctx.workspace) is not None
     return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, ctx.workspace if root_is_git else None,

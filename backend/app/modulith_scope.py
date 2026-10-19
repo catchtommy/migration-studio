@@ -1,7 +1,8 @@
-"""The Modulith scope decision: whether a feature needs the Linked-domain contracts and Orchestrator design steps.
+"""The Modulith scope decision: whether a feature needs the Linked-domain contracts, Orchestrator design and
+Orchestrator in monolith steps.
 
 The dependency finder records `decision.scope` in `domain-dependencies.yaml`. A feature that only uses its own
-domain (`domain-only`) has no contract to define and nothing to orchestrate, so those two steps are skipped without
+domain (`domain-only`) has no contract to define and nothing to orchestrate, so those steps are skipped without
 running an agent.
 """
 
@@ -10,9 +11,10 @@ from pathlib import Path
 from app import contracts_store
 
 # Agent stages skipped for domain-only features (wrapper_design is the superseded step, kept for custom workflows).
-SKIPPABLE = ("linked_domain_contracts", "wrapper_design", "orchestrator_design")
+SKIPPABLE = ("linked_domain_contracts", "wrapper_design", "orchestrator_design", "monolith_orchestrator")
 NOTHING_TO = {"linked_domain_contracts": "no contract to define with another domain",
-              "wrapper_design": "nothing to wrap", "orchestrator_design": "nothing to orchestrate"}
+              "wrapper_design": "nothing to wrap", "orchestrator_design": "nothing to orchestrate",
+              "monolith_orchestrator": "no orchestrator to build: controllers call the domain module directly"}
 
 
 def skip_reason(stage: str, output_dir: Path) -> str | None:

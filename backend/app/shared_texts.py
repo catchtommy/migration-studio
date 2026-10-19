@@ -27,6 +27,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "modulith_guardrails": {"cd47ed977ecce9c1a15de5b4984f282c89332c4f04a203af06941579dbf4bea5"},
     "rest_rules": {"b54eabfb50dbc3fa6638c9e39678892b4304ff9da150d634520049bb3444ba98"},
     "integration_rules": {"4b3eb1458b581abd4d48dbc3c1c691ffce3bcba4268a97f844490928070abbd7"},
+    "module_extraction_format": {"d13a3bd1c9a23f1d750dcbe2d06559ee7358edf7e185752934bc9ef41b6b0373"},
 }
 
 

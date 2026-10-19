@@ -351,9 +351,11 @@ def apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
 
 
 def refresh_code_settings(run_id: str) -> None:
-    """When a run goes on (a restart, an approval, a retry) it picks up the workflow's current code settings (which
-    steps change code, and where): the run's workflow snapshot gets them, and repositories new to the run are added,
-    to be checked out when first needed. Only the code settings change; the steps stay as the run started with."""
+    """When a run goes on (a restart, an approval, a retry) or waits for its branches to be confirmed, it picks up the
+    workflow's current code settings (which steps change code, and where): the run's workflow snapshot gets them,
+    repositories new to the run are added, to be checked out when first needed, and a repository not checked out yet
+    follows its step's base branch, or is dropped when no step uses it any more. A repository already checked out
+    stays as it is. Only the code settings change; the steps stay as the run started with."""
     from app import projects, workflow_store
     with session_scope() as s:
         run = s.get(Run, run_id)
@@ -367,17 +369,27 @@ def refresh_code_settings(run_id: str) -> None:
         code = {st["key"]: st.get("code") for st in current["stages"] if st["kind"] == "agent"}
         stages = [{**d, "code": code.get(d["key"], d.get("code"))} if d["kind"] == "agent" else d
                   for d in run.stage_defs]
-        nested = [dict(r) for r in run.repositories or []]
+        wanted = {r["url"]: r for r in code_repositories(stages, run.domain)}
+        nested = []
+        for r in run.repositories or []:
+            if r.get("base_sha"):  # checked out: its branches are set
+                nested.append(dict(r))
+            elif r["url"] in wanted:
+                nested.append({**r, "base_branch": wanted[r["url"]]["base_branch"] or None})
         known = {r["url"] for r in nested}
-        for r in code_repositories(stages, run.domain):
+        for r in wanted.values():
             if r["url"] not in known:
                 key = _repo_key(r["url"], {ROOT, *(x["key"] for x in nested)})
                 nested.append({"key": key, "name": key, "url": r["url"], "base_branch": r["base_branch"] or None,
                                "path": f"{NESTED_DIR}/{key}", "base_sha": None})
         run.workflow_stages = stages
         run.repositories = nested or None
-        if run.delivery is None or "commit" not in run.delivery:
-            run.delivery = {**(run.delivery or {}), "commit": git_settings(current)["commit"]}
+        # Whether the run reviews and commits its code, as for a new run (plan): the workflow commits and there is a
+        # repository to commit to. A run started before any step changed code had none, so it learns it here.
+        target = run_repository(run) or (run.legacy or {}).get("url") or nested
+        commit = git_settings(current)["commit"] and bool(target)
+        if (run.delivery or {}).get("commit") != commit:
+            run.delivery = {**(run.delivery or {}), "commit": commit}
 
 
 # --- reviewing the changes ------------------------------------------------------------------------------------------

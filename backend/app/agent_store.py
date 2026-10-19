@@ -23,7 +23,8 @@ LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
                   "_added_linked_domain_contracts": ["linked_domain_contracts"],
                   "_added_discovery_agents": ["bounded_contexts", "domain_features"],
                   "_added_modulith_design_agents": ["domain_dependencies", "domain_design",
-                                                    "wrapper_design", "orchestrator_design"]}
+                                                    "wrapper_design", "orchestrator_design"],
+                  "_added_monolith_orchestrator": ["monolith_orchestrator"]}
 
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
@@ -48,7 +49,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                       "e5ac314731ee2cea532d10917f03304365e33b91c1f7358103bbe9d314ddd8db"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
-    "orchestrator_design": {"35da265d3395dafb7b16aaa1477ff1c3fba106c2c0bc11ca340c8f05da063b62",
+    "orchestrator_design": {"44b0788e38d118d0b1a4a7cf2de98d2dbcf3bee334a7885bc8ce8788bac6c365",
+                            "35da265d3395dafb7b16aaa1477ff1c3fba106c2c0bc11ca340c8f05da063b62",
                             "81cf9ffa985d209c21d9d32644ff19055335c8fbb6b7941d140ccae39c05d133",
         "8ee1b3ec61e2994c53791f681523bed3f44c8861ae4576a7cd6c01a9b509bfe7",
                               "b1175e5e93c69bb615256ce4684be01648dd7736bee4955052bbca5be914d9dc",
@@ -70,13 +72,15 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "independent_tests": {"97d564115dc60807860254fee3ecfa541ca999e29cf9870d487a5efe93031f02",
                           "4b1b34967d2944c200b2b4bd8c0a81768cd6292da94cac47c000f9ba30d0de8e",
                           "d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
-    "microservice_scaffold": {"181fe29546e7075f3e007a79554c5c168620b9e23364fea592f1aea97673972c",
+    "microservice_scaffold": {"433fa24641180e7ee1a61b9c122707e5088afd85fcfff8238ad9953a37aafe56",
+                              "181fe29546e7075f3e007a79554c5c168620b9e23364fea592f1aea97673972c",
                               "775065ebf6599df3036965a91a20399a3bc78702ef5ac7ae7f8b1a107ed59c21",
                               "869be47dce9dcbb7f70c95cf4c4ab19d00772b4b0c5851c71c9e23c481319145",
                               "c2ad8fdcb1f1c9011741b780496fed42b80971e5d67bd0ba1c8a1d1402270ba1"},
     "modernise": {"3a97d57409eb272a0311e1bc55d47da3fa1ccf655e303b135937d7e3f8734366",
                   "a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457"},
-    "modular_monolith": {"496c048b744624038c78d0318f8576b486700d5936d2a2b60215dde6e2bdab5a",
+    "modular_monolith": {"ae6adcee76691ce042b38a21231c497ea4ff3dcf880fa94905f5c0098571bfde",
+                         "496c048b744624038c78d0318f8576b486700d5936d2a2b60215dde6e2bdab5a",
                          "07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee",
                          "a2faa355ff82f2ded46ea8c43c9f551c16ff2e09a9f5ae0af29931bfac559025",
                               "31d5f8f0bbaa53df1978c04257e99924dade1b2b41f230a985b8bd08830d9adc",
@@ -91,7 +95,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v13"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v14"
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.
