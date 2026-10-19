@@ -49,7 +49,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                             "3e283b3f86a097de59173a64e5068d92ee6fc631799dfaac7c2617f903a91dc9"},
     "linked_domain_contracts": {"5ef353e2455182ccc268bfd59999b18449c873a8bb41be559aee177df7c6d941",
                                 "7373d95b05eadcacff8638d41bc2da63c8627647d323f824a12159828a41f3d7",
-                                "f769606aba568416e0e3892f88a6fd147ab3eeb1ff082d9be446ec6ea3fc9dbf"},
+                                "f769606aba568416e0e3892f88a6fd147ab3eeb1ff082d9be446ec6ea3fc9dbf",
+                                "7a589e02ca2bb06072c304f2f0d99e47482f4eba4d3a7846a4986cfbaef45a8a"},
     "integration_design": {"22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
                               "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5"},
     "independent_tests": {"d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
@@ -66,7 +67,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v8"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v9"
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.

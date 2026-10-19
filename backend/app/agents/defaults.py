@@ -356,6 +356,22 @@ needs no schema change to be provided, and its temporary binding delegates to a 
 service, not to a God module. If the only implementation of a capability lives inside a God module, say so and ask \
 the user how it should be split.
 
+Two things are never contracts, even when the dependency finder lists them as touchpoints of another domain:
+- Reference number generation (application, loan, case or any business reference or sequence number) belongs inside \
+the domain that creates the record. Do not define a contract for it. The domain generates the number itself, with the \
+same format, the same sequence or counter and the same iBatis statements as today. If the number comes from a \
+sequence or table that another domain also writes, do not settle it with a schema change or a contract: name the \
+owner and raise it as an open decision.
+- Validation of mobile numbers, email addresses and similar formats (postcode, PAN, IBAN and so on) is helper code, \
+not a capability of another domain. Do not define a contract for it. If the helper is already in a utility jar the \
+monolith depends on, the domain uses that jar and you list its Maven coordinates. If it sits in the monolith's own \
+sources, the domain gets its own copy with the logic unchanged (a shared helper may be proposed later, but it is a \
+separate decision), and you record where it was copied from. A helper that reads the database, the session or other \
+domains' data is not a helper: treat it as a normal dependency.
+List both under "Not contracts" in `linked-domain-contracts.md`, each with the touchpoint (file and line), what the \
+domain does instead, and for helpers the Maven coordinates or the source it is copied from. If this removes the \
+only outbound dependency of a domain, say so, and say that the decision scope may be `domain-only`.
+
 Read `domain-dependencies.yaml` (the dependency finder's result), the deep dive and the contracts catalogue you are \
 given. Work from the consumer's side: ask what this feature needs, not what the other domain's classes happen to \
 offer. For every outbound dependency:
