@@ -28,30 +28,35 @@ LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
 PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
-    "boundary_design": {"54005c5822e8c7380780ed9bd94127f80e83e35d8733616754436a17334070b5"},
+    "boundary_design": {"f0df743aa52f57bfccb67748684cd0004993308476d3c5e538d94a3d9ba0ceea",
+        "54005c5822e8c7380780ed9bd94127f80e83e35d8733616754436a17334070b5"},
     "deep_dive": {"9a50019f34790f8b4de82b88a85d7d0b5c7d877100d052ad2886fd66252dc4a3",
                   "e7932db2bbf7b61072ab89b6480fc7d34a7f64ce91db9cb502d3ceb5bbecfdd1"},
     "domain_dependencies": {"e414b29584fc2df4dfd5d5a4bf1b67f2202e015b1bdbc9e992f937e41a7d51cd",
                               "d2fc147964a2e477c07072900e92b7356898e7613f3274d96dfab97576ec8476",
                             "6909abd6a1c273ef64d44d286532f0171c7c92c3d0cd78939ce8db8610c33d25",
                             "3d453659a94a2f241277ea0f3c3feb349d125fdd97057bb5bc1f1d39bd3dbcab"},
-    "domain_design": {"183bbce289171e4d9b20d7d1506417c2aaf10d85c76f278ae91f80e1cadb6405",
+    "domain_design": {"9c129233aca1bf0a00dd893f4f0c44ab545f0ac5346a75b7222432e398bc2e31",
+        "183bbce289171e4d9b20d7d1506417c2aaf10d85c76f278ae91f80e1cadb6405",
                               "45ad59b8a91325d3caa86f53505051bda11071e52282340470b7eef5fa0649eb",
                       "142d8a42236f9e844bcd3445647e9f34787655dece2bc6ccc0b05ec30862e3c8",
                       "5a7035410502576364098df1291b71788fdbe7e10be7644db0a102550a7f8ab7",
                       "e5ac314731ee2cea532d10917f03304365e33b91c1f7358103bbe9d314ddd8db"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
-    "orchestrator_design": {"8ee1b3ec61e2994c53791f681523bed3f44c8861ae4576a7cd6c01a9b509bfe7",
+    "orchestrator_design": {"81cf9ffa985d209c21d9d32644ff19055335c8fbb6b7941d140ccae39c05d133",
+        "8ee1b3ec61e2994c53791f681523bed3f44c8861ae4576a7cd6c01a9b509bfe7",
                               "b1175e5e93c69bb615256ce4684be01648dd7736bee4955052bbca5be914d9dc",
                             "f9e96fafed18fe73fe6e62b9d75184fe99b3c6bdf802d190fed21afb42c35542",
                             "95e1470cf6cff461d1caf1d4e94205c0229b696ee8c852c6bd3acdb7b257a79e",
                             "3e283b3f86a097de59173a64e5068d92ee6fc631799dfaac7c2617f903a91dc9"},
-    "linked_domain_contracts": {"5ef353e2455182ccc268bfd59999b18449c873a8bb41be559aee177df7c6d941",
+    "linked_domain_contracts": {"5d19465bca4616a7f4a6e3581fbadcd30b9707efb9c43e993ddddd96ed8cc464",
+        "5ef353e2455182ccc268bfd59999b18449c873a8bb41be559aee177df7c6d941",
                                 "7373d95b05eadcacff8638d41bc2da63c8627647d323f824a12159828a41f3d7",
                                 "f769606aba568416e0e3892f88a6fd147ab3eeb1ff082d9be446ec6ea3fc9dbf",
                                 "7a589e02ca2bb06072c304f2f0d99e47482f4eba4d3a7846a4986cfbaef45a8a"},
-    "integration_design": {"22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
+    "integration_design": {"50062f4c3b3dcc7aab9e4ace195d0134977a341a4a81a22518962ed7f87474c2",
+        "22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
                               "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5"},
     "independent_tests": {"d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
     "microservice_scaffold": {"869be47dce9dcbb7f70c95cf4c4ab19d00772b4b0c5851c71c9e23c481319145",
@@ -67,7 +72,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v9"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v10"
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.

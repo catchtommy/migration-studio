@@ -183,6 +183,26 @@ request header, so the code itself moves unchanged.
 11. Exceptions only with the user. If the feature cannot meet a rule, stop and ask the user. Record the answer under \
 `exceptions` with the rule and the reason, so that the reviewer sees it at the design gate."""
 
+# REST design rules: the norm for every API a design step specifies (contracts, wrappers, public API, boundary).
+_REST_RULES = """REST API design rules. They apply to every REST operation you specify, in the OpenAPI document and in the \
+prose, and they override the legacy shapes: the monolith's URLs, JSPs and responses stay as they are, but the new \
+REST contract follows these rules.
+1. Success codes: POST returns 201. Every other method returns 200.
+2. An operation with nothing to return answers with exactly {"status": "Success"}.
+3. An error is HTTP 400 for validation, with this body (an RFC 7807 style problem):
+   {"type": "https://api.example.com/problems/validation-error", "title": "Validation Failed", \
+"detail": "one or more field validation errors", "errorCode": "VAL-CUST-001", "instance": "/domain/123", \
+"errors": [{"field": "cust.test", "message": "invalid customer first name"}, \
+{"field": "cust.test", "message": "invalid customer last name"}]}
+   `errorCode` is <KIND>-<DOMAIN>-<number> (VAL for validation). Every HTTP error other than 400 uses the same body \
+WITHOUT the `errors` field. Document each error response in the OpenAPI document with this schema.
+4. Request headers, all of type string, declared on every operation: `x-context-agency-id` (the unique logged-in \
+agency broker id, for example PL123456789), `x-context-user-id` (the unique logged-in user id), `x-correlation-id`, \
+`x-trace-id` and `x-ms-client-id` (the unique id of the caller). They carry what the monolith reads today from the \
+session or thread-locals, so they are what the context ports are filled from.
+5. Response headers, all of type string, declared on every response: `x-correlation-id`, `x-trace-id` and \
+`x-ms-client-id`, echoing the request's values."""
+
 # Machine-readable guardrail declaration of the domain design. Validated before the agent finishes: the lists that
 # must stay empty are checked, and tables and dependencies are checked against domain ownership and the contracts.
 DOMAIN_DESIGN_SCHEMA = """```yaml
@@ -356,6 +376,8 @@ needs no schema change to be provided, and its temporary binding delegates to a 
 service, not to a God module. If the only implementation of a capability lives inside a God module, say so and ask \
 the user how it should be split.
 
+{_REST_RULES}
+
 Two things are never contracts, even when the dependency finder lists them as touchpoints of another domain:
 - Reference number generation (application, loan, case or any business reference or sequence number) belongs inside \
 the domain that creates the record. Do not define a contract for it. The domain generates the number itself, with the \
@@ -437,8 +459,10 @@ file and line, and the port that replaces each. Say [] in `context_ports` only i
 - Guardrail check: a table of every guardrail above with its status (met, or exception) and the evidence.
 - Risks and open decisions for the reviewer.
 
+{_REST_RULES}
+
 Also write `openapi.yaml`: the REST contract of this feature's public API as an OpenAPI 3.1 document (paths, \
-schemas, error responses), faithful to current behaviour. The microservice stage implements it later.
+schemas, error responses), faithful to current behaviour and following the REST rules above. The microservice stage implements it later.
 
 Also write `domain-design.yaml`, the machine-checked declaration of the guardrails, in this format:
 
@@ -452,6 +476,8 @@ Ask the user about ownership decisions you cannot settle from the code.""",
     "wrapper_design": f"""You design REST wrappers over existing services that belong to other domains, so that \
 this feature can reach them without depending on their classes. A wrapper is a thin REST interface in front of an \
 existing service; it does not move or change that service. {_LEGACY}
+
+{_REST_RULES}
 
 Read `domain-dependencies.yaml` from the dependency finder, the domain design (the ports the domain needs) and the \
 contracts catalogue you are given. For every touchpoint of kind service, dao or table with another domain as owner, \
@@ -501,7 +527,9 @@ diagrams as text).
 - Transactions: in `local` mode the feature keeps its single transaction; in `contract` mode a call crosses a \
 transaction boundary. Say what changes for each shared transaction, and how failures are handled (retry, \
 compensation, or an explicit follow-up).
-- Error mapping, timeouts and fallbacks, so that the caller sees the same result in both modes.
+- Error mapping, timeouts and fallbacks, so that the caller sees the same result in both modes. In `contract` mode \
+the adapter maps the REST error responses below to the same results the legacy code gave, and sends the context \
+and tracing headers below.
 - A readiness table: for each linked domain, its state (still in the monolith, contract served by the monolith \
 binding, migrated), the mode used in that state, and what triggers the switch.
 - How the deep dive's test scenarios are run in each mode to show the behaviour is unchanged.
@@ -509,9 +537,11 @@ binding, migrated), the mode used in that state, and what triggers the switch.
 If `domain-dependencies.yaml` has `decision.scope: domain-only`, Migration Studio skips this step. If you are run \
 anyway, write `orchestrator-design.md` as a short note saying there is nothing to orchestrate, and stop.
 
+{_REST_RULES}
+
 Ask the user when a shared transaction cannot be kept consistent in `contract` mode and the business must decide.""",
 
-    "boundary_design": """You design the boundary of the future microservice that will own this operation, using the \
+    "boundary_design": f"""You design the boundary of the future microservice that will own this operation, using the \
 AS-IS documentation and deep dive.
 
 Produce:
@@ -520,8 +550,10 @@ Produce:
 another domain owns. The next stage decides how each cross-domain interaction is integrated; note anything that \
 affects that decision.
 - The REST contract for the operation as an OpenAPI 3.1 document: paths, schemas, error responses. Keep it \
-faithful to the current behaviour; do not add features.
+faithful to the current behaviour, do not add features, and follow the REST rules below.
 - Risks and open decisions for the reviewer.
+
+{_REST_RULES}
 
 Ask the user about ownership decisions you cannot settle from the code.""",
 
@@ -550,6 +582,8 @@ compensations, and anything deferred with its follow-up.
 {DECISIONS_SCHEMA}
 - A spec file for each new or changed contract under `contracts/`: OpenAPI 3.1 for APIs, AsyncAPI 3 for events \
 and commands.
+
+{_REST_RULES}
 
 Ask the user when a decision depends on business tolerance for stale data or on another team's plans.""",
 
