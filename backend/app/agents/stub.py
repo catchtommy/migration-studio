@@ -135,7 +135,7 @@ exceptions: []
                 pass
         files["microservice-extraction.yaml"] = "\n".join([
             "# [stub] sample microservice declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
-            "module_commit: 0000000000000000000000000000000000000000", "operations:",
+            "module_commit: \"0000000000000000000000000000000000000000\"", "operations:",
             f"  - {{method: {ctx.domain.title()}Service#{ctx.operation.replace('-', '_')}, operation_id: {ctx.operation}}}",
             "replaced: []", "open_decisions: []", f"events: [{', '.join(events)}]"]) + "\n"
     if "module-extraction.yaml" in outputs:
@@ -189,7 +189,7 @@ exceptions: []
             taken = [str(op["method"]) for op in module.get("operations") or []]
             methods = [*taken, *(f"{name}Orchestrator#{verb}" for verb in ("list", "get", "delete"))]
             ids = [f"{verb}{resource}" for verb in ("create", "list", "get", "delete")]
-            lines += ["orchestrator: service", "module_commit: 0000000000000000000000000000000000000000",
+            lines += ["orchestrator: service", "module_commit: \"0000000000000000000000000000000000000000\"",
                       "openapi: orchestrator-openapi.yaml", "operations:",
                       *(f"  - {{method: '{m}', operation_id: {i}}}" for m, i in zip(methods, ids)),
                       "domain_api:", f"  - {{method: '{name}Service#create', operation_id: create{name}}}",
@@ -198,6 +198,21 @@ exceptions: []
             lines += ["orchestrator: none",
                       'reason: "[stub] The feature has no orchestrator: the monolith calls the domain service directly"']
         files["orchestrator-service-extraction.yaml"] = "\n".join(lines) + "\n"
+    if "integration-routing.yaml" in outputs:  # the toggle: the orchestrator service if there is one, else the domain's
+        from app.service_guardrails import openapi_operation_ids
+        target = contracts_store.routing_target(ctx.output_dir)[0] or "domain-service"
+        api = contracts_store.ROUTING_TARGETS[target]
+        spec = ctx.output_dir / api
+        ids = sorted(openapi_operation_ids(spec.read_text(encoding="utf-8"))[0]) if spec.is_file() else []
+        name = _ident(ctx.domain)
+        old = f"{name}Orchestrator" if target == "orchestrator-service" else f"{name}Service"
+        lines = ["# [stub] sample integration routing", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
+                 f"target: {target}", f"api: {api}", "toggle:",
+                 f"  property: migration.{ctx.domain}.{ctx.operation}.route", "  default: monolith",
+                 f"router: src/main/java/com/example/{ctx.domain}/routing/{name}Routing.java", "operations:"]
+        for i in ids or [f"create{name}"]:
+            lines += [f"  - operation_id: {i}", f"    monolith: '{old}#{i}'", f"    client: '{old}Client#{i}'"]
+        files["integration-routing.yaml"] = "\n".join(lines) + "\n"
     if "linked-domain-contracts.yaml" in outputs:
         files["linked-domain-contracts.yaml"] = f"""# [stub] sample linked-domain contracts
 feature: {ctx.operation}

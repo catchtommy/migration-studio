@@ -36,6 +36,8 @@ MICROSERVICE_EXTRACTION_FILE = "microservice-extraction.yaml"  # the microservic
 MODULE_EXTRACTION_FILE = "module-extraction.yaml"  # the Module in monolith step's declaration of what it changed
 ORCHESTRATOR_EXTRACTION_FILE = "orchestrator-extraction.yaml"  # the Orchestrator in monolith step's declaration
 ORCHESTRATOR_SERVICE_FILE = "orchestrator-service-extraction.yaml"  # the Orchestrator microservice step's declaration
+INTEGRATION_ROUTING_FILE = "integration-routing.yaml"  # the Monolith integration step's declaration of its toggle
+ROUTING_TARGETS = {"orchestrator-service": "orchestrator-openapi.yaml", "domain-service": "openapi.yaml"}
 COORDINATES = re.compile(r"^[\w.\-]+:[\w.\-]+$")  # Maven groupId:artifactId
 DOMAIN_DESIGN_FILE = "domain-design.yaml"  # the domain design's declaration against the guardrails
 # Lists in domain-design.yaml that must stay empty unless the user approved an exception for that rule.
@@ -467,6 +469,76 @@ def _orchestrator_service_problems(output_dir: Path, declaration: dict) -> list[
     return problems
 
 
+def parse_integration_routing(text: str) -> dict:
+    """How the Monolith integration step routes the feature: the target service, its API, the toggle, the operations."""
+    data = _load(text, INTEGRATION_ROUTING_FILE)
+    where = INTEGRATION_ROUTING_FILE
+    _require(data, ("feature", "domain", "target", "api", "toggle", "router", "operations"), where)
+    _one_of(data["target"], tuple(ROUTING_TARGETS), f"{where} target")
+    toggle = data["toggle"]
+    if not isinstance(toggle, dict):
+        raise InvalidDocument(f"{where}: toggle must be a mapping with property and default")
+    _require(toggle, ("property", "default"), f"{where} toggle")
+    if str(toggle["default"]) != "monolith":
+        raise InvalidDocument(f"{where}: the toggle defaults to monolith (the old flow), so deploying changes nothing "
+                              "until someone switches")
+    if not isinstance(data["operations"], list) or not data["operations"]:
+        raise InvalidDocument(f"{where}: list every operation of the target's API")
+    for i, op in enumerate(data["operations"], 1):
+        if not isinstance(op, dict):
+            raise InvalidDocument(f"{where} operation {i} must be a mapping")
+        _require(op, ("operation_id", "monolith", "client"), f"{where} operation {i}")
+    return data
+
+
+def routing_target(output_dir: Path) -> tuple[str | None, str | None]:
+    """(the service the monolith's new flow must call, why not when it can't be decided) from the feature's documents:
+    the orchestrator service when the feature has an orchestrator, else the domain service."""
+    module = output_dir / ORCHESTRATOR_EXTRACTION_FILE
+    service = output_dir / ORCHESTRATOR_SERVICE_FILE
+    try:
+        built = parse_orchestrator_extraction(module.read_text(encoding="utf-8")) if module.is_file() else None
+        lifted = parse_orchestrator_service(service.read_text(encoding="utf-8")) if service.is_file() else None
+    except InvalidDocument as e:
+        return None, str(e)
+    if built and built["orchestrator"] == "module":
+        if not lifted or lifted["orchestrator"] != "service":
+            return None, ("the feature has an orchestrator in the monolith but no orchestrator service: calling the "
+                          "domain service directly would drop the orchestration, so the Orchestrator microservice "
+                          "step comes first")
+        return "orchestrator-service", None
+    return "domain-service", None
+
+
+def _integration_routing_problems(output_dir: Path, declaration: dict) -> list[str]:
+    """The new flow calls the orchestrator service exactly when the feature has an orchestrator (else the domain
+    service), with every operation of that service's API and no other."""
+    from app.service_guardrails import openapi_operation_ids
+
+    where = INTEGRATION_ROUTING_FILE
+    target, why = routing_target(output_dir)
+    if target is None:
+        return [f"{where}: {why}"]
+    problems = []
+    if declaration["target"] != target:
+        problems.append(f"{where}: target is {declaration['target']}, but the monolith must call the {target} "
+                        + ("(the feature has an orchestrator: the monolith reaches the domain only through it)"
+                           if target == "orchestrator-service" else "(the feature has no orchestrator)"))
+        return problems
+    api = ROUTING_TARGETS[target]
+    if declaration["api"] != api:
+        problems.append(f"{where}: api is {declaration['api']}, but the {target}'s API is {api}")
+    spec = output_dir / api
+    if not spec.is_file():
+        return [*problems, f"{where}: {api}, the {target}'s API, does not exist"]
+    ids, _missing = openapi_operation_ids(spec.read_text(encoding="utf-8"))
+    ids = {i for i in ids if not i.lower().startswith("health")}
+    declared = {str(op["operation_id"]) for op in declaration["operations"]}
+    problems += [f"{where}: operation {i} of {api} is not routed" for i in sorted(ids - declared)]
+    problems += [f"{where}: operation {i} is not in {api}" for i in sorted(declared - ids)]
+    return problems
+
+
 def _module_extraction_problems(output_dir: Path, declaration: dict) -> list[str]:
     problems = []
     deps = output_dir / DOMAIN_DEPENDENCIES_FILE
@@ -583,6 +655,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
                         (MODULE_EXTRACTION_FILE, parse_module_extraction),
                         (ORCHESTRATOR_EXTRACTION_FILE, parse_orchestrator_extraction),
                         (ORCHESTRATOR_SERVICE_FILE, parse_orchestrator_service),
+                        (INTEGRATION_ROUTING_FILE, parse_integration_routing),
                         (MICROSERVICE_EXTRACTION_FILE, parse_microservice_extraction),
                         (DECISIONS_FILE, lambda text: parse_decisions(text, {c["key"] for c in linked}))):
         f = output_dir / name
@@ -606,6 +679,8 @@ def validate_outputs(output_dir: Path) -> list[str]:
             problems += _orchestrator_extraction_problems(output_dir, parsed)
         if name == ORCHESTRATOR_SERVICE_FILE:
             problems += _orchestrator_service_problems(output_dir, parsed)
+        if name == INTEGRATION_ROUTING_FILE:
+            problems += _integration_routing_problems(output_dir, parsed)
         if name == DECISIONS_FILE:
             for c in parsed["contracts"]:
                 if c.get("spec") and not (output_dir / c["spec"]).is_file():

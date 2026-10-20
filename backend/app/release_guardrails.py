@@ -6,7 +6,9 @@
 - `integration_guardrails` (Monolith integration, in the monolith's repository): no UI change, no DDL or schema
   script, SQL statements unchanged, only an HTTP client and the Azure Service Bus SDK added to the build (existing
   dependencies unchanged), the domain and orchestrator modules unchanged (the switch lives outside them), no secrets,
-  and no test deleted or disabled.
+  and no test deleted or disabled. And the routing of `integration-routing.yaml`: the router and the toggle are in
+  the change, the toggle defaults to the old flow, and the new code calls only the target service's API (the
+  orchestrator service when the feature has an orchestrator: never the domain service directly).
 
 `for_context()` runs the ones the agent must pass; each problem is one line.
 """
@@ -97,7 +99,8 @@ def modernise(service: Path, base: str, monolith: Path | None, monolith_base: st
     return problems[:mg.MAX_REPORTED]
 
 
-def integration(monolith: Path, base: str, modules: list[str]) -> list[str]:
+def integration(monolith: Path, base: str, modules: list[str], routing: dict | None = None,
+                domain: str | None = None) -> list[str]:
     """The Monolith integration step: the switch to the services, and nothing else in the monolith."""
     try:
         diff = mg.changes(monolith, base)
@@ -126,7 +129,40 @@ def integration(monolith: Path, base: str, modules: list[str]) -> list[str]:
                 problems.append(f"SQL changed in {c.path}. The monolith's SQL stays as it is")
         if Path(c.path).name == "pom.xml":
             problems += _integration_pom(monolith, base, c)
+    if routing is not None:
+        problems += _routing(monolith, diff, routing, domain or routing["domain"])
     return problems[:mg.MAX_REPORTED]
+
+
+def _routing(monolith: Path, diff: list[mg.Change], routing: dict, domain: str) -> list[str]:
+    """The toggle is there and defaults to the old flow, and the new flow calls the target service's API only."""
+    problems = []
+    live = [c for c in diff if c.status != "D"]
+    added = [(c.path, line) for c in live for line in c.added]
+    prop = str(routing["toggle"]["property"])
+    router = str(routing["router"]).strip("/")
+    if not any(c.path == router for c in live):
+        problems.append(f"The router {router} (integration-routing.yaml) is not part of this step's change: one class "
+                        "reads the toggle and hands each call to the old flow or the new one")
+    if not any(prop in line for _path, line in added):
+        problems.append(f"The toggle {prop} is not read or configured anywhere in this step's change")
+    default = re.compile(rf"^\s*{re.escape(prop)}\s*[:=]\s*[\"']?(\S+?)[\"']?\s*$")
+    for path, line in added:
+        m = default.match(line)
+        if m and path.endswith((".properties", ".yml", ".yaml")) and m.group(1) != "monolith":
+            problems.append(f"{path} sets {prop} to {m.group(1)}. It defaults to monolith (the old flow)")
+    domain_api = re.compile(rf"/internal/api/v1/{re.escape(domain)}/(?!orchestrator\b)")
+    orchestrator_api = re.compile(rf"/internal/api/v1/{re.escape(domain)}/orchestrator\b")
+    for path, line in added:
+        if mg._is_test(path) or not path.endswith((".java", ".xml", ".properties", ".yml", ".yaml")):
+            continue
+        if routing["target"] == "orchestrator-service" and domain_api.search(line):
+            problems.append(f"{path} calls the {domain} domain service directly (`{line.strip()[:80]}`). The feature has "
+                            "an orchestrator: the monolith reaches it only through the orchestrator service")
+        if routing["target"] == "domain-service" and orchestrator_api.search(line):
+            problems.append(f"{path} calls an orchestrator service (`{line.strip()[:80]}`), but the feature has no "
+                            "orchestrator: the monolith calls the domain service")
+    return problems
 
 
 def _integration_pom(root: Path, base: str, c: mg.Change) -> list[str]:
@@ -180,7 +216,15 @@ def for_context(ctx, checks: list[str]) -> list[str]:
                 modules += [str(m["path"]).strip("/") for m in data["modules"]]
             elif data and data.get("orchestrator") == "module":
                 modules.append(str(data["module"]["path"]).strip("/"))
-        problems += integration(code, ctx.base_sha, modules)
+        f = ctx.output_dir / cs.INTEGRATION_ROUTING_FILE
+        try:
+            routing = cs.parse_integration_routing(f.read_text(encoding="utf-8")) if f.is_file() else None
+        except cs.InvalidDocument as e:
+            return [*problems, str(e)]
+        if routing is None:
+            problems.append(f"Write {cs.INTEGRATION_ROUTING_FILE} (in {ctx.rel(ctx.output_dir)}/): which service the new "
+                            "flow calls, the toggle and every operation it routes")
+        problems += integration(code, ctx.base_sha, modules, routing, ctx.domain)
     return problems
 
 

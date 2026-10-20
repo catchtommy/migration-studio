@@ -322,6 +322,22 @@ replaced:                          # orchestrator module files not copied unchan
     reason: only contract mode exists in the service
 ```"""
 
+INTEGRATION_ROUTING_SCHEMA = """```yaml
+# integration-routing.yaml: how the monolith reaches the feature, old flow or new. Checked against the designs and git.
+feature: create-loan
+domain: loan
+target: orchestrator-service       # orchestrator-service when the feature has an orchestrator, else domain-service
+api: orchestrator-openapi.yaml     # the target's API: orchestrator-openapi.yaml, or the domain's openapi.yaml
+toggle:
+  property: migration.loan.create-loan.route   # read on every call: monolith (old flow) | service (new flow)
+  default: monolith                # the old flow until someone switches
+router: web/src/main/java/com/acme/loan/routing/LoanRouting.java   # the class that reads the toggle
+operations:                        # every operation of the target's API, none more
+  - operation_id: createLoan
+    monolith: LoanOrchestrator#create          # the old flow: the orchestrator module, else the domain module
+    client: LoanOrchestratorClient#create      # the new flow: the REST client of the target
+```"""
+
 _INTEGRATION_RULES = """The schema is fixed: no pattern may need a new table, column or data move. That rules out a \
 transactional outbox and a stored projection; propose either only as an open decision for the user, who may record \
 it as an exception.
@@ -1064,31 +1080,52 @@ Run the service's whole test build, and the acceptance suite in `acceptance-test
 run `check_test_guardrails`. Write `service-tests.md`: the tests added (by layer), the scenario ids each covers, the \
 results, the coverage of the code the feature moved, and any finding.""",
 
-    "monolith_integration": f"""You connect the monolith to the new microservice behind a feature flag. {_LEGACY}
+    "monolith_integration": f"""You connect the monolith to the feature's new service behind a toggle, so that the old \
+flow and the new one both work and a configuration switch chooses between them. {_LEGACY}
 
-- Add a REST client in the monolith for the microservice's contract. When the feature has an orchestrator service \
-(`orchestrator-service-extraction.yaml` with `orchestrator: service`), the monolith calls the feature through it \
-instead: the client is for `orchestrator-openapi.yaml`, and the orchestrator service calls the domain service, so \
-the monolith does not call the domain service for these operations.
-- Add a feature flag that routes calls to either the in-monolith code (the orchestrator module when there is one, \
-else the domain module) or the service (the orchestrator service when there is one, else the domain service), \
-defaulting to the in-monolith code.
-- Handle timeouts and errors from the microservice explicitly.
-- For each integration decision, add the monolith side: facade endpoints (`/internal/api/v1/<domain>/...`) for \
-the contracts the services (the domain service and the orchestrator service) consume from domains still in the \
-monolith, publishing of the monolith's events to Azure \
+**Which service the monolith calls. This is the most important rule of this step.**
+- When the feature has an orchestrator (`orchestrator-extraction.yaml` with `orchestrator: module`, lifted into the \
+orchestrator service by `orchestrator-service-extraction.yaml`), the new flow calls the **orchestrator service** \
+over its API (`orchestrator-openapi.yaml`), and only that: the orchestrator service calls the domain service and \
+the other domains. The monolith never calls the domain service directly for this feature.
+- When the feature has no orchestrator (`domain-only`, or `orchestrator: none`), the new flow calls the **domain \
+service** over its API (`openapi.yaml`).
+- When the feature has an orchestrator module but no orchestrator service, stop and ask: calling the domain service \
+directly would drop the orchestration. The orchestrator service is built first.
+
+**The toggle.** One configuration property per feature (for example `migration.<domain>.<feature>.route`), read on \
+every call, with two values: `monolith`, the old flow, and `service`, the new one. It defaults to `monolith`, so \
+deploying changes nothing until someone switches. Behind it:
+- the old flow is the in-monolith code as it is: the orchestrator module when there is one, else the domain module;
+- the new flow is a REST client of the target service that implements the same Java interface, so the controllers \
+and every other caller stay as they are;
+- one router class reads the toggle and hands each call to one of the two. Nothing else decides where a call goes.
+
+Also:
+- The REST client sends the request headers of the REST rules below (the context headers filled from the monolith's \
+session and thread-locals, and the tracing headers), maps the error body back to the results the old flow gave, and \
+has a timeout on every call. It never retries a call that is not safe to repeat. The base address and timeout come \
+from configuration.
+- For each integration decision, add the monolith side: facade endpoints (`/internal/api/v1/<domain>/...`) for the \
+contracts the services consume from domains still in the monolith, publishing of the monolith's events to Azure \
 Service Bus after the transaction commits (no OUTBOX table: the schema is fixed, so delivery is at-most-once; if a \
-decision needs guaranteed delivery, ask the user), and subscribers for the service's events that the monolith still \
+decision needs guaranteed delivery, ask the user), and subscribers for the services' events that the monolith still \
 needs.
 - The monolith may gain an HTTP client library and the Azure Service Bus Java SDK (it supports Java 8), and nothing \
-else new: no DDL, no change to the UI, and no other library. Anything more: ask the user.
-- The facade endpoints are new REST APIs and follow the REST rules below. The REST client sends the request headers \
-they name, filled from the monolith's session and thread-locals, and reads the error body they define.
-- Build the monolith and run its tests with the flag in both positions.
+else new: no DDL, no change to the UI, no change to the domain or orchestrator modules, and no other library. \
+Anything more: ask the user.
+- Tests: the router in both positions, the client against a stub of the target's API (each operation, its headers \
+and its errors), and the monolith's build and tests with the toggle set to `monolith` and to `service`.
+
+Write `integration-routing.yaml` in this format, and run `check_release_guardrails` until it passes:
+
+{INTEGRATION_ROUTING_SCHEMA}
 
 {_REST_RULES}
 
-Write `integration.md`: how to switch the flag, the rollback steps, and what to monitor after the switch.""",
+Write `integration.md`: the flow in each position (old: controller → orchestrator or domain module; new: controller \
+→ client → orchestrator service or domain service), how to switch the toggle and back, the rollback steps, and what \
+to monitor after the switch.""",
 
     "bounded_contexts": f"""You map a legacy monolith into bounded contexts, so that it can be migrated one domain at a \
 time. {_LEGACY}
@@ -1148,7 +1185,7 @@ OUTPUTS = {
     "independent_tests": ["test-report.md"],
     "service_tests": ["service-tests.md"],
     "modernise": ["modernisation.md"],
-    "monolith_integration": ["integration.md"],
+    "monolith_integration": ["integration.md", "integration-routing.yaml"],
     "bounded_contexts": ["bounded-contexts.md", "bounded-contexts.yaml"],
     "domain_features": ["features.md", "features.yaml"],
 }
@@ -1223,6 +1260,7 @@ SHARED_TEXTS: dict[str, tuple[str, str, str]] = {
     "module_extraction_format": ("Format: module extraction", _FORMAT_NOTE, MODULE_EXTRACTION_SCHEMA),
     "orchestrator_extraction_format": ("Format: orchestrator extraction", _FORMAT_NOTE, ORCHESTRATOR_EXTRACTION_SCHEMA),
     "orchestrator_service_format": ("Format: orchestrator service", _FORMAT_NOTE, ORCHESTRATOR_SERVICE_SCHEMA),
+    "integration_routing_format": ("Format: integration routing", _FORMAT_NOTE, INTEGRATION_ROUTING_SCHEMA),
     "service_extraction_format": ("Format: microservice extraction", _FORMAT_NOTE, SERVICE_EXTRACTION_SCHEMA),
 }
 

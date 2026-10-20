@@ -94,7 +94,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                          "9bf4007e9337fafdab89a901c912245fcd3d44a29989b7732603c7fcada2129b",
                          "164e46fabe89f188ecce8525da9ebda4b9fea4d35b97992f92542414da55c7b9",
                          "db8c731241fbb0878e4b93b12357d93ff4cd2f2160b350346523dcdd883e9765"},
-    "monolith_integration": {"29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
+    "monolith_integration": {"b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
+                             "29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
                              "11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
                              "686fec3600f472af2216b6e1805795367b9dd761933e094e3bf424dfbbf8d6b1",
                              "08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
@@ -103,7 +104,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v16"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v17"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
