@@ -126,6 +126,7 @@ export interface ChangedFile {
   conflict: ConflictKind | null;
   additions: number | null;
   deletions: number | null;
+  same_in_git?: boolean; // already on the feature branch in git exactly so: nothing new to commit
 }
 
 export interface RunChanges {
@@ -152,6 +153,8 @@ export interface ChangedFileDetail extends ChangedFile {
   ours: string | null; // the run's version
   theirs: string | null; // the latest base branch's, when it changed the file too
   merged: string | null; // the merge of the two, with conflict markers when they conflict
+  in_git: boolean; // the run has pushed its feature branch: what this commit changes is relative to it
+  pushed: string | null; // the file on the feature branch in git (null: not there yet)
 }
 
 export type Resolution = { content: string } | { use: "ours" | "theirs" } | { delete: true };

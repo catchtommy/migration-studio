@@ -219,7 +219,7 @@ function WholeFileChoice({ file, baseBranch, resolution, onChange }: { file: Cha
   );
 }
 
-type View = "changes" | "base" | "merge";
+type View = "changes" | "started" | "base" | "merge";
 
 function FileView({ runId, changes, file, resolution, resolver, onResolve }: {
   runId: string; // the repository is changes.key
@@ -246,7 +246,8 @@ function FileView({ runId, changes, file, resolution, resolver, onResolve }: {
     <div className="min-w-0">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <code className="mr-auto break-all text-sm font-medium">{file.path}</code>
-        {tab("changes", "This run's changes")}
+        {tab("changes", detail?.in_git ? "Changes to the branch in git" : "This run's changes")}
+        {detail?.in_git && tab("started", "Since the run started")}
         {file.upstream_changed && tab("base", `${base}'s changes since`)}
         {file.upstream_changed && tab("merge", file.conflict ? "Resolve conflict" : "Merged result")}
       </div>
@@ -259,7 +260,15 @@ function FileView({ runId, changes, file, resolution, resolver, onResolve }: {
           ) : (
             <p className="p-4 text-sm text-subtle">{detail.binary ? "Binary file" : "This file is too large to show"}; it's committed as a whole.</p>
           )
-        ) : view === "changes" ? (
+        ) : view === "changes" && detail.in_git ? (
+          // The run pushed its feature branch: show what this commit changes on top of it.
+          <DiffView
+            before={detail.pushed}
+            after={detail.ours}
+            leftTitle={`${changes.feature_branch} in git${detail.pushed === null ? " (not there yet)" : ""}`}
+            rightTitle="This run"
+          />
+        ) : view === "changes" || view === "started" ? (
           <DiffView before={detail.original} after={detail.ours} leftTitle="Where the run started" rightTitle="This run" />
         ) : view === "base" ? (
           <DiffView before={detail.original} after={detail.theirs} leftTitle="Where the run started" rightTitle={`${base} now`} />
@@ -296,7 +305,8 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
   // A new comparison (e.g. fetched again) starts over: code ticked, documents not, conflicts unresolved.
   useEffect(() => {
     if (!changes) return;
-    setSelected(new Set(changes.files.filter((f) => !f.document).map((f) => f.path)));
+    // Code the run changed, not what is already on the branch in git as it is (unticked files stay as they are in git).
+    setSelected(new Set(changes.files.filter((f) => !f.document && !f.same_in_git).map((f) => f.path)));
     setActive((a) => (a && changes.files.some((f) => f.path === a) ? a : (changes.files.find((f) => f.conflict) ?? changes.files.find((f) => !f.document) ?? changes.files[0])?.path ?? null));
     setResolutions({});
     setResolvers({});
@@ -420,6 +430,10 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
                           !
                         </span>
                       )
+                    ) : f.same_in_git ? (
+                      <span className="text-[10px] text-subtle" title={`Already on ${changes.feature_branch} in git as it is here: nothing new to commit`}>
+                        in git
+                      </span>
                     ) : f.upstream_changed ? (
                       <span className="text-[10px] text-accent" title={`Also changed on ${changes.base_branch}; merged cleanly`}>
                         merged
@@ -485,6 +499,7 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
                 {account.name || account.default_name} &lt;{account.email}&gt;
               </strong>
               , pushing with your access token for the repository's host, or the server's own git access if you haven't saved one.{" "}
+              {changes.remote_branch && <>Files you leave out stay as they are on {changes.feature_branch} in git. </>}
             </>
           ) : null}
           <Link to="/account" className="text-accent hover:underline">

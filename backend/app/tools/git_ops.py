@@ -157,6 +157,12 @@ def has_commit(repo: Path, sha: str | None) -> bool:
     return subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=repo, capture_output=True).returncode == 0
 
 
+def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    """Whether `ancestor` is in the history of `descendant` (equal counts)."""
+    proc = subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, descendant], cwd=repo, capture_output=True)
+    return proc.returncode == 0
+
+
 def head(repo: Path) -> str:
     return git(repo, "rev-parse", "HEAD")
 

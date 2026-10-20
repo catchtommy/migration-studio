@@ -100,13 +100,14 @@ def _restore(path: Path, project: str, url: str | None, branch: str, base_sha: s
     branch on the remote (the commit pushed, or what is there now); only changes after that push are replayed.
     Returns the commit it started from when that is the feature branch."""
     restored = None
-    if url and pushed and pushed.get("status") == "pushed" and pushed.get("sha"):
+    known = pushed and ((pushed.get("status") == "pushed" and pushed.get("sha")) or pushed.get("restored_sha"))
+    if url and known:
         try:
             mirror = repos.fetch(project, url, user_id)
         except git_ops.GitError:
             mirror = Path(repos.ensure(project, url, user_id))
         remote = git_ops.commit_info(mirror, f"refs/heads/{pushed.get('branch') or branch}")
-        restored = remote["sha"] if remote else pushed["sha"]
+        restored = remote["sha"] if remote else (pushed.get("sha") or pushed["restored_sha"])
         git_ops.init_workspace(path, str(mirror), branch, restored)
         log(f"Checked out {url} from its feature branch {pushed.get('branch') or branch} at {restored[:10]}")
         diffs = [d for d in diffs if d[0] > (pushed.get("exec_id") or 0)]

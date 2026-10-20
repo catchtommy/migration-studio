@@ -142,8 +142,6 @@ def check_branches(project: str, info: dict) -> None:
             raise ValueError(f"{r['base_branch']!r} isn't a valid base branch for {where}")
         if feature == (r["base_branch"] or r["default_branch"]):
             raise ValueError(f"The feature branch must differ from {where}'s base branch")
-        if r["feature_branch_exists"]:
-            raise ValueError(f"{where} already has a branch {feature}; choose another name")
         if r["base_branch_exists"] is False:
             raise ValueError(f"{where} has no branch or tag {r['base_branch'] or r['default_branch']}")
         if r["url"] in busy:
@@ -286,7 +284,8 @@ def existing_branch(project: str, repo: dict, feature: str, title: str) -> dict 
     (For a repository not checked out yet this reads the server's copy as last fetched; confirming fetches it.)"""
     if repo["checked_out"]:
         return {"in_run": True, "message": f"Branch {feature} already exists in {repo['name']}: this run is working on "
-                                           f"it, and {title} continues on it."}
+                                           f"it. When you confirm, the latest from it in git is fetched, and {title} "
+                                           "continues on that."}
     if repos.has_branch(project, repo["url"], feature):
         base = repo.get("base_branch") or repo.get("default_branch") or "the base branch"
         return {"in_run": False, "message": f"Branch {feature} already exists in {repo['url']}. {title} continues on "
@@ -372,6 +371,67 @@ def apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
         delivery = dict(run.delivery or {})
         delivery["confirmed"] = sorted({*delivery.get("confirmed", []), key})
         run.delivery, run.branch, run.repositories = delivery, feature, nested or None
+    update_from_git(run_id, key, user_id, log)
+
+
+def update_from_git(run_id: str, key: str, user_id: int | None, log) -> None:
+    """Before a step changes code (when its branches are confirmed), the repository's checkout gets the latest of the
+    feature branch in git, whoever pushed it: fast-forwarded when the checkout is behind, otherwise merged. The run's
+    own commits are built apart from its checkout (and a fresh re-run rolls the checkout back), so git can hold work
+    the checkout lacks even when only this run pushed. Where both changed the same lines, git's version wins when the
+    checkout has no work since its last push; when it has unpushed work, a conflict leaves everything as it was and
+    the step does not start (DeliveryError names the files)."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        repo = next((r for r in run_repos(run) if r["key"] == key), None)
+        if repo is None:
+            return  # not checked out (nothing to update), or no repository
+        ws, project, feature = Path(run.workspace) / repo["path"], run.project, run.branch
+        record = ((run.delivery or {}).get("repos") or {}).get(key) or {}
+    where = f"{feature} in {repo['name']}"
+    mirror = repos.latest_for_run(project, repo["url"], user_id, log)
+    if not mirror or git_ops.commit_info(Path(mirror), f"refs/heads/{feature}") is None:
+        return  # the branch isn't in git yet: the run's checkout is the latest
+    git_ops.git(ws, "fetch", "--quiet", str(mirror), f"+refs/heads/{feature}:refs/studio/feature")
+    remote, local = git_ops.git(ws, "rev-parse", "refs/studio/feature"), git_ops.head(ws)
+    if git_ops.is_ancestor(ws, remote, local):
+        log(f"Fetched {where} from git: this run's copy already has its latest ({remote[:10]})")
+        return
+    if git_ops.is_ancestor(ws, local, remote):
+        count = git_ops.count_commits(ws, local, remote)
+        git_ops.git(ws, "merge", "--quiet", "--ff-only", "refs/studio/feature")
+        log(f"Fetched the latest of {where}: {count} newer commit(s), now at {remote[:10]}")
+        _brought_in(run_id, key, feature, remote, remote)
+        return
+    # Work in the checkout since the run last pushed or brought the branch in (steps gone on without committing):
+    # kept, and a conflict with it stops the step. Without any, the checkout holds nothing git doesn't, so git's
+    # version wins.
+    unpushed = not (record.get("branch") == feature and record.get("head_sha") == local)
+    try:
+        git_ops.git(ws, "merge", "--quiet", "--no-edit", *([] if unpushed else ["-X", "theirs"]), "-m",
+                    f"The latest of {feature} from git ({remote[:10]})", "refs/studio/feature")
+    except git_ops.GitError:
+        conflicts = git_ops.git(ws, "diff", "--name-only", "--diff-filter=U").split()
+        git_ops.git(ws, "merge", "--abort")
+        raise DeliveryError(f"{where} has changes in git that conflict with this run's work not pushed yet, in "
+                            f"{', '.join(conflicts[:10]) or 'some files'}. Resolve it in git (or commit the run's work "
+                            "first), then retry the run")
+    log(f"Fetched the latest of {where} ({remote[:10]}) and merged it into this run's copy"
+        + (", keeping this run's work not pushed yet" if unpushed else ""))
+    _brought_in(run_id, key, feature, remote, None if unpushed else git_ops.head(ws))
+
+
+def _brought_in(run_id: str, key: str, feature: str, remote: str, head: str | None) -> None:
+    """Record that the run's copy now has the feature branch in git at `remote`: later commits go on top of it. With
+    `head` (nothing of the run's was unpushed), the review counts changes from there: what came from git isn't the
+    run's to commit."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        delivery = dict(run.delivery or {})
+        done = dict(delivery.get("repos") or {})
+        done[key] = {**(done.get(key) or {}), "branch": feature, "restored_sha": remote,
+                     **({"head_sha": head} if head else {})}
+        run.delivery = {**delivery, "repos": done}
 
 
 def refresh_code_settings(run_id: str) -> None:
@@ -521,11 +581,14 @@ def changes(run_id: str, key: str, user_id: int | None) -> dict:
         git_ops.changed_files(ws, ctx["merge_base"], ctx["latest"]))
     stats = _numstat(ws, ctx["merge_base"], ctx["head"])
     files = []
+    remote = ctx["remote_feature"]
     for status, path in _name_status(ws, ctx["merge_base"], ctx["head"]):
         state = _file_state(ctx, status, path, upstream)
         added, deleted = stats.get(path, (None, None))
         state.pop("merged")
-        files.append({**state, "additions": added, "deletions": deleted})
+        # Already on the feature branch in git exactly as the run has it: nothing new to commit there.
+        same = bool(remote) and git_ops.read_blob(ws, ctx["head"], path) == git_ops.read_blob(ws, remote, path)
+        files.append({**state, "additions": added, "deletions": deleted, "same_in_git": same})
     files.sort(key=lambda f: (f["document"], f["path"]))  # code first
     previous = ctx["delivery"] if ctx["delivery"].get("status") == "pushed" else None
     return {"key": key, "name": ctx["name"], "repository": ctx["url"], "base_branch": ctx["base_branch"],
@@ -541,8 +604,9 @@ def default_message(domain: str, feature: str, update: bool) -> str:
 
 
 def file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
-    """One file for the diff and merge views: where the run started, the run's version, the latest base branch's,
-    and the merge of the two (with conflict markers when they conflict)."""
+    """One file for the diff and merge views: where the run started, the version on the feature branch in git (when
+    the run has pushed it: what this commit changes is the difference to that), the run's version, the latest base
+    branch's, and the merge of the two (with conflict markers when they conflict)."""
     root = workspace.ensure(run_id)
     with session_scope() as s:
         repo = _repo_of(s.get(Run, run_id), key)
@@ -561,11 +625,15 @@ def file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
     original = git_ops.read_blob(ws, base_sha, path)
     ours = git_ops.read_blob(ws, ctx["head"], path)
     theirs = git_ops.read_blob(ws, latest_sha, path) if path in upstream else None
-    too_large = any(d is not None and len(d) > MAX_TEXT for d in (original, ours, theirs))
+    # The feature branch as it is in git (fetched by the review into refs/studio/feature), when the run pushed it.
+    in_git = git_ops.commit_info(ws, "refs/studio/feature") is not None
+    pushed = git_ops.read_blob(ws, "refs/studio/feature", path) if in_git else None
+    too_large = any(d is not None and len(d) > MAX_TEXT for d in (original, ours, theirs, pushed))
     show = not state["binary"] and not too_large
     return {**state, "too_large": too_large,
             "original": _text(original) if show else None, "ours": _text(ours) if show else None,
-            "theirs": _text(theirs) if show else None, "merged": _text(state["merged"]) if show else None}
+            "theirs": _text(theirs) if show else None, "merged": _text(state["merged"]) if show else None,
+            "in_git": in_git, "pushed": _text(pushed) if show else None}
 
 
 # --- committing -----------------------------------------------------------------------------------------------------
@@ -613,12 +681,22 @@ def commit(run_id: str, key: str, user_id: int, message: str, branch: str, files
 
     # The branch on the remote: ours from an earlier commit of this run (continue it), or someone else's (refuse).
     # (or, when the checkout was restored from the feature branch, that branch's commit it started from)
+    # The branch in git: what this run last pushed, or brought into its copy (update_from_git, a rebuild).
     previous = ((ctx["delivery"].get("restored_sha") or ctx["delivery"].get("sha"))
-                if ctx["delivery"].get("branch") == branch else None)
+                if ctx["delivery"].get("branch") in (branch, None) else None)
     remote = ctx["remote_feature"] if branch == ctx["feature"] else _remote_head(ctx, branch)
     if remote and remote != previous:
-        raise DeliveryError(f"The repository's branch {branch} has commits this run didn't make. Choose another "
-                            "branch name, or bring those changes into the run first.")
+        if not git_ops.is_ancestor(ws, remote, ctx["head"]):
+            # Pushed to since: the commit goes on top of it, unless it changed files being committed now (that would
+            # overwrite someone's work).
+            since = (previous if previous and git_ops.has_commit(ws, previous) and git_ops.is_ancestor(ws, previous, remote)
+                     else git_ops.git(ws, "merge-base", "HEAD", remote))
+            clash = sorted(set(git_ops.changed_files(ws, since, remote)) & set(files))
+            if clash:
+                raise DeliveryError(f"{branch} has changed in git, in files you're committing: {', '.join(clash[:10])}. "
+                                    "Leave them out, or re-run the step: the latest from git is brought in before it "
+                                    "starts")
+        previous = remote
 
     tmp_index = ws / ".git" / "studio-commit-index"
     env = {"GIT_INDEX_FILE": str(tmp_index), "GIT_AUTHOR_NAME": who[0], "GIT_AUTHOR_EMAIL": who[1],
@@ -626,6 +704,8 @@ def commit(run_id: str, key: str, user_id: int, message: str, branch: str, files
     ctx_merge = {**ctx, "latest": latest_sha, "merge_base": merge_base}
     try:
         git_ops.git(ws, "read-tree", latest_sha, env=env)
+        if previous:  # what's on the branch in git stays, except the chosen files (next)
+            _keep_branch(ws, previous, latest_sha, set(files), env)
         for path in files:
             _stage(ws, ctx_merge, path, run_files[path], upstream, resolutions.get(path), env)
         tree = git_ops.git(ws, "write-tree", env=env)
@@ -682,6 +762,27 @@ def commit(run_id: str, key: str, user_id: int, message: str, branch: str, files
     emit(run_id, "status", f"{result['by']} committed {len(files)} file(s) in {ctx['name']} as {sha[:10]} and pushed "
                            f"branch {branch}" + ("; other repositories are still to commit" if left else ""))
     return result
+
+
+def _keep_branch(ws: Path, branch_sha: str, latest_sha: str, chosen: set[str], env: dict) -> None:
+    """Into the commit's index (the latest base branch): every file the branch in git changed on top of the base,
+    except the chosen ones, as it is on the branch, so a commit never undoes or deletes what is already in git. Where
+    the base branch changed such a file too, the two are merged; when they conflict, the branch's version stays."""
+    since = git_ops.git(ws, "merge-base", branch_sha, latest_sha)
+    for path in git_ops.changed_files(ws, since, branch_sha):
+        if path in chosen:
+            continue
+        ours = git_ops.read_blob(ws, branch_sha, path)
+        if ours is None:  # deleted on the branch: stays deleted
+            git_ops.git(ws, "update-index", "--force-remove", "--", path, env=env)
+            continue
+        theirs, base = git_ops.read_blob(ws, latest_sha, path), git_ops.read_blob(ws, since, path)
+        if theirs is not None and theirs != base and not _is_binary(ours) and not _is_binary(theirs):
+            merged, conflicts = git_ops.merge_file(ours, base or b"", theirs, ("branch", "base", "latest"))
+            if not conflicts:
+                _add_bytes(ws, path, merged, branch_sha, env)
+                continue
+        _add_from(ws, branch_sha, path, env)
 
 
 def _remote_head(ctx: dict, branch: str) -> str | None:

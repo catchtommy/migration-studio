@@ -121,10 +121,12 @@ def test_a_run_cuts_its_feature_branch_and_the_review_commits_and_pushes_it(clie
     done = proj.get(f"/api/runs/{run['id']}").json()
     assert done["status"] == "completed" and done["delivery"]["repos"]["monolith"]["sha"] == pushed["sha"]
 
-    # A new run can't take a branch the repository already has.
+    # A new run may start on a branch the repository already has: its code step says so, and continues on it.
     proj.post("/api/domains/loan/features", json={"key": "reject", "name": "reject"})
     r = proj.post("/api/runs", json={"domain": "loan", "operation": "reject", "feature_branch": branch})
-    assert r.status_code == 422 and "already has a branch" in r.json()["detail"]
+    assert r.status_code == 201, r.text
+    again = wait_for(proj, r.json()["id"], {"awaiting_branches"}, timeout=30)
+    assert "already exists" in again["pending_branches"]["existing_branch"]["message"]
 
 
 def test_restarting_after_a_commit_adds_a_commit_on_top(client, tmp_path):
@@ -611,3 +613,224 @@ def test_an_existing_branch_in_the_monolith_is_shown_and_continued_on(client, tm
     assert r.status_code == 200, r.text
     run = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
     assert run["base_sha"] == tip and (Path(run["workspace"]) / "EARLIER.md").is_file()  # on the existing branch
+
+
+def test_once_the_branch_is_pushed_the_review_compares_with_the_branch_in_git(client, tmp_path):
+    """A step's change was committed and pushed; the step runs again and changes the same file. The review shows the
+    file as it is on the feature branch in git next to the run's version, not an empty 'where the run started'."""
+    upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    first = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)["current_stage"]
+    path = f"studio-stub/{first}.txt"
+
+    def review():
+        changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+        detail = proj.get(f"/api/runs/{run['id']}/changes/file",
+                          params={"repo": "monolith", "path": path, "latest": changes["latest_sha"]}).json()
+        return changes, detail
+
+    changes, detail = review()
+    assert not detail["in_git"] and detail["pushed"] is None and detail["original"] is None  # nothing pushed yet
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={
+        "repo": "monolith", "message": "First attempt", "branch": run["branch"], "files": [path],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+
+    wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)  # the run went on and paused
+    assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first}).status_code == 200
+    wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)  # every code step asks
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    changes, detail = review()
+    assert detail["in_git"] and "attempt 1" in detail["pushed"]  # the branch in git
+    assert "attempt 2" in detail["ours"] and detail["original"] is None  # the run's version; new since the start
+
+
+def _pushed_first_step(client, tmp_path):
+    """A run whose first step changed the monolith, committed and pushed; paused afterwards. (upstream, proj, run,
+    the step, its file)."""
+    upstream, key, proj = setup_project(client, tmp_path)
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    first = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)["current_stage"]
+    path = f"studio-stub/{first}.txt"
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={
+        "repo": "monolith", "message": "First step", "branch": run["branch"], "files": [path],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)
+    return upstream, proj, run, first, path
+
+
+def _push_as_someone_else(upstream, tmp_path, branch, files):
+    other = tmp_path / "someone-else"
+    subprocess.run(["git", "clone", "--quiet", "--branch", branch, str(upstream), str(other)], check=True)
+    for name, text in files.items():
+        (other / name).parent.mkdir(parents=True, exist_ok=True)
+        (other / name).write_text(text)
+    git(other, "add", "-A")
+    git(other, "commit", "-q", "-m", "someone else's work")
+    git(other, "push", "-q", "origin", branch)
+
+
+def test_a_rerun_step_starts_from_the_latest_of_the_branch_in_git(client, tmp_path):
+    """Someone pushed to the run's feature branch after the run's own push. Re-running the step and confirming its
+    branches fetches that work into the run's copy before the agent starts."""
+    upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
+    _push_as_someone_else(upstream, tmp_path, run["branch"], {"OTHER.md": "from a colleague\n"})
+
+    assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first}).status_code == 200
+    paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    assert "the latest from it in git is fetched" in paused["pending_branches"]["existing_branch"]["message"]
+    assert not (Path(run["workspace"]) / "OTHER.md").exists()  # not before confirming
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert (Path(run["workspace"]) / "OTHER.md").read_text() == "from a colleague\n"
+    with session_scope() as s:
+        from app.db.models import AuditEvent
+        log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == run["id"])))
+    assert "Fetched the latest of migration/loan/approve in Monolith" in log
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={  # the step's change goes on top of the colleague's work
+        "repo": "monolith", "message": "Second attempt", "branch": run["branch"], "files": [path],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    assert git(upstream, "show", f"{run['branch']}:OTHER.md") == "from a colleague"
+    assert "attempt 2" in git(upstream, "show", f"{run['branch']}:{path}")
+
+    # Bringing it up to date again with nothing new in git changes nothing.
+    wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)
+    from app import delivery
+    delivery.update_from_git(run["id"], "monolith", None, lambda _m: None)  # brings in the step's own push
+    head = git(Path(run["workspace"]), "rev-parse", "HEAD")
+    logs = []
+    delivery.update_from_git(run["id"], "monolith", None, logs.append)
+    assert git(Path(run["workspace"]), "rev-parse", "HEAD") == head and "already has its latest" in logs[-1]
+
+
+def test_changes_in_git_that_conflict_with_the_runs_work_stop_the_step(client, tmp_path):
+    upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
+    ws = Path(run["workspace"])
+    (ws / path).write_text("this run's newer version, not pushed yet\n")  # the run's own work, not pushed
+    git(ws, "commit", "-q", "-am", "unpushed work")
+    _push_as_someone_else(upstream, tmp_path, run["branch"], {path: "a colleague's different version\n"})
+
+    assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first}).status_code == 200
+    wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    failed = wait_for(proj, run["id"], {"failed"}, timeout=30)
+    assert "conflict with this run's work not pushed yet" in failed["error"] and path in failed["error"]
+    assert (ws / path).read_text() == "this run's newer version, not pushed yet\n"  # nothing lost
+    assert not git(ws, "status", "--porcelain", "--untracked-files=no")
+
+
+def test_a_fresh_rerun_starts_from_what_the_run_pushed_to_git(client, tmp_path):
+    """Re-running a step "starting fresh" rolls the run's copy back to before its earlier, pushed work. Confirming the
+    step's branches brings that work back from git, so the step starts from the branch's latest."""
+    upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
+    ws = Path(run["workspace"])
+    pushed = git(upstream, "show", f"{run['branch']}:{path}")
+    assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first, "fresh": True}).status_code == 200
+    wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    assert not (ws / path).exists()  # rolled back: the copy lacks the pushed work
+
+    from app import delivery
+    logs = []
+    delivery.update_from_git(run["id"], "monolith", None, logs.append)  # what confirming does first
+    assert (ws / path).read_text().strip() == pushed and "Fetched the latest" in logs[-1]
+    delivery.update_from_git(run["id"], "monolith", None, logs.append)
+    assert "already has its latest" in logs[-1]  # said every time, even with nothing new
+
+
+def _two_monolith_steps(client, tmp_path):
+    """The first two agent steps change the monolith; the first one's file is committed and pushed, and the run waits
+    to commit the second one's. (upstream, proj, run, first file, second file)."""
+    upstream, key, proj = setup_project(client, tmp_path)
+    wf = proj.get("/api/workflows/standard").json()
+    agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
+    steps = [{**st, "code": {"repository": ""}} if st.get("key") in agents[:2] else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    first = f"studio-stub/{agents[0]}.txt"
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={
+        "repo": "monolith", "message": "First step", "branch": run["branch"], "files": [first],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    return upstream, proj, run, first, f"studio-stub/{agents[1]}.txt"
+
+
+def test_files_left_out_of_a_commit_stay_as_they_are_on_the_branch_in_git(client, tmp_path):
+    upstream, proj, run, first, second = _two_monolith_steps(client, tmp_path)
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    listed = {f["path"]: f for f in changes["files"]}
+    assert listed[first]["same_in_git"] and not listed[second]["same_in_git"]  # the first is already in git
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={  # only the second step's file
+        "repo": "monolith", "message": "Second step", "branch": run["branch"], "files": [second],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    on_branch = git(upstream, "ls-tree", "-r", "--name-only", run["branch"]).split()
+    assert first in on_branch and second in on_branch  # was: the first file deleted from the branch
+
+
+def test_a_commit_goes_on_top_of_work_pushed_meanwhile(client, tmp_path):
+    upstream, proj, run, first, second = _two_monolith_steps(client, tmp_path)
+    _push_as_someone_else(upstream, tmp_path, run["branch"], {"OTHER.md": "from a colleague\n"})
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    body = {"repo": "monolith", "message": "Second step", "branch": run["branch"], "files": [second],
+            "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]}
+    r = proj.post(f"/api/runs/{run['id']}/commit", json=body)
+    assert r.status_code == 200, r.text  # was: "has commits this run didn't make"
+    assert git(upstream, "show", f"{run['branch']}:OTHER.md") == "from a colleague"
+    assert second in git(upstream, "ls-tree", "-r", "--name-only", run["branch"]).split()
+
+
+
+def test_a_commit_is_refused_when_work_pushed_meanwhile_changed_the_same_files(client, tmp_path):
+    upstream, proj, run, first, second = _two_monolith_steps(client, tmp_path)
+    _push_as_someone_else(upstream, tmp_path, run["branch"], {second: "a colleague's version\n"})
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={
+        "repo": "monolith", "message": "Second step", "branch": run["branch"], "files": [second],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 409 and "has changed in git, in files you're committing" in r.text and second in r.text
+    assert git(upstream, "show", f"{run['branch']}:{second}") == "a colleague's version"  # untouched
+
+
+def test_a_rebuilt_checkout_keeps_what_the_run_brought_in_from_git(client, tmp_path):
+    """A run that never pushed brought a colleague's work in from git before a step. If its checkout is lost and
+    rebuilt from the database, it starts from the branch in git again, so that work is still there."""
+    upstream, key, proj = setup_project(client, tmp_path)
+    wf = proj.get("/api/workflows/standard").json()
+    agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
+    steps = [{**st, "code": {"repository": ""}} if st.get("key") in agents[:2] else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    git(upstream, "branch", run["branch"], "main")  # the branch exists in git, from someone else
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204  # go on without pushing
+    wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    _push_as_someone_else(upstream, tmp_path, run["branch"], {"OTHER.md": "from a colleague\n"})  # after checkout
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    ws = Path(run["workspace"])
+    assert (ws / "OTHER.md").is_file()  # brought in before the second step
+
+    from app import workspace
+    from app.tools import git_ops
+    git_ops.remove_tree(ws)
+    workspace.ensure(run["id"])
+    assert (ws / "OTHER.md").read_text() == "from a colleague\n"  # still there after the rebuild
+    assert all((ws / f"studio-stub/{a}.txt").is_file() for a in agents[:2])  # and the steps' own changes, replayed
