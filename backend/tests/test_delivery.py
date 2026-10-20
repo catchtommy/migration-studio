@@ -773,8 +773,9 @@ def _two_monolith_steps(client, tmp_path):
 def test_files_left_out_of_a_commit_stay_as_they_are_on_the_branch_in_git(client, tmp_path):
     upstream, proj, run, first, second = _two_monolith_steps(client, tmp_path)
     changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
-    listed = {f["path"]: f for f in changes["files"]}
-    assert listed[first]["same_in_git"] and not listed[second]["same_in_git"]  # the first is already in git
+    listed = [f["path"] for f in changes["files"]]
+    assert second in listed and first not in listed  # the first is already in git as it is: not a change, not listed
+    assert changes["unchanged_in_git"] == 1
     r = proj.post(f"/api/runs/{run['id']}/commit", json={  # only the second step's file
         "repo": "monolith", "message": "Second step", "branch": run["branch"], "files": [second],
         "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
@@ -834,3 +835,28 @@ def test_a_rebuilt_checkout_keeps_what_the_run_brought_in_from_git(client, tmp_p
     workspace.ensure(run["id"])
     assert (ws / "OTHER.md").read_text() == "from a colleague\n"  # still there after the rebuild
     assert all((ws / f"studio-stub/{a}.txt").is_file() for a in agents[:2])  # and the steps' own changes, replayed
+
+
+def test_a_step_whose_change_matches_git_asks_for_no_review(client, tmp_path):
+    """A file the run changed but that is back to exactly what the branch in git has is no change: it isn't listed,
+    and on its own it doesn't stop the run for a review."""
+    upstream, proj, run, first, second = _two_monolith_steps(client, tmp_path)
+    ws = Path(run["workspace"])
+    from app import delivery
+    from app.db.models import Run
+    with session_scope() as s:
+        r = s.get(Run, run["id"])
+        repo = next(x for x in delivery.run_repos(r) if x["key"] == "monolith")
+        assert delivery._pending(r, repo)  # the second step's file is new
+    pushed = git(upstream, "show", f"{run['branch']}:{first}") + "\n"
+    (ws / second).unlink()
+    (ws / first).write_text("edited, then put back\n")
+    git(ws, "commit", "-qam", "edit")
+    (ws / first).write_text(pushed)
+    git(ws, "commit", "-qam", "back to what git has")
+    with session_scope() as s:
+        r = s.get(Run, run["id"])
+        repo = next(x for x in delivery.run_repos(r) if x["key"] == "monolith")
+        assert not delivery._pending(r, repo)  # nothing differs from git: no review
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    assert [f["path"] for f in changes["files"] if not f["document"]] == []

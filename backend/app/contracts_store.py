@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app import projects
 from app.db.models import Artifact, Contract, Dependency, Domain, Run
@@ -634,11 +635,14 @@ def _upsert_contract(s, project: str, run_id: str, c: dict, base: PurePosixPath,
     spec_doc = spec_path and s.scalar(select(Artifact).where(Artifact.run_id == run_id, Artifact.path == spec_path)
                                       .order_by(Artifact.id.desc()).limit(1))
     spec = spec_doc.content if spec_doc else None
-    row = s.get(Contract, (project, c["key"]))
+    # Locked while it is updated: another run's approval waits, so neither's consumers are lost.
+    row = s.get(Contract, (project, c["key"]), with_for_update=True)
     existed = row is not None
     if row is None:
-        row = Contract(project=project, key=c["key"], consumers=[], status=status)
+        row = Contract(project=project, key=c["key"], consumers=[], status=status, provider=c["provider"],
+                       kind=c["kind"], name=c["name"])
         s.add(row)
+        s.flush()  # a contract another run added at the same moment fails here; recorded() retries
     elif status == "approved" and row.status not in _LIVE:
         row.status = "approved"
     row.consumers = sorted(set(row.consumers or []) | set(consumers))
@@ -650,6 +654,21 @@ def _upsert_contract(s, project: str, run_id: str, c: dict, base: PurePosixPath,
     row.spec, row.spec_path, row.run_id = spec or row.spec, spec_path or row.spec_path, run_id
 
 
+def _retrying(record):
+    """Record into the catalogue again when another run's approval added the same new contract at the same moment
+    (the second insert fails): the retry finds it and updates it."""
+    def wrapper(*args, **kwargs):
+        for attempt in range(3):
+            try:
+                return record(*args, **kwargs)
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+    wrapper.__doc__, wrapper.__name__ = record.__doc__, record.__name__
+    return wrapper
+
+
+@_retrying
 def record_linked_domain_contracts(run_id: str, reviewed_stages: list[str]) -> int:
     """On approval of a gate: record the linked-domain contracts in the catalogue as proposed, with this run's domain
     as a consumer. The linked domain's team has not accepted them yet; integration decisions that use them are
@@ -666,6 +685,7 @@ def record_linked_domain_contracts(run_id: str, reviewed_stages: list[str]) -> i
         return len(contracts)
 
 
+@_retrying
 def record_approved_design(run_id: str, reviewed_stages: list[str]) -> int:
     """On approval of a gate: record the run's integration decisions and contracts. Reads the database copy, which has
     reviewers' manual edits. Returns the number of decisions recorded (0 when the gate reviews none)."""

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -42,10 +43,24 @@ def list_runs(db: Session = Depends(get_db)):
 SCOPE_LABELS = {"operation": "migration", "domain": "feature listing", "monolith": "bounded-context discovery"}
 
 
+# Starting runs one at a time: the checks that a feature has no unfinished run and that its branch is free, and the
+# insert, happen together, so two people starting the same feature at once can't both get a run.
+_starting = threading.Lock()
+
+
 def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key: str | None,
               inputs: dict | None = None, base_branches: dict | None = None,
               feature_branch: str | None = None) -> Run:
     """Create a run of a workflow of the given scope and start it."""
+    with _starting:
+        run, name = _create_run(db, domain, operation, scope, workflow_key, inputs, base_branches, feature_branch)
+    emit(run.id, "status", f"Run created for {discovery_store.subject(domain, operation)} ({name})")
+    get_runner().start(run.id)
+    return run
+
+
+def _create_run(db: Session, domain: str, operation: str, scope: str, workflow_key: str | None,
+                inputs: dict | None, base_branches: dict | None, feature_branch: str | None) -> tuple[Run, str]:
     try:
         workflow = workflow_store.get(workflow_key or "")
     except KeyError:
@@ -83,9 +98,7 @@ def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key
     db.flush()
     run.workspace = str(settings.workspaces_dir / run.id)
     db.commit()
-    emit(run.id, "status", f"Run created for {discovery_store.subject(domain, operation)} ({workflow['name']})")
-    get_runner().start(run.id)
-    return run
+    return run, workflow["name"]
 
 
 @router.post("/runs", response_model=RunOut, status_code=201, dependencies=[Depends(require("runs.start"))])

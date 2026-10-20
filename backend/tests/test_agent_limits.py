@@ -231,7 +231,8 @@ def test_rerunning_an_approved_step_with_an_updated_agent_updates_its_documents(
     from that step (after changing its agent) rewrites them, the gate asks again, and later steps get the new version
     (and may not change it in turn)."""
     from app.agents import stub
-    from tests.test_workflow import decide, new_run
+    from tests.conftest import start_run
+    from tests.test_workflow import decide
 
     original, seen = stub.StubAgent.run, {}
     version = {"text": "first version"}
@@ -249,7 +250,9 @@ def test_rerunning_an_approved_step_with_an_updated_agent_updates_its_documents(
         return out
 
     monkeypatch.setattr(stub.StubAgent, "run", run)
-    run_id = new_run(client)
+    r = start_run(client, {"domain": "customer", "operation": "rerun-approved"})  # its own feature: no clash
+    assert r.status_code == 201, r.text
+    run_id = r.json()["id"]
     wait_for(client, run_id, {"awaiting_approval"})  # AS-IS and deep dive done, the analysis gate waits
     decide(client, run_id, decision="approve")
     wait_for(client, run_id, {"awaiting_approval", "awaiting_publish"})

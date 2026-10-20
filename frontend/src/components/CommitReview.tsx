@@ -230,7 +230,8 @@ function FileView({ runId, changes, file, resolution, resolver, onResolve }: {
   onResolve: (r: Resolution | null, s?: ResolverState) => void;
 }) {
   const { data: detail, error, isLoading } = useQuery({
-    queryKey: ["runChangeFile", runId, changes.key, file.path, changes.latest_sha],
+    // Per version of the run's work and of the branch in git: a later step's review never shows an earlier diff.
+    queryKey: ["runChangeFile", runId, changes.key, file.path, changes.latest_sha, changes.head_sha, changes.remote_branch],
     queryFn: () => api.runChangeFile(runId, changes.key, file.path, changes.latest_sha),
     staleTime: Infinity,
   });
@@ -307,7 +308,11 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
     if (!changes) return;
     // Code the run changed, not what is already on the branch in git as it is (unticked files stay as they are in git).
     setSelected(new Set(changes.files.filter((f) => !f.document && !f.same_in_git).map((f) => f.path)));
-    setActive((a) => (a && changes.files.some((f) => f.path === a) ? a : (changes.files.find((f) => f.conflict) ?? changes.files.find((f) => !f.document) ?? changes.files[0])?.path ?? null));
+    setActive((a) =>
+      a && changes.files.some((f) => f.path === a)
+        ? a
+        : (changes.files.find((f) => f.conflict) ?? changes.files.find((f) => !f.document && !f.same_in_git) ?? changes.files.find((f) => !f.document) ?? changes.files[0])?.path ?? null,
+    );
     setResolutions({});
     setResolvers({});
   }, [changes]);
@@ -377,7 +382,17 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
           Your commit goes on top of the latest {changes.base_branch}
           {changes.behind > 0 ? `, which has ${changes.behind} new commit${changes.behind === 1 ? "" : "s"} since the run started` : ""}
           {changes.previous ? `, after the commit pushed earlier (${changes.previous.sha?.slice(0, 8)})` : ""}.
+          {!!changes.unchanged_in_git && (
+            <>
+              {" "}
+              {changes.unchanged_in_git} other file{changes.unchanged_in_git === 1 ? " is" : "s are"} already on {changes.feature_branch} in git as {changes.unchanged_in_git === 1 ? "it is" : "they are"} here, so
+              {changes.unchanged_in_git === 1 ? " it isn't" : " they aren't"} listed.
+            </>
+          )}
         </p>
+        {changes.files.length === 0 && (
+          <p className="rounded-md border border-border bg-surface px-3 py-2 text-sm">Nothing new to commit here: everything this run changed is already on {changes.feature_branch} in git.</p>
+        )}
         {changes.conflicts > 0 && (
           <p className="text-sm text-bad">
             {changes.conflicts} file{changes.conflicts === 1 ? "" : "s"} conflict with {changes.base_branch}: resolve them before committing.
@@ -588,7 +603,7 @@ export function CommitReview({ run }: { run: RunDetail }) {
         (current.delivery?.status === "pushed" && !current.pending ? (
           <RepoDone name={current.name} d={current.delivery} />
         ) : (
-          <RepoReview key={current.key} run={run} repo={current} onCommitted={() => refetch()} />
+          <RepoReview key={`${current.key}:${run.current_stage ?? "end"}:${run.stages.length}`} run={run} repo={current} onCommitted={() => refetch()} />
         ))}
       {repos && changed.length === 0 && <p className="p-4 text-sm text-subtle">The run didn't change any repository.</p>}
       {canCommit && (

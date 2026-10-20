@@ -15,6 +15,8 @@ into the base branch is up to the team's pull request process.
 
 import re
 import subprocess
+import threading
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -33,6 +35,17 @@ PLACEHOLDERS = ("domain", "feature", "run", "date")
 MAX_TEXT = 1_000_000  # larger files are shown as "too large" and can only be taken whole
 ROOT = "monolith"  # the key of the workspace root's repository
 NESTED_DIR = ".studio/repos"  # where a run's other repositories are checked out, inside the workspace
+
+
+_run_locks: dict[str, threading.RLock] = {}
+_run_locks_guard = threading.Lock()
+
+
+def run_lock(run_id: str) -> threading.RLock:
+    """One run's git operations happen one at a time (reviewing, committing, bringing in the latest), whoever and
+    however many people act on it: they share the run's checkouts."""
+    with _run_locks_guard:
+        return _run_locks.setdefault(run_id, threading.RLock())
 
 
 class DeliveryError(RuntimeError):
@@ -190,12 +203,17 @@ def _pending(run: Run, repo: dict) -> bool:
     path = Path(run.workspace) / repo["path"]
     if not (path / ".git").exists():
         return False
-    last = ((run.delivery or {}).get("repos", {}).get(repo["key"]) or {}).get("head_sha") or repo["base_sha"]
+    record = (run.delivery or {}).get("repos", {}).get(repo["key"]) or {}
+    last = record.get("head_sha") or repo["base_sha"]
     head = git_ops.head(path)
     if head == last:
         return False
-    changed = git_ops.changed_files(path, last, head)
-    return any(not (repo.get("root") and f.startswith(DOCS_ROOT + "/")) for f in changed)
+    changed = [f for f in git_ops.changed_files(path, last, head)
+               if not (repo.get("root") and f.startswith(DOCS_ROOT + "/"))]
+    in_git = record.get("restored_sha") or record.get("sha")  # the feature branch in git, as last pushed or brought in
+    if in_git and git_ops.has_commit(path, in_git):  # a file back to what git has is no change to commit
+        changed = [f for f in changed if git_ops.read_blob(path, head, f) != git_ops.read_blob(path, in_git, f)]
+    return bool(changed)
 
 
 def wants_review(run_id: str) -> bool:
@@ -276,7 +294,28 @@ def confirmation_needed(run_id: str, stage_key: str) -> dict | None:
     mirror = repos.mirror_dir(project, repo["url"])
     repo["default_branch"] = repos.default_branch(mirror) if mirror.exists() else None
     return {"kind": "branches", "stage": stage_key, "stage_title": title, "feature_branch": feature, "repository": repo,
-            "existing_branch": existing_branch(project, repo, feature, title)}
+            "existing_branch": existing_branch(project, repo, feature, title),
+            "parallel_runs": parallel_runs(run_id, project, repo["url"])}
+
+
+def parallel_runs(run_id: str, project: str, url: str) -> list[dict]:
+    """Other unfinished runs of the project that have checked out the same repository (each on its own branch). Their
+    work and this run's are merged later: changes to the same files will conflict then, so the person confirming
+    knows who else is working there."""
+    from app import discovery_store
+
+    with session_scope() as s:
+        others = s.scalars(select(Run).where(Run.project == project, Run.id != run_id, Run.status != "completed",
+                                             Run.scope.is_(None) | (Run.scope == "operation"))).all()
+        out = []
+        for o in others:
+            urls = ([o.repository] if o.repository and o.base_sha else []) + \
+                   [r["url"] for r in o.repositories or [] if r.get("base_sha")]
+            if url in urls:
+                by = s.get(User, o.started_by).display_name if o.started_by else None
+                out.append({"run_id": o.id, "subject": discovery_store.subject(o.domain, o.operation),
+                            "branch": o.branch, "by": by, "stage": o.current_stage})
+        return out
 
 
 def existing_branch(project: str, repo: dict, feature: str, title: str) -> dict | None:
@@ -336,8 +375,13 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
 
 
 def apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
-    """Use the confirmed branches: rename the feature branch everywhere if it changed, and check out the repository
-    (cut from its base branch) if it isn't yet."""
+    """Use the confirmed branches: rename the feature branch everywhere if it changed, check out the repository
+    (cut from its base branch) if it isn't yet, and bring in the latest of the branch in git."""
+    with run_lock(run_id):
+        _apply_confirmation(run_id, key, answer, log)
+
+
+def _apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
     feature = (answer.get("feature_branch") or "").strip()
     with session_scope() as s:
         run = s.get(Run, run_id)
@@ -575,6 +619,11 @@ def _file_state(ctx: dict, status: str, path: str, upstream: set[str]) -> dict:
 
 def changes(run_id: str, key: str, user_id: int | None) -> dict:
     """Everything the review lists for one repository: branches, how far its base branch moved, each changed file."""
+    with run_lock(run_id):
+        return _changes(run_id, key, user_id)
+
+
+def _changes(run_id: str, key: str, user_id: int | None) -> dict:
     ctx = _sync(run_id, key, user_id)
     ws = ctx["ws"]
     upstream = set() if ctx["latest"] == ctx["merge_base"] else set(
@@ -589,13 +638,17 @@ def changes(run_id: str, key: str, user_id: int | None) -> dict:
         # Already on the feature branch in git exactly as the run has it: nothing new to commit there.
         same = bool(remote) and git_ops.read_blob(ws, ctx["head"], path) == git_ops.read_blob(ws, remote, path)
         files.append({**state, "additions": added, "deletions": deleted, "same_in_git": same})
-    files.sort(key=lambda f: (f["document"], f["path"]))  # code first
+    # Only what is a change: a file already on the feature branch in git exactly as the run has it is left out (a
+    # commit leaves it as it is there).
+    unchanged = sum(1 for f in files if f["same_in_git"])
+    files = sorted((f for f in files if not f["same_in_git"]), key=lambda f: (f["document"], f["path"]))  # code first
     previous = ctx["delivery"] if ctx["delivery"].get("status") == "pushed" else None
     return {"key": key, "name": ctx["name"], "repository": ctx["url"], "base_branch": ctx["base_branch"],
             "feature_branch": ctx["feature"], "base_sha": ctx["base_sha"], "head_sha": ctx["head"],
             "latest_sha": ctx["latest"], "behind": git_ops.count_commits(ws, ctx["merge_base"], ctx["latest"]) or 0,
             "remote_branch": ctx["remote_feature"], "previous": previous, "warning": ctx["warning"],
             "message": default_message(ctx["domain"], ctx["operation"], previous is not None), "files": files,
+            "unchanged_in_git": unchanged,
             "conflicts": sum(1 for f in files if f["conflict"])}
 
 
@@ -607,6 +660,11 @@ def file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
     """One file for the diff and merge views: where the run started, the version on the feature branch in git (when
     the run has pushed it: what this commit changes is the difference to that), the run's version, the latest base
     branch's, and the merge of the two (with conflict markers when they conflict)."""
+    with run_lock(run_id):
+        return _file_detail(run_id, key, path, latest_sha)
+
+
+def _file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
     root = workspace.ensure(run_id)
     with session_scope() as s:
         repo = _repo_of(s.get(Run, run_id), key)
@@ -656,7 +714,14 @@ def commit(run_id: str, key: str, user_id: int, message: str, branch: str, files
            resolutions: dict[str, dict], latest_sha: str, head_sha: str) -> dict:
     """Commit the chosen files of one repository (with conflicts resolved) on top of its latest base branch as
     reviewed, as the user, and push the feature branch with their credentials. The run is complete once every
-    repository it changed is committed (or left out)."""
+    repository it changed is committed (or left out). Two people committing the same run at once go one after the
+    other: the second sees the first's commit (and its review is then out of date)."""
+    with run_lock(run_id):
+        return _commit(run_id, key, user_id, message, branch, files, resolutions, latest_sha, head_sha)
+
+
+def _commit(run_id: str, key: str, user_id: int, message: str, branch: str, files: list[str],
+            resolutions: dict[str, dict], latest_sha: str, head_sha: str) -> dict:
     who = git_auth.identity(user_id)
     if who is None:
         raise DeliveryError("Set your git name and email first (My settings → Git)")
@@ -698,7 +763,7 @@ def commit(run_id: str, key: str, user_id: int, message: str, branch: str, files
                                     "starts")
         previous = remote
 
-    tmp_index = ws / ".git" / "studio-commit-index"
+    tmp_index = ws / ".git" / f"studio-commit-index-{uuid.uuid4().hex}"
     env = {"GIT_INDEX_FILE": str(tmp_index), "GIT_AUTHOR_NAME": who[0], "GIT_AUTHOR_EMAIL": who[1],
            "GIT_COMMITTER_NAME": who[0], "GIT_COMMITTER_EMAIL": who[1]}
     ctx_merge = {**ctx, "latest": latest_sha, "merge_base": merge_base}

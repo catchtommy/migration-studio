@@ -72,6 +72,7 @@ export interface PendingBranches {
   feature_branch: string;
   repository: { key: string; name: string; url: string; base_branch: string | null; checked_out: boolean; default_branch: string | null };
   existing_branch?: { in_run: boolean; message: string } | null; // the feature branch already exists there
+  parallel_runs?: { run_id: string; subject: string; branch: string; by: string | null; stage: string | null }[]; // others working in this repository
 }
 
 /** Approved AS-IS documents and how they compare with the monolith's base branch. */
@@ -143,7 +144,8 @@ export interface RunChanges {
   previous: RepoDelivery | null;
   warning: string | null;
   message: string;
-  files: ChangedFile[];
+  files: ChangedFile[]; // only files that differ from the feature branch in git
+  unchanged_in_git?: number; // files the run changed that are already on the branch in git as they are: not listed
   conflicts: number;
 }
 
