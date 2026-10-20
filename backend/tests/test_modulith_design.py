@@ -646,17 +646,17 @@ def test_module_extraction_declaration_is_validated():
 def test_module_extraction_follows_the_scope_decision():
     orchestrator = ("  - {path: broker-domain/broker-profile/orchestrator, kind: orchestrator, "
                     "artifact: \"com.acme:broker-profile-orchestrator\"}\n")
-    # domain-only: neither an orchestrator module nor a bridge
-    with pytest.raises(contracts_store.InvalidDocument, match="domain-only"):
-        contracts_store.parse_module_extraction(_EXTRACTION.replace("outside_changes", orchestrator + "outside_changes"))
+    # the domain module only, in either scope: the orchestrator module is the Orchestrator in monolith step's
+    cross = _EXTRACTION.replace("scope: domain-only", "scope: cross-domain")
+    for text in (_EXTRACTION, cross + "bridge_dir: web/legacybridge\n"):
+        with pytest.raises(contracts_store.InvalidDocument, match="built by the Orchestrator in monolith step"):
+            contracts_store.parse_module_extraction(text.replace("outside_changes", orchestrator + "outside_changes"))
     # a domain-only feature may have a bridge package, for context-port adapters (checked against the design)
     assert contracts_store.parse_module_extraction(_EXTRACTION + "bridge_dir: web/legacybridge\n")
-    # cross-domain: both
-    cross = _EXTRACTION.replace("scope: domain-only", "scope: cross-domain")
+    # cross-domain: the bridge package, for the local adapters
     with pytest.raises(contracts_store.InvalidDocument, match="cross-domain"):
         contracts_store.parse_module_extraction(cross)
-    assert contracts_store.parse_module_extraction(
-        cross.replace("outside_changes", orchestrator + "outside_changes") + "bridge_dir: web/legacybridge\n")
+    assert contracts_store.parse_module_extraction(cross + "bridge_dir: web/legacybridge\n")
 
 
 def test_module_extraction_scope_must_match_the_dependency_decision(tmp_path):

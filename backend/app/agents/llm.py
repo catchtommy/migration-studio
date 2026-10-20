@@ -30,11 +30,12 @@ class ClaudeAgent(StageAgent):
         config = ctx.config
         model = DEFAULT_MODEL if config["model"] in ("", "auto") else config["model"]
         toolbox = Toolbox(ctx, common.toolchain_home(ctx))
+        common.preflight_or_fail(ctx)  # before any model call: a step that can't finish costs nothing
         client = make_client()
         tools = definitions(config["tools"])
         system = common.system_prompt(ctx)
         messages: list[dict] = [{"role": "user", "content": common.brief(ctx)}]
-        checks_left = ctx.settings["max_attempts"]
+        checks_left, previous = ctx.settings["max_attempts"], None
         ctx.log(f"Claude agent started ({model}, effort {config['effort']})")
 
         for _ in range(config["max_turns"]):
@@ -71,9 +72,10 @@ class ClaudeAgent(StageAgent):
                 messages.append({"role": "user", "content": "Continue."})
                 continue
 
-            problems = common.verify(ctx)
+            problems = common.finish_check(ctx, toolbox.written, previous)
             if not problems:
                 break
+            previous = problems
             if checks_left <= 0:
                 raise AgentFailed("Verification still failing: " + "; ".join(problems[:5]))
             checks_left -= 1

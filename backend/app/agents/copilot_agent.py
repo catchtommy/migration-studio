@@ -53,6 +53,7 @@ class CopilotAgent(StageAgent):
 
         config = ctx.config
         toolbox = Toolbox(ctx, common.toolchain_home(ctx))
+        common.preflight_or_fail(ctx)  # before the session starts: a step that can't finish costs nothing
         tools, names = _tools(ctx, toolbox)
         allowed = ToolSet()
         for name in names:
@@ -90,15 +91,16 @@ class CopilotAgent(StageAgent):
             **options,
         )
         ctx.log(f"Copilot agent started as {auth.login} ({model or 'auto model'})")
-        checks_left = ctx.settings["max_attempts"]
+        checks_left, previous = ctx.settings["max_attempts"], None
         prompt = common.brief(ctx)
         try:
             while True:
                 errors.clear()
                 await session.send_and_wait(prompt, timeout=SESSION_TIMEOUT)
-                problems = common.verify(ctx)
+                problems = common.finish_check(ctx, toolbox.written, previous)
                 if not problems:
                     break
+                previous = problems
                 if errors:
                     raise AgentFailed(f"Copilot: {errors[-1]}")
                 if checks_left <= 0:

@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from app import projects
 from app.db.models import Artifact, Contract, Dependency, Domain, Run
 from app.db.session import session_scope
+from app.guardrail_problems import blocker
 
 KINDS = ("query", "bulk-query", "side-effect", "command", "shared-write", "reference-data")
 PATTERNS = ("sync-api", "read-model", "event", "saga", "deferred", "reference-copy")
@@ -254,17 +255,18 @@ def parse_module_extraction(text: str) -> dict:
         if not isinstance(m, dict):
             raise InvalidDocument(f"{where} module {i} must be a mapping")
         _require(m, ("path", "kind", "artifact"), f"{where} module {i}")
-        _one_of(m["kind"], ("domain", "orchestrator"), f"{where} module {i}")
+        _one_of(m["kind"], ("domain", "orchestrator"), f"{where} module {i}")  # orchestrator: refused below, clearly
         if str(m["path"]).startswith("/") or ".." in Path(str(m["path"])).parts:
             raise InvalidDocument(f"{where} module {i}: path must be inside the repository")
         if not COORDINATES.match(str(m["artifact"])):
             raise InvalidDocument(f"{where} module {i}: artifact must be Maven coordinates, groupId:artifactId")
     kinds = [m["kind"] for m in modules]
-    if kinds.count("domain") != 1 or kinds.count("orchestrator") > 1:
-        raise InvalidDocument(f"{where}: exactly one domain module and at most one orchestrator module")
-    if data["scope"] == "domain-only" and "orchestrator" in kinds:
-        raise InvalidDocument(f"{where}: the feature is domain-only, so there is no orchestrator module; callers use "
-                              "the domain's public API directly")
+    if "orchestrator" in kinds:
+        raise InvalidDocument(f"{where}: list the domain module only. The orchestrator module, when the feature needs "
+                              "one, is built by the Orchestrator in monolith step and declared in "
+                              f"{ORCHESTRATOR_EXTRACTION_FILE}")
+    if kinds.count("domain") != 1:
+        raise InvalidDocument(f"{where}: exactly one domain module")
     if data["scope"] == "cross-domain" and not data.get("bridge_dir"):
         raise InvalidDocument(f"{where}: the feature is cross-domain, so add the bridge_dir (the temporary legacy "
                               "bridge package in the monolith, with the local adapters)")
@@ -368,8 +370,8 @@ def _orchestrator_extraction_problems(output_dir: Path, declaration: dict) -> li
                         "domain-only, so it has no orchestrator: write orchestrator: none")
     module_file = output_dir / MODULE_EXTRACTION_FILE
     if not module_file.is_file():
-        problems.append(f"{ORCHESTRATOR_EXTRACTION_FILE}: {MODULE_EXTRACTION_FILE} of the Module in monolith step is "
-                        "missing; the orchestrator is built on the domain module it declares")
+        problems.append(blocker(f"{ORCHESTRATOR_EXTRACTION_FILE}: {MODULE_EXTRACTION_FILE} of the Module in monolith "
+                                "step is missing; the orchestrator is built on the domain module it declares"))
     else:
         try:
             modules = parse_module_extraction(module_file.read_text(encoding="utf-8"))["modules"]
@@ -434,8 +436,8 @@ def _orchestrator_service_problems(output_dir: Path, declaration: dict) -> list[
     built = output_dir / ORCHESTRATOR_EXTRACTION_FILE
     module = None
     if not built.is_file():
-        problems.append(f"{ORCHESTRATOR_SERVICE_FILE}: {ORCHESTRATOR_EXTRACTION_FILE} of the Orchestrator in monolith "
-                        "step is missing; the service lifts the orchestrator module it declares")
+        problems.append(blocker(f"{ORCHESTRATOR_SERVICE_FILE}: {ORCHESTRATOR_EXTRACTION_FILE} of the Orchestrator in "
+                                "monolith step is missing; the service lifts the orchestrator module it declares"))
     else:
         try:
             module = parse_orchestrator_extraction(built.read_text(encoding="utf-8"))
@@ -517,8 +519,8 @@ def _integration_routing_problems(output_dir: Path, declaration: dict) -> list[s
 
     where = INTEGRATION_ROUTING_FILE
     target, why = routing_target(output_dir)
-    if target is None:
-        return [f"{where}: {why}"]
+    if target is None:  # the earlier steps decide this, not the integration agent
+        return [blocker(f"{where}: {why}")]
     problems = []
     if declaration["target"] != target:
         problems.append(f"{where}: target is {declaration['target']}, but the monolith must call the {target} "
@@ -645,10 +647,20 @@ def _exists(key: str) -> bool:
         return s.get(Contract, (projects.current(), key)) is not None
 
 
-def validate_outputs(output_dir: Path) -> list[str]:
-    """Problems with the structured cross-domain files an agent wrote (none when the files are absent)."""
+def validate_outputs(output_dir: Path, only: set[str] | None = None) -> list[str]:
+    """Problems with the structured cross-domain files in the documents folder (none when the files are absent).
+    With `only` (file names), just those files' problems: an agent is judged on the documents it writes, not on
+    earlier steps' (which are read all the same, as the files depend on each other)."""
     problems = []
     linked: list[dict] = []
+    for name, found in _validated(output_dir, linked):
+        if only is None or name in only:
+            problems += found
+    return problems
+
+
+def _validated(output_dir: Path, linked: list[dict]):
+    """(file name, its problems) for each structured file present, in the order they depend on each other."""
     for name, parse in ((CROSS_DOMAIN_FILE, parse_cross_domain), (DOMAIN_DEPENDENCIES_FILE, parse_domain_dependencies),
                         (LINKED_CONTRACTS_FILE, parse_linked_domain_contracts),
                         (DOMAIN_DESIGN_FILE, parse_domain_design),
@@ -661,13 +673,14 @@ def validate_outputs(output_dir: Path) -> list[str]:
         f = output_dir / name
         if not f.is_file():
             continue
+        problems = []
         try:
             parsed = parse(f.read_text(encoding="utf-8"))
         except InvalidDocument as e:
-            problems.append(str(e))
+            yield name, [str(e)]
             continue
         if name == LINKED_CONTRACTS_FILE:
-            linked = parsed
+            linked[:] = parsed
             problems += _linked_contracts_problems(output_dir, parsed)
             problems += [f"{LINKED_CONTRACTS_FILE}: spec file {c['spec']} for contract {c['key']} does not exist"
                          for c in parsed if c.get("spec") and not (output_dir / c["spec"]).is_file()]
@@ -685,7 +698,7 @@ def validate_outputs(output_dir: Path) -> list[str]:
             for c in parsed["contracts"]:
                 if c.get("spec") and not (output_dir / c["spec"]).is_file():
                     problems.append(f"{DECISIONS_FILE}: spec file {c['spec']} for contract {c['key']} does not exist")
-    return problems
+        yield name, problems
 
 
 def _latest_artifact(s, run_id: str, stages: list[str], name: str) -> Artifact | None:

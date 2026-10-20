@@ -22,6 +22,7 @@ from pathlib import Path
 from app import module_guardrails as mg
 from app import orchestrator_guardrails as og
 from app import service_guardrails as sg
+from app.guardrail_problems import blocker
 
 DATA_ACCESS_LIBRARY = re.compile(r"jdbc|jpa|hibernate|ibatis|mybatis|ojdbc|h2database|hsqldb|derby|postgresql|mysql|"
                                  r"mariadb|mssql|flyway|liquibase|spring-boot-starter-data|spring-data|spring-tx|"
@@ -65,7 +66,7 @@ def check(service: Path, base: str, monolith: Path | None, monolith_base: str | 
     try:
         diff = mg.changes(service, base)
     except (RuntimeError, OSError) as e:
-        return [*problems, f"Could not compare with the starting commit: {e}"]
+        return [*problems, blocker(f"Could not compare with the starting commit: {e}")]
     if declaration.get("orchestrator") == "none":
         return [*problems, *[f"{c.path} changed, but orchestrator-service-extraction.yaml says there is no orchestrator "
                              "service: this step then changes no code" for c in diff]][:mg.MAX_REPORTED]
@@ -179,10 +180,10 @@ def for_context(ctx) -> list[str]:
     from app import contracts_store as cs
 
     if ctx.code_dir in (".", ""):
-        return ["This step must change code in the orchestrator service's own repository (the step's Changes code "
-                "setting: In another repository), never in the monolith"]
+        return [blocker("This step must change code in the orchestrator service's own repository (the step's Changes code "
+                "setting: In another repository), never in the monolith")]
     if not ctx.base_sha:
-        return ["The service repository's starting commit is unknown, so the changes cannot be checked"]
+        return [blocker("The service repository's starting commit is unknown, so the changes cannot be checked")]
     out = ctx.output_dir
 
     def load(name, parse):
@@ -199,8 +200,8 @@ def for_context(ctx) -> list[str]:
                 "(or that there is no orchestrator service), which the check needs"]
     module_path = str(module["module"]["path"]).strip("/") if module and module["orchestrator"] == "module" else None
     if declaration["orchestrator"] == "service" and module_path is None:
-        return [f"{cs.ORCHESTRATOR_EXTRACTION_FILE} of the Orchestrator in monolith step declares no orchestrator "
-                "module, so there is nothing to lift"]
+        return [blocker(f"{cs.ORCHESTRATOR_EXTRACTION_FILE} of the Orchestrator in monolith step declares no orchestrator "
+                "module, so there is nothing to lift")]
     api = out / str(declaration.get("openapi") or "")
     root_is_git = mg.head(ctx.workspace) is not None
     return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, ctx.workspace if root_is_git else None,

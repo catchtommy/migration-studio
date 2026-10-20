@@ -10,6 +10,7 @@ from app import (boundary_check, module_guardrails, orchestrator_guardrails, orc
                  release_guardrails, service_guardrails, test_guardrails)
 from app.text import decode, decode_with, encode_like
 from app.agents.base_agent import DOCS_ROOT, AgentContext
+from app.guardrail_problems import blockers
 
 MAX_LIST = 500
 MAX_READ_LINES = 1500
@@ -165,7 +166,8 @@ COMMAND_ENV = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "
 FORBIDDEN_GIT = re.compile(
     r"\bgit\b(?:\s+(?:-[cC]\s+\S+|--\S+))*\s+(?:push|remote|config|filter-branch|filter-repo|update-ref|symbolic-ref|"
     r"replace|reflog|gc|prune|worktree|submodule|credential|send-email|branch\s+(?:-[dDmMcC]|--(?:delete|move|copy))|"
-    r"checkout\s+(?:-[bB]|--orphan)|switch\b|rebase|commit\s+(?:.*\s)?--amend|tag\b)")
+    r"checkout\s+(?:-[bB]|--orphan)|switch\b|rebase|commit\s+(?:.*\s)?--amend|tag\b|"
+    r"add\s+(?:.*\s)?(?:-f\b|--force\b|-\w*f\w*\b))")
 
 
 # The guardrail checks that compare with git from the commit the step started from (and the monolith's, for the
@@ -205,6 +207,7 @@ class Toolbox:
     def __init__(self, ctx: AgentContext, toolchain_home: str | None):
         self.ctx = ctx
         self.root = ctx.workspace.resolve()
+        self._last_check, self._repeats = None, 0  # the last check result, and how often it came back unchanged
         # The shared read-only monolith, overlaid on the workspace: paths not in the workspace are read from it.
         self.legacy = ctx.legacy_dir.resolve() if ctx.legacy_dir else None
         self.toolchain_home = toolchain_home
@@ -358,7 +361,8 @@ class Toolbox:
         if hit:
             raise ToolError(f"`{hit.group(0).strip()}` is not allowed: an agent commits locally only (git add, commit, "
                             "revert, restore, reset within this step). Pushing, remotes, configuration and rewriting "
-                            "branches or history are done by the run, through the review")
+                            "branches or history are done by the run, through the review; ignored files are never "
+                            "forced in (the studio's documents stay in .migration/ and are never committed)")
         env = toolchain_env(command_env(), self.toolchain_home, self.ctx.settings.get("language") or "java")
         if self.legacy is not None:
             env["STUDIO_LEGACY_DIR"] = str(self.legacy)  # the read-only monolith, for commands that read it
@@ -372,29 +376,52 @@ class Toolbox:
         output = (proc.stdout + proc.stderr)[-MAX_COMMAND_OUTPUT:]
         return f"exit code {proc.returncode}\n{output}"
 
+    def _check(self, name: str, problems: list[str], report) -> str:
+        """A check tool's result: its report, and what to do when the agent can't fix a problem or keeps getting the
+        same result (so it doesn't loop on a check it can't pass)."""
+        text = report(problems)
+        stuck = blockers(problems)
+        if stuck:
+            text += ("\n\nYou can't fix these: they need the workflow's settings, an earlier step, the environment or a "
+                     "person, not your work:\n" + "\n".join(f"- {p}" for p in stuck) +
+                     "\nDon't try to work around them. Finish with a summary that says what blocks the step.")
+        key = (name, tuple(problems))
+        self._repeats = self._repeats + 1 if problems and key == self._last_check else 0
+        self._last_check = key
+        if self._repeats >= 2:
+            text += ("\n\nThis is the same result as the last two times. Stop calling the check until you have changed "
+                     "something it reports. If you can't fix what is left, ask the user (ask_user), or finish with a "
+                     "summary that explains what blocks you.")
+        return text
+
+    def _required(self) -> list[str]:
+        from app.agents.common import required_checks
+        return sorted(required_checks(self.ctx))
+
     def check_boundaries(self) -> str:
         ctx = self.ctx
-        return boundary_check.report(boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir, ctx.ownership))
+        return self._check("boundaries", boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir, ctx.ownership),
+                           boundary_check.report)
 
     def check_module_guardrails(self) -> str:
-        return module_guardrails.report(module_guardrails.for_context(self.ctx))
+        return self._check("module", module_guardrails.for_context(self.ctx), module_guardrails.report)
 
     def check_orchestrator_guardrails(self) -> str:
-        return orchestrator_guardrails.report(orchestrator_guardrails.for_context(self.ctx))
+        return self._check("orchestrator", orchestrator_guardrails.for_context(self.ctx), orchestrator_guardrails.report)
 
     def check_orchestrator_service_guardrails(self) -> str:
-        return orchestrator_service_guardrails.report(orchestrator_service_guardrails.for_context(self.ctx))
+        return self._check("orchestrator_service", orchestrator_service_guardrails.for_context(self.ctx),
+                           orchestrator_service_guardrails.report)
 
     def check_test_guardrails(self) -> str:
-        from app.agents.common import required_checks
-        return test_guardrails.report(test_guardrails.for_context(self.ctx, sorted(required_checks(self.ctx))))
+        return self._check("test", test_guardrails.for_context(self.ctx, self._required()), test_guardrails.report)
 
     def check_release_guardrails(self) -> str:
-        from app.agents.common import required_checks
-        return release_guardrails.report(release_guardrails.for_context(self.ctx, sorted(required_checks(self.ctx))))
+        return self._check("release", release_guardrails.for_context(self.ctx, self._required()),
+                           release_guardrails.report)
 
     def check_service_guardrails(self) -> str:
-        return service_guardrails.report(service_guardrails.for_context(self.ctx))
+        return self._check("service", service_guardrails.for_context(self.ctx), service_guardrails.report)
 
     def ask_user(self, question: str, options: list[str] | None = None) -> str:
         return self.ctx.ask(question, [str(o) for o in options] if options else None)

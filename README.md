@@ -167,12 +167,19 @@ orchestrator modules unchanged).
 
 - **Every built-in agent's guardrail checks run before it may finish**, even if they are unticked on the Agents page;
   when they keep failing, the step fails and its changes are reset.
+- **Agents don't loop on what they can't fix.** A step that can't finish as it is set up (a code agent on a step
+  without *Changes code*, the wrong kind of repository, an earlier step's declaration missing) fails before the agent
+  starts, with the setting to change, and costs no tokens. A problem that needs the workflow, an earlier step, the
+  environment or a person ends the step at once instead of sending the agent back; so do the same problems after a
+  fix attempt. An agent is judged on its own documents, not on earlier steps' ones, and the check tools tell it when
+  to stop calling them.
 - **File tools** write only in the step's own repository and the documents folder. Documents a gate before the step
   approved are read-only to it (a change made some other way isn't kept). Steps without *Changes code* write
   documents only and can't run commands.
 - **Commands** run with the server's environment reduced to what builds need (no API keys, database URLs or tokens),
   and refuse git commands that publish or rewrite (push, remote, config, amend, rebase, branch switching, tags,
-  `sudo`). Agents commit locally; the run commits and pushes through the review, as you.
+  `sudo`, forcing ignored files in with `git add -f`). Agents commit locally; the run commits and pushes through the
+  review, as you.
 - **After a step**, changes it made to the run's other repositories are undone, and the step fails if its repository
   is no longer on the run's branch with the step's starting commit in its history.
 - `run_command` is still a shell on the server: see *Deployment* below.

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app import boundary_check
+from app.guardrail_problems import blocker
 
 UI_SUFFIXES = {".jsp", ".jspf", ".jspx", ".tag", ".tagx", ".tld", ".html", ".htm", ".xhtml", ".js", ".css", ".scss",
                ".less", ".png", ".gif", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot"}
@@ -96,7 +97,9 @@ def changes(root: Path, base: str) -> list[Change]:
             shutil.copyfile(real, index)  # keeps git's file-stat cache, so unchanged files are not hashed again
         else:
             _git(root, "read-tree", base, env=env)
-        _git(root, "add", "-A", "--", ".", ":!.migration", ":!.studio", env=env)
+        # No pathspecs: the studio's folders are ignored already (.git/info/exclude) and left out below, and naming an
+        # ignored path makes some versions of git fail ("paths are ignored"). Nor its CRLF or ignored-file notices.
+        _git(root, "-c", "core.safecrlf=false", "-c", "advice.addIgnoredFile=false", "add", "-A", env=env)
         names = _git(root, "diff", "--cached", "-M", "--name-status", "-z", base, env=env).split("\0")
         patch = _git(root, "diff", "--cached", "-M", "-U0", "--no-color", base, env=env)
     result, i = [], 0
@@ -227,7 +230,7 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
     try:
         diff = changes(root, base)
     except (RuntimeError, OSError) as e:
-        return [f"Could not compare with the starting commit: {e}"]
+        return [blocker(f"Could not compare with the starting commit: {e}")]
     if not diff:
         return []
     problems: list[str] = []
@@ -337,8 +340,8 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
                      for p in sorted(changed_outside - listed)]
         problems += [f"outside_changes lists {p}, which did not change" for p in sorted(listed - changed_outside)]
     if len(changed_outside) > MAX_OUTSIDE_FILES:
-        problems.append(f"{len(changed_outside)} files outside the modules need changing (the limit is "
-                        f"{MAX_OUTSIDE_FILES}). Stop and ask the user before going on")
+        problems.append(blocker(f"{len(changed_outside)} files outside the modules need changing (the limit is "
+                        f"{MAX_OUTSIDE_FILES}). Stop and ask the user before going on"))
 
     # 5. SQL: every statement in the modules exists, text for text, in the monolith; every statement taken out of a
     # legacy SQL map is now in a module; no SQL map outside the modules gains or changes a statement.
@@ -432,7 +435,7 @@ def for_context(ctx) -> list[str]:
     from app import contracts_store as cs
 
     if not ctx.base_sha:
-        return ["The step's starting commit is unknown, so the changes cannot be checked: is the code a git checkout?"]
+        return [blocker("The step's starting commit is unknown, so the changes cannot be checked: is the code a git checkout?")]
     out = ctx.output_dir
 
     def load(name, parse):

@@ -8,6 +8,7 @@ from app import (boundary_check, contracts_store, discovery_store, module_guardr
                  orchestrator_service_guardrails, release_guardrails, service_guardrails, test_guardrails)
 from app.agents.base_agent import AgentContext, ArtifactOut
 from app.agents.tools import ToolError, Toolbox
+from app.guardrail_problems import Blocker, blocker, blockers
 
 INLINE_LIMIT = 200_000  # characters of earlier documents put in the prompt; larger ones are left to read_file
 LOG_LIMIT = 2_000
@@ -183,12 +184,19 @@ def run_tool(ctx: AgentContext, toolbox: Toolbox, name: str, args: object) -> tu
     if name in ("list_files", "read_file", "search_code") and isinstance(args, dict):
         ctx.log(f"→ {name} " + json.dumps({k: (v if len(str(v)) < 120 else str(v)[:117] + "…")
                                            for k, v in args.items()}))
+    from app.orchestrator.questions import QuestionAbandoned
+
     try:
         return toolbox.run(name, args), False
     except ToolError as e:
         return str(e), True
-    except OSError as e:
-        return f"{type(e).__name__}: {e}", True
+    except QuestionAbandoned as e:  # the server stopped (or restarted) while the question waited for an answer
+        ctx.log(f"{name}: {e}")
+        return (f"Your question could not be answered: {e}. Don't ask it again in this attempt; finish with a summary "
+                "that says what you needed to know, and the step can be retried to ask again."), True
+    except Exception as e:  # noqa: BLE001 - a tool's own failure goes back to the model, never ends the agent
+        ctx.log(f"{name} failed: {type(e).__name__}: {e}")
+        return f"The {name} tool failed: {type(e).__name__}: {e}", True
 
 
 def required_checks(ctx: AgentContext) -> set[str]:
@@ -199,30 +207,81 @@ def required_checks(ctx: AgentContext) -> set[str]:
     return set(ctx.config.get("checks") or []) | set(_CHECKS.get(ctx.stage, []))
 
 
-def verify(ctx: AgentContext) -> list[str]:
-    """Everything that must be fixed before the agent may finish: missing required documents, invalid cross-domain
-    or discovery YAML, and the guardrail checks the agent must pass (required_checks)."""
+def _tagged(prefix: str, problems: list[str]) -> list[str]:
+    """`prefix` before each problem, keeping the ones the agent can't fix marked as such."""
+    return [(blocker if isinstance(p, Blocker) else str)(f"{prefix}{p}") for p in problems]
+
+
+def guardrail_problems(ctx: AgentContext, checks: set[str]) -> list[str]:
+    """The problems of the guardrail checks among `checks`, for the agent's work so far."""
+    problems = []
+    if "boundary" in checks:
+        problems += _tagged("Boundary: ", boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir,
+                                                                ctx.ownership))
+    if "module_guardrails" in checks:
+        problems += _tagged("Guardrail: ", module_guardrails.for_context(ctx))
+    if "orchestrator_guardrails" in checks:
+        problems += _tagged("Guardrail: ", orchestrator_guardrails.for_context(ctx))
+    if "orchestrator_service_guardrails" in checks:
+        problems += _tagged("Guardrail: ", orchestrator_service_guardrails.for_context(ctx))
+    problems += _tagged("Guardrail: ", test_guardrails.for_context(ctx, sorted(checks)))
+    problems += _tagged("Guardrail: ", release_guardrails.for_context(ctx, sorted(checks)))
+    if "service_guardrails" in checks:
+        problems += _tagged("Guardrail: ", service_guardrails.for_context(ctx))
+    return problems
+
+
+def preflight(ctx: AgentContext) -> list[str]:
+    """What stops the step before an AI agent starts, so no tokens go to a step that can't finish: a code agent on a
+    step not set to change code, or a guardrail problem that needs the workflow, an earlier step, the environment or
+    a person (guardrail_problems.Blocker)."""
+    from app.agents.tools import GIT_CHECKS
+
+    checks = required_checks(ctx)
+    if checks & GIT_CHECKS and ctx.stage_def is not None and not ctx.stage_def.code:
+        return [blocker(f"{ctx.stage_def.title} changes code, but its step isn't set to: set its Changes code on the "
+                        "Workflows page (In the project's monolith, or In another repository), then retry")]
+    return blockers(guardrail_problems(ctx, checks))
+
+
+def verify(ctx: AgentContext, written: set[str] | None = None) -> list[str]:
+    """Everything that must be fixed before the agent may finish: missing required documents, invalid structured
+    documents of its own (the required ones and those it wrote: `written`, workspace paths), and the guardrail checks
+    it must pass (required_checks). Earlier steps' documents are not judged again here."""
     out_dir = ctx.rel(ctx.output_dir)
     checks = required_checks(ctx)
+    own = None if written is None else set(ctx.config["outputs"]) | {
+        p[len(out_dir) + 1:] for p in written if p.startswith(out_dir + "/")}
     problems = [f"Required document `{out_dir}/{o}` has not been written yet."
                 for o in ctx.config["outputs"] if not (ctx.output_dir / o).is_file()]
-    problems += contracts_store.validate_outputs(ctx.output_dir)
-    problems += contracts_store.domain_design_ownership_problems(ctx.output_dir, ctx.domain, ctx.ownership)
+    problems += contracts_store.validate_outputs(ctx.output_dir, own)
+    if own is None or contracts_store.DOMAIN_DESIGN_FILE in own:
+        problems += contracts_store.domain_design_ownership_problems(ctx.output_dir, ctx.domain, ctx.ownership)
     problems += discovery_store.validate_outputs(ctx.output_dir)
-    if "boundary" in checks:
-        problems += [f"Boundary: {v}" for v in boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir,
-                                                                      ctx.ownership)]
-    if "module_guardrails" in checks:
-        problems += [f"Guardrail: {p}" for p in module_guardrails.for_context(ctx)]
-    if "orchestrator_guardrails" in checks:
-        problems += [f"Guardrail: {p}" for p in orchestrator_guardrails.for_context(ctx)]
-    if "orchestrator_service_guardrails" in checks:
-        problems += [f"Guardrail: {p}" for p in orchestrator_service_guardrails.for_context(ctx)]
-    problems += [f"Guardrail: {p}" for p in test_guardrails.for_context(ctx, sorted(checks))]
-    problems += [f"Guardrail: {p}" for p in release_guardrails.for_context(ctx, sorted(checks))]
-    if "service_guardrails" in checks:
-        problems += [f"Guardrail: {p}" for p in service_guardrails.for_context(ctx)]
+    problems += guardrail_problems(ctx, checks)
     return problems
+
+
+def finish_check(ctx: AgentContext, written: set[str], previous: list[str] | None) -> list[str]:
+    """verify(), for an agent that says it's done: the problems to send it back with (empty: it may finish). Raises
+    AgentFailed where sending it back can't help: a problem it can't fix (a Blocker), or the same problems as after
+    its last attempt."""
+    problems = verify(ctx, written)
+    stuck = blockers(problems)
+    if stuck:
+        raise AgentFailed("This step can't finish until something outside the agent's work changes: "
+                          + "; ".join(stuck[:5]))
+    if problems and problems == previous:
+        raise AgentFailed("The same problems remain after the agent tried to fix them: " + "; ".join(problems[:5]))
+    return problems
+
+
+def preflight_or_fail(ctx: AgentContext) -> None:
+    """Fail the step before the agent starts when it can't finish anyway (see preflight)."""
+    stuck = preflight(ctx)
+    if stuck:
+        ctx.log("Not started: " + "; ".join(stuck[:5]))
+        raise AgentFailed("This step can't run as it is set up: " + "; ".join(stuck[:5]))
 
 
 def verify_message(problems: list[str]) -> str:

@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 from app import module_guardrails as mg
+from app.guardrail_problems import blocker
 
 ACCEPTANCE_DIR = "acceptance-tests"
 DISABLED = re.compile(r"@Ignore|@Disabled|\bassume(?:True|False)\(")
@@ -149,10 +150,10 @@ def for_context(ctx, checks: list[str] | None = None) -> list[str]:
     if not wanted:
         return []
     if ctx.code_dir in (".", ""):
-        return ["This step must change code in the domain service's repository (the step's Changes code setting: In "
-                "another repository), never in the monolith"]
+        return [blocker("This step must change code in the domain service's repository (the step's Changes code setting: In "
+                "another repository), never in the monolith")]
     if not ctx.base_sha:
-        return ["The service repository's starting commit is unknown, so the changes cannot be checked"]
+        return [blocker("The service repository's starting commit is unknown, so the changes cannot be checked")]
     service = (ctx.workspace / ctx.code_dir).resolve()
     monolith = ctx.workspace if mg.head(ctx.workspace) is not None else None
     monolith_base = getattr(ctx, "monolith_sha", None)
@@ -166,7 +167,7 @@ def for_context(ctx, checks: list[str] | None = None) -> list[str]:
         if "service_test_guardrails" in wanted:
             problems += service_tests(service, ctx.base_sha, monolith, monolith_base)
     except (RuntimeError, OSError) as e:
-        return [f"Could not compare with the starting commit: {e}"]
+        return [blocker(f"Could not compare with the starting commit: {e}")]
     return problems
 
 

@@ -20,6 +20,7 @@ from app import module_guardrails as mg
 from app import orchestrator_service_guardrails as osg
 from app import service_guardrails as sg
 from app import test_guardrails as tg
+from app.guardrail_problems import blocker
 
 SCHEMA_MANAGEMENT = re.compile(
     r"(?im)(?:ddl-auto|hbm2ddl\.auto)\s*[:=]\s*[\"']?(?!none\b|validate\b)\w+|generate-ddl\s*[:=]\s*true|"
@@ -68,7 +69,7 @@ def modernise(service: Path, base: str, monolith: Path | None, monolith_base: st
     try:
         diff = mg.changes(service, base)
     except (RuntimeError, OSError) as e:
-        return [*problems, f"Could not compare with the starting commit: {e}"]
+        return [*problems, blocker(f"Could not compare with the starting commit: {e}")]
     for c in diff:
         if mg._under(c.path, [tg.ACCEPTANCE_DIR]):
             continue  # its own check: acceptance_suite_unchanged
@@ -105,7 +106,7 @@ def integration(monolith: Path, base: str, modules: list[str], routing: dict | N
     try:
         diff = mg.changes(monolith, base)
     except (RuntimeError, OSError) as e:
-        return [f"Could not compare with the starting commit: {e}"]
+        return [blocker(f"Could not compare with the starting commit: {e}")]
     problems = []
     for c in diff:
         paths = {c.path, c.old_path or c.path}
@@ -193,17 +194,20 @@ def for_context(ctx, checks: list[str]) -> list[str]:
     if not wanted:
         return []
     if not ctx.base_sha:
-        return ["The repository's starting commit is unknown, so the changes cannot be checked: is it a git checkout?"]
+        return [blocker("The repository's starting commit is unknown, so the changes cannot be checked: is it a git checkout?")]
     code = (ctx.workspace / ctx.code_dir).resolve()
     problems = []
     if "modernise_guardrails" in wanted:
         if ctx.code_dir in (".", ""):
-            problems.append("This step must change code in the domain service's repository (the step's Changes code "
-                            "setting: In another repository), never in the monolith")
+            problems.append(blocker("This step must change code in the domain service's repository (the step's Changes code "
+                            "setting: In another repository), never in the monolith"))
         else:
             monolith = ctx.workspace if mg.head(ctx.workspace) is not None else None
             problems += modernise(code, ctx.base_sha, monolith, getattr(ctx, "monolith_sha", None))
     if "integration_guardrails" in wanted:
+        target, why = cs.routing_target(ctx.output_dir)
+        if target is None:  # known before the agent writes anything: which service it calls is the earlier steps'
+            return [*problems, blocker(f"Monolith integration can't route this feature: {why}")]
         modules = []
         for name, parse, field in ((cs.MODULE_EXTRACTION_FILE, cs.parse_module_extraction, "modules"),
                                    (cs.ORCHESTRATOR_EXTRACTION_FILE, cs.parse_orchestrator_extraction, "module")):

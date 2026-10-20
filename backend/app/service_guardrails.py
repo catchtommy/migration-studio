@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from app import module_guardrails as mg
+from app.guardrail_problems import blocker
 
 # Libraries a standalone service needs that the module does not have: embedded server, JSON, Azure Service Bus, an
 # HTTP client for the REST adapters, logging and the test tools the module already uses. Anything else: ask.
@@ -71,7 +72,7 @@ def check(service: Path, base: str, monolith: Path | None, monolith_base: str | 
     try:
         diff = mg.changes(service, base)
     except (RuntimeError, OSError) as e:
-        return [*problems, f"Could not compare with the starting commit: {e}"]
+        return [*problems, blocker(f"Could not compare with the starting commit: {e}")]
     modules = [m["path"].strip("/") for m in module_decl.get("modules", [])]
     replaced = {str(r.get("file")) for r in (service_decl or {}).get("replaced", []) if isinstance(r, dict)}
 
@@ -186,7 +187,7 @@ def check(service: Path, base: str, monolith: Path | None, monolith_base: str | 
     # 7. The service exposes exactly the approved operations.
     declared = {str(o.get("operation_id")) for o in service_decl.get("operations", [])}
     if openapi_text is None:
-        problems.append("openapi.yaml of the domain design is missing, so the operations cannot be checked")
+        problems.append(blocker("openapi.yaml of the domain design is missing, so the operations cannot be checked"))
     else:
         ids, missing = openapi_operation_ids(openapi_text)
         problems += [f"openapi.yaml: {m} has no operationId; add one so the operation can be traced" for m in missing]
@@ -220,10 +221,10 @@ def for_context(ctx) -> list[str]:
     from app import contracts_store as cs
 
     if ctx.code_dir in (".", ""):
-        return ["This step must change code in the service's own repository (the step's Changes code setting: In another "
-                "repository), never in the monolith"]
+        return [blocker("This step must change code in the service's own repository (the step's Changes code setting: In another "
+                "repository), never in the monolith")]
     if not ctx.base_sha:
-        return ["The service repository's starting commit is unknown, so the changes cannot be checked"]
+        return [blocker("The service repository's starting commit is unknown, so the changes cannot be checked")]
     out = ctx.output_dir
 
     def load(name, parse):
@@ -238,7 +239,7 @@ def for_context(ctx) -> list[str]:
     except cs.InvalidDocument as e:
         return [str(e)]
     if module_decl is None:
-        return [f"{cs.MODULE_EXTRACTION_FILE} of the Module in monolith step is missing: it says where the module is"]
+        return [blocker(f"{cs.MODULE_EXTRACTION_FILE} of the Module in monolith step is missing: it says where the module is")]
     # Only the domain module: the orchestrator module, when there is one, becomes a service of its own
     # (orchestrator_service_guardrails.py).
     module_decl = {**module_decl, "modules": [m for m in module_decl["modules"] if m.get("kind") != "orchestrator"]}

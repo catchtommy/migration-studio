@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 from app import module_guardrails as mg
+from app.guardrail_problems import Blocker, blocker
 
 DB_ACCESS = re.compile(r"\b(?:java\.sql|javax\.sql|DataSource|JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbc\w+|"
                        r"SqlMapClient\w*|SqlMapSession|SqlSession\w*|com\.ibatis|org\.apache\.ibatis|org\.mybatis|"
@@ -34,7 +35,7 @@ def check(root: Path, base: str, declaration: dict, module_decl: dict | None, de
     try:
         diff = mg.changes(root, base)
     except (RuntimeError, OSError) as e:
-        return [f"Could not compare with the starting commit: {e}"]
+        return [blocker(f"Could not compare with the starting commit: {e}")]
     if declaration.get("orchestrator") == "none":
         return [f"{c.path} changed, but orchestrator-extraction.yaml says there is no orchestrator: this step then "
                 "changes no code" for c in diff[:mg.MAX_REPORTED]]
@@ -49,7 +50,7 @@ def check(root: Path, base: str, declaration: dict, module_decl: dict | None, de
     as_module = {"modules": [{"path": orchestrator, "kind": "orchestrator", "artifact": declaration["module"]["artifact"]}],
                  "bridge_dir": (module_decl or {}).get("bridge_dir") or "",
                  "outside_changes": declaration.get("outside_changes") or []}
-    problems = [p.replace("module-extraction.yaml", "orchestrator-extraction.yaml")
+    problems = [(blocker if isinstance(p, Blocker) else str)(p.replace("module-extraction.yaml", "orchestrator-extraction.yaml"))
                 for p in mg.check(root, base, as_module, design, ownership, domain, god_modules,
                                   extra_artifacts=[m["artifact"] for m in domain_modules],
                                   extra_names=[str(op["replaces"]).split("#")[0].split(".")[-1]
@@ -94,7 +95,7 @@ def for_context(ctx) -> list[str]:
     from app import contracts_store as cs
 
     if not ctx.base_sha:
-        return ["The step's starting commit is unknown, so the changes cannot be checked: is the code a git checkout?"]
+        return [blocker("The step's starting commit is unknown, so the changes cannot be checked: is the code a git checkout?")]
     out = ctx.output_dir
 
     def load(name, parse):
@@ -112,8 +113,8 @@ def for_context(ctx) -> list[str]:
         return [f"Write {cs.ORCHESTRATOR_EXTRACTION_FILE} (in {ctx.rel(out)}/) first: it declares the orchestrator "
                 "module (or that there is none), which the check needs"]
     if module_decl is None and declaration.get("orchestrator") != "none":
-        return [f"{cs.MODULE_EXTRACTION_FILE} of the Module in monolith step is missing: it says where the domain "
-                "module is"]
+        return [blocker(f"{cs.MODULE_EXTRACTION_FILE} of the Module in monolith step is missing: it says where the domain "
+                "module is")]
     return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, declaration, module_decl, design,
                  ctx.ownership, ctx.domain, (finder or {}).get("god_modules"))
 
