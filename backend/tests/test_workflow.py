@@ -35,11 +35,11 @@ def test_happy_path_runs_every_stage_and_gate(client):
     assert {s["stage"] for s in run["stages"]} == {
         "as_is_doc", "deep_dive", "gate_analysis", "domain_dependencies", "linked_domain_contracts",
         "domain_design", "orchestrator_design", "integration_design", "gate_design", "modular_monolith",
-        "monolith_orchestrator", "microservice_scaffold", "orchestrator_service", "independent_tests", "gate_tests", "modernise", "monolith_integration",
+        "monolith_orchestrator", "microservice_scaffold", "orchestrator_service", "independent_tests", "gate_tests", "modernise", "service_tests", "monolith_integration",
         "gate_release"}
     assert all(s["status"] in ("completed", "approved") for s in run["stages"])
     names = [a["name"] for a in client.get(f"/api/runs/{run_id}/artifacts").json()]
-    assert len([n for n in names if n.endswith(".md")]) == 14  # one document per agent stage
+    assert len([n for n in names if n.endswith(".md")]) == 15  # one document per agent stage
     assert {"cross-domain.yaml", "domain-dependencies.yaml", "integration-decisions.yaml"} <= set(names)
     assert not Path(run["workspace"]).exists()  # a completed run's workspace is removed from the server
 

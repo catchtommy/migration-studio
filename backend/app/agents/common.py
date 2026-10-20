@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from app import (boundary_check, contracts_store, discovery_store, module_guardrails, orchestrator_guardrails,
-                 orchestrator_service_guardrails, service_guardrails)
+                 orchestrator_service_guardrails, release_guardrails, service_guardrails, test_guardrails)
 from app.agents.base_agent import AgentContext, ArtifactOut
 from app.agents.tools import ToolError, Toolbox
 
@@ -191,26 +191,36 @@ def run_tool(ctx: AgentContext, toolbox: Toolbox, name: str, args: object) -> tu
         return f"{type(e).__name__}: {e}", True
 
 
+def required_checks(ctx: AgentContext) -> set[str]:
+    """The checks an agent must pass: those it is configured with, and always a built-in agent's own guardrails
+    (they can't be switched off on the Agents page)."""
+    from app.agents.defaults import _CHECKS
+
+    return set(ctx.config.get("checks") or []) | set(_CHECKS.get(ctx.stage, []))
+
+
 def verify(ctx: AgentContext) -> list[str]:
     """Everything that must be fixed before the agent may finish: missing required documents, invalid cross-domain
-    or discovery YAML, and (for agents configured with the boundary check) references to other domains' packages or
-    tables."""
+    or discovery YAML, and the guardrail checks the agent must pass (required_checks)."""
     out_dir = ctx.rel(ctx.output_dir)
+    checks = required_checks(ctx)
     problems = [f"Required document `{out_dir}/{o}` has not been written yet."
                 for o in ctx.config["outputs"] if not (ctx.output_dir / o).is_file()]
     problems += contracts_store.validate_outputs(ctx.output_dir)
     problems += contracts_store.domain_design_ownership_problems(ctx.output_dir, ctx.domain, ctx.ownership)
     problems += discovery_store.validate_outputs(ctx.output_dir)
-    if "boundary" in (ctx.config.get("checks") or []):
+    if "boundary" in checks:
         problems += [f"Boundary: {v}" for v in boundary_check.check(ctx.workspace, ctx.domain, ctx.service_dir,
                                                                       ctx.ownership)]
-    if "module_guardrails" in (ctx.config.get("checks") or []):
+    if "module_guardrails" in checks:
         problems += [f"Guardrail: {p}" for p in module_guardrails.for_context(ctx)]
-    if "orchestrator_guardrails" in (ctx.config.get("checks") or []):
+    if "orchestrator_guardrails" in checks:
         problems += [f"Guardrail: {p}" for p in orchestrator_guardrails.for_context(ctx)]
-    if "orchestrator_service_guardrails" in (ctx.config.get("checks") or []):
+    if "orchestrator_service_guardrails" in checks:
         problems += [f"Guardrail: {p}" for p in orchestrator_service_guardrails.for_context(ctx)]
-    if "service_guardrails" in (ctx.config.get("checks") or []):
+    problems += [f"Guardrail: {p}" for p in test_guardrails.for_context(ctx, sorted(checks))]
+    problems += [f"Guardrail: {p}" for p in release_guardrails.for_context(ctx, sorted(checks))]
+    if "service_guardrails" in checks:
         problems += [f"Guardrail: {p}" for p in service_guardrails.for_context(ctx)]
     return problems
 

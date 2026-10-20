@@ -25,7 +25,8 @@ LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
                   "_added_modulith_design_agents": ["domain_dependencies", "domain_design",
                                                     "wrapper_design", "orchestrator_design"],
                   "_added_monolith_orchestrator": ["monolith_orchestrator"],
-                  "_added_orchestrator_service": ["orchestrator_service"]}
+                  "_added_orchestrator_service": ["orchestrator_service"],
+                  "_added_service_tests": ["service_tests"]}
 
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
@@ -71,7 +72,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "50062f4c3b3dcc7aab9e4ace195d0134977a341a4a81a22518962ed7f87474c2",
         "22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
                               "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5"},
-    "independent_tests": {"8a7b319eb255ecea335e60322b4e11c207a2c23e3e698999b749ea81f442b27a",
+    "independent_tests": {"10597691f0c0608c4b73927a597d8a9e39fdbd6997549ceb0b35976375a005da",
+                          "8a7b319eb255ecea335e60322b4e11c207a2c23e3e698999b749ea81f442b27a",
                           "97d564115dc60807860254fee3ecfa541ca999e29cf9870d487a5efe93031f02",
                           "4b1b34967d2944c200b2b4bd8c0a81768cd6292da94cac47c000f9ba30d0de8e",
                           "d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
@@ -81,7 +83,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                               "775065ebf6599df3036965a91a20399a3bc78702ef5ac7ae7f8b1a107ed59c21",
                               "869be47dce9dcbb7f70c95cf4c4ab19d00772b4b0c5851c71c9e23c481319145",
                               "c2ad8fdcb1f1c9011741b780496fed42b80971e5d67bd0ba1c8a1d1402270ba1"},
-    "modernise": {"3a97d57409eb272a0311e1bc55d47da3fa1ccf655e303b135937d7e3f8734366",
+    "modernise": {"f5199989f39ae16646acbf79d9c246d424fb9d507aeadc12217647c63b70aa41",
+                  "3a97d57409eb272a0311e1bc55d47da3fa1ccf655e303b135937d7e3f8734366",
                   "a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457"},
     "modular_monolith": {"ae6adcee76691ce042b38a21231c497ea4ff3dcf880fa94905f5c0098571bfde",
                          "496c048b744624038c78d0318f8576b486700d5936d2a2b60215dde6e2bdab5a",
@@ -100,7 +103,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v15"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v16"
+GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.
@@ -144,8 +148,9 @@ def seed() -> None:
             _models_to_auto(s)
             _add_later_builtins(s)
             _upgrade_untouched_builtins(s)
+            _add_guardrails(s)
             return
-        for marker in [*LATER_BUILTINS, UPGRADE_MARKER]:  # a fresh database gets the current built-ins below
+        for marker in [*LATER_BUILTINS, UPGRADE_MARKER, GUARDRAILS_MARKER]:  # a fresh database: the current built-ins
             s.add(Setting(key=marker, value=True))
         legacy = _legacy_configs()
         old_settings = {row.key: row.value for row in s.query(Setting).filter(
@@ -193,6 +198,19 @@ def _upgrade_untouched_builtins(s) -> None:
             if key in MORE_TURNS:
                 row.max_turns = max(row.max_turns, current["max_turns"])
     s.add(Setting(key=UPGRADE_MARKER, value=True))
+
+
+def _add_guardrails(s) -> None:
+    """Once per release: give every built-in agent its current guardrail tools and checks, edited or not (only added,
+    never removed). The checks are enforced anyway (common.required_checks); the tools let the agent check itself."""
+    if s.get(Setting, (GLOBAL, GUARDRAILS_MARKER)) is not None:
+        return
+    for row in s.scalars(select(Agent).where(Agent.key.in_(BUILTIN))):
+        current = default_config(row.key)
+        guard = [t for t in current["tools"] if t.startswith("check_")]
+        row.tools = [*row.tools, *(t for t in guard if t not in row.tools)]
+        row.checks = [*(row.checks or []), *(c for c in current["checks"] if c not in (row.checks or []))]
+    s.add(Setting(key=GUARDRAILS_MARKER, value=True))
 
 
 def _models_to_auto(s) -> None:

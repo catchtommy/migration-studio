@@ -113,6 +113,8 @@ class AgentContext:
     # A restart from a completed stage: update this stage's previous documents (paths below) instead of starting over.
     refresh: bool = False
     previous_outputs: list[str] = field(default_factory=list)
+    # Documents of steps a gate before this one approved: this step may read them but not change them.
+    locked_documents: set[str] = field(default_factory=set)
     # Asks a person a question (with optional suggested answers) and blocks until it is answered.
     ask: Callable[[str, list[str] | None], str] = lambda question, options=None: ""
 

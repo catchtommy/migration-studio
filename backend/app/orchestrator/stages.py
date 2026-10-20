@@ -117,18 +117,22 @@ STANDARD = Workflow((
              "service. It calls the domain microservice and the other domains over their APIs, and holds no "
              "database."),
     StageDef("independent_tests", "Independent tests", "agent",
-             "Contract, integration and characterization tests covering every scenario."),
+             "A black-box acceptance suite for every scenario, in its own module of the domain service's repository: "
+             "it calls the running service over HTTP, so it runs unchanged before and after modernisation."),
     StageDef("gate_tests", "Approve tests", "gate",
              "Review the module, microservice and scenario coverage.",
              ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service",
               "independent_tests")),
     StageDef("modernise", "Modernisation", "agent",
              "Java 25, Spring Boot 4, iBatis → Spring Data JPA on the existing tables, code improvements."),
+    StageDef("service_tests", "Service tests", "agent",
+             "JUnit 5 unit and integration tests on the modernised service (Spring Boot test slices, the existing "
+             "schema). Adds tests only."),
     StageDef("monolith_integration", "Monolith integration", "agent",
              "REST client and feature flag in the monolith to switch between module and microservice."),
     StageDef("gate_release", "Approve release", "gate",
-             "Final review of the modernised service and monolith integration.",
-             ("modernise", "monolith_integration")),
+             "Final review of the modernised service, its service tests and the monolith integration.",
+             ("modernise", "service_tests", "monolith_integration")),
 ))
 
 BOUNDED_CONTEXTS = Workflow((

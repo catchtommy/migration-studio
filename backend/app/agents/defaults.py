@@ -21,6 +21,11 @@ TOOLS = {
                                "call-site and wiring edits outside the new modules",
     "check_orchestrator_guardrails": "Check the orchestrator module against its limits: no database access or "
                                      "transactions, domain module unchanged, only call-site and wiring edits outside it",
+    "check_release_guardrails": "Check the modernised service (same schema, Java 25 on Spring Boot 4, no secrets) or "
+                                "the monolith integration (no UI, DDL or SQL change, only an HTTP client and Service "
+                                "Bus added, modules unchanged)",
+    "check_test_guardrails": "Check that a test step only adds tests where it may: the acceptance suite's folder, or "
+                             "test sources and test-scoped dependencies; and that the acceptance suite is unchanged",
     "check_orchestrator_service_guardrails": "Check the orchestrator service against its limits: no database of any "
                                              "kind, monolith untouched, orchestrator code copied unchanged, Java 25 "
                                              "and Spring Boot, exactly the declared operations",
@@ -29,7 +34,9 @@ READ_ONLY = ["list_files", "read_file", "search_code", "ask_user"]
 DOCS = [*READ_ONLY, "write_file"]
 CODE = [*READ_ONLY, "write_file", "edit_file", "run_command", "check_boundaries"]
 CHECKS = ("boundary", "module_guardrails", "orchestrator_guardrails", "service_guardrails",
-          "orchestrator_service_guardrails")  # verifications an agent can be configured to pass before it may finish
+          "orchestrator_service_guardrails", "acceptance_test_guardrails", "acceptance_suite_unchanged",
+          "service_test_guardrails", "modernise_guardrails", "integration_guardrails")
+TEST_CHECKS = ("acceptance_test_guardrails", "acceptance_suite_unchanged", "service_test_guardrails")  # verifications an agent can be configured to pass before it may finish
 
 # Machine-readable files the cross-domain stages produce. Migration Studio validates them before the agent finishes
 # and records the decisions and contracts in its catalogue when the design is approved.
@@ -968,28 +975,47 @@ record it.
 ### Known limitations: no authentication, internal network only
 ### Rollback: delete the service repository branch; the monolith is unchanged""",
 
-    "independent_tests": f"""You write tests that prove the microservice behaves the same as the original code, for \
-every scenario in the deep dive's `test-scenarios.md`. The in-monolith module is the reference: the Module in \
-monolith step's characterization tests pin its behaviour, so a scenario they cover is covered there and needs the \
-same outcome from the service. Write the tests in the repository this step changes (its Changes code setting).
+    "independent_tests": f"""You write the acceptance suite of the domain service: black-box tests that prove the \
+microservice behaves the same as the original code, for every scenario in the deep dive's `test-scenarios.md`. The \
+suite only talks to the running service (over HTTP) and to the database, never to its classes, so it runs unchanged \
+against the service as it is now and again after the modernisation step has rewritten it: it is written once. The \
+in-monolith module is the reference: the Module in monolith step's characterization tests pin its behaviour, so a \
+scenario they cover needs the same outcome from the service.
 
-- Contract tests against the OpenAPI document, including the REST rules: 201 for POST and 200 otherwise, \
+Hard rules for this step. A tool (`check_test_guardrails`) checks them against git, and the step cannot finish while \
+it fails.
+- Change code only in the domain service's repository (this step's Changes code setting), and there only in the \
+`acceptance-tests/` folder: a Maven project of its own, not a module the service's build includes. The service's \
+code, build and tests are not changed. The orchestrator service is not tested here: its own step tests it.
+- Black-box only: the suite never depends on or imports the service's classes or packages. It reaches the service \
+through its base URL (`-Dservice.url`, default `http://localhost:8080`) and the database through JDBC \
+(`-Dtest.db.url`, `-Dtest.db.user`, `-Dtest.db.password`).
+- The same suite builds on the toolchain of this step (the service's, Java 8) and on the modernised service's \
+(Java 25): Java 8 language features only, libraries that support Java 8 (JUnit 5, REST Assured, WireMock 2, the \
+database's JDBC driver), and the compiler level chosen by JDK-activated profiles in its POM (`1.8` on JDK 8, \
+`release 17` on newer JDKs, which may no longer compile for Java 8).
+- Never delete, ignore or weaken a test.
+
+What the suite covers:
+- Contract tests against the domain's `openapi.yaml`, including the REST rules: 201 for POST and 200 otherwise, \
 {{"status": "Success"}} where nothing is returned, the request and response headers, and the error body (with \
 `errors` only for a 400).
-- When the feature has an orchestrator service (`orchestrator-service-extraction.yaml`), contract tests against \
-`orchestrator-openapi.yaml`, and tests that each of its operations makes the calls of the orchestrator design in \
-order, against stubs of the domain service and the contracts.
-- Contract tests for each cross-domain dependency: stub providers generated from their OpenAPI contracts (e.g. \
-WireMock) and checks that published events match their AsyncAPI contracts.
-- Integration tests against the existing schema, using the test database the environment configures. If none is \
-configured, write them anyway, mark them as needing a database, and say so in the report.
-- Characterisation tests that pin down current behaviour, including odd edge cases.
-- Run the tests and report results. A failing test that exposes a real behaviour difference is a finding: \
-report it rather than weakening the test.
+- The scenarios of `test-scenarios.md`, each test named or tagged with its scenario id, checking the response and \
+the rows the call leaves in the existing schema.
+- The other domains the service calls, stubbed with WireMock from their OpenAPI contracts on ports the suite \
+chooses, the service configured to call them there; and checks that the events the service publishes match their \
+AsyncAPI contracts.
+- Tests that need the database are tagged `database`. When no test database is configured they cannot run: say so \
+in the report rather than skipping them silently.
 
-Write `test-report.md`: every scenario id with the tests that cover it (in the service, and in the module's \
-characterization tests), the results of the run, any behaviour difference found, and every scenario you could not \
-cover and why.""",
+Procedure: write the suite; build the service and start it (`java -jar`) with the other domains stubbed; run the \
+suite against it (`mvn -f acceptance-tests/pom.xml verify -Dservice.url=...`); run `check_test_guardrails`. A failing \
+test that exposes a real behaviour difference is a finding: report it rather than weakening the test or changing \
+the service.
+
+Write `test-report.md`: how to run the suite; every scenario id with the tests that cover it (in the suite, and in \
+the module's characterization tests); the results of the run against the service as it is now (the baseline the \
+modernisation step must keep); any behaviour difference found; and every scenario you could not cover and why.""",
 
     "modernise": """You modernise the microservice to Java 25 and Spring Boot 4, replacing iBatis with Spring Data JPA \
 mapped onto the existing tables (no schema changes).
@@ -999,11 +1025,44 @@ mapped onto the existing tables (no schema changes).
 manages the schema (`spring.jpa.hibernate.ddl-auto=none`), and entities map the existing tables and columns as they \
 are.
 - Keep the REST contract (including its REST rules: status codes, error body and headers) and the cross-domain \
-contracts unchanged. All independent tests must still pass; run them.
+contracts unchanged.
+- The acceptance suite in `acceptance-tests/` (written by the Independent tests step, see `test-report.md`) is the \
+proof that behaviour is unchanged: run it, unchanged, against the modernised service; every test that passed before \
+must still pass. Never change anything under `acceptance-tests/`: a check refuses it. Migrate the service's own unit \
+tests to the new stack (the Service tests step adds new ones afterwards).
 - Run check_boundaries and fix every violation.
 
 Write `modernisation.md`: the changes, every query whose SQL differs from the iBatis statement it replaces (and why \
-the result is the same), and the test results.""",
+the result is the same), and the results of the acceptance suite next to its baseline in `test-report.md`.""",
+
+    "service_tests": f"""You add the unit and integration tests of the modernised domain service (Java 25, Spring Boot \
+4, Spring Data JPA on the existing tables): written once, on the code that stays. You change no production code.
+
+Hard rules for this step. A tool (`check_test_guardrails`) checks them against git, and the step cannot finish while \
+it fails.
+- Change code only in the domain service's repository (this step's Changes code setting), and there only test \
+sources and resources (`src/test/`) and test-scoped dependencies in its POM (`<scope>test</scope>`). Never change \
+production code, its configuration, or anything under `acceptance-tests/`.
+- Never delete, ignore or weaken a test. A test that exposes a bug is a finding: report it, and do not fix the \
+production code here.
+- Libraries: JUnit 5, Mockito, AssertJ and Spring Boot's test support (`spring-boot-starter-test`), Testcontainers \
+for the database. Anything else: stop and ask.
+
+What to test:
+- Controllers with `@WebMvcTest`: every operation of `openapi.yaml`, with the REST rules (201 for POST and 200 \
+otherwise, {{"status": "Success"}} where nothing is returned, the error body for each error, the request headers read \
+and the response headers echoed).
+- Repositories with `@DataJpaTest` against the existing schema: Testcontainers with the project's database when \
+Docker is available, otherwise the test database the environment configures; the schema is never created or changed \
+by the tests (`spring.jpa.hibernate.ddl-auto=none` or `validate`). Each query the modernisation step rewrote \
+(`modernisation.md`) gets a test of its result.
+- Services with Mockito: each business rule and error branch of `deep-dive.md`, named after the scenario ids of \
+`test-scenarios.md` they cover.
+- The adapters to other domains, against a stub of their contract.
+
+Run the service's whole test build, and the acceptance suite in `acceptance-tests/` against the running service; \
+run `check_test_guardrails`. Write `service-tests.md`: the tests added (by layer), the scenario ids each covers, the \
+results, the coverage of the code the feature moved, and any finding.""",
 
     "monolith_integration": f"""You connect the monolith to the new microservice behind a feature flag. {_LEGACY}
 
@@ -1087,6 +1146,7 @@ OUTPUTS = {
     "microservice_scaffold": ["microservice.md", "microservice-extraction.yaml"],
     "orchestrator_service": ["orchestrator-service.md", "orchestrator-service-extraction.yaml"],
     "independent_tests": ["test-report.md"],
+    "service_tests": ["service-tests.md"],
     "modernise": ["modernisation.md"],
     "monolith_integration": ["integration.md"],
     "bounded_contexts": ["bounded-contexts.md", "bounded-contexts.yaml"],
@@ -1095,18 +1155,25 @@ OUTPUTS = {
 
 _FORMAT_NOTE = ("A machine-readable format the studio validates the step's output against. Change it "
                 "only together with the code that reads it.")
-_MODERN_JDK = {"modernise", "monolith_integration", "orchestrator_service"}
+_MODERN_JDK = {"modernise", "monolith_integration", "orchestrator_service", "service_tests"}
 _ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "linked_domain_contracts", "domain_design",
              "wrapper_design", "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts",
              "domain_features"}
 _GUARDRAIL_TOOLS = {"modular_monolith": ["check_module_guardrails"],
                     "monolith_orchestrator": ["check_orchestrator_guardrails"],
                     "microservice_scaffold": ["check_service_guardrails"],
-                    "orchestrator_service": ["check_orchestrator_service_guardrails"]}
+                    "orchestrator_service": ["check_orchestrator_service_guardrails"],
+                    "independent_tests": ["check_test_guardrails"],
+                    "modernise": ["check_test_guardrails", "check_release_guardrails"],
+                    "service_tests": ["check_test_guardrails"],
+                    "monolith_integration": ["check_release_guardrails"]}
 _CHECKS = {"modular_monolith": ["module_guardrails"], "monolith_orchestrator": ["orchestrator_guardrails"],
            "microservice_scaffold": ["boundary", "service_guardrails"],
            "orchestrator_service": ["boundary", "orchestrator_service_guardrails"],
-           "modernise": ["boundary"]}
+           "independent_tests": ["acceptance_test_guardrails"],
+           "modernise": ["boundary", "acceptance_suite_unchanged", "modernise_guardrails"],
+           "service_tests": ["service_test_guardrails"],
+           "monolith_integration": ["integration_guardrails"]}
 
 
 # The texts below are only the defaults the database is seeded with (app/shared_texts.py): agents read them from the

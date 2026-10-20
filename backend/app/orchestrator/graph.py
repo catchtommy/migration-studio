@@ -5,6 +5,7 @@ A gate resumes with {"decision": "approve"} or {"decision": "reject", "target_st
 Rejection rolls the workspace back to where the target stage started and re-runs from there with the comments.
 """
 
+import subprocess
 from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
@@ -89,6 +90,44 @@ def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef) -> lis
             for (source, path), content in sorted(docs.items(), key=lambda d: (sources.index(d[0][0]), d[0][1]))]
 
 
+def _locked_documents(workflow: Workflow, run_id: str, stage: StageDef) -> set[str]:
+    """The documents of the steps a gate before this one approved (their latest attempt): this step may not change
+    them, so what was approved stays what was approved."""
+    position = workflow.keys.index(stage.key)
+    approved = {r for g in workflow.stages[:position] if g.kind == "gate" for r in g.reviews} - {stage.key}
+    if not approved:
+        return set()
+    with session_scope() as s:
+        rows = s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage.in_(approved))).all()
+        latest = {}
+        for a in rows:
+            latest[a.stage] = max(latest.get(a.stage, 0), a.attempt)
+        return {a.path for a in rows if a.attempt == latest[a.stage]}
+
+
+def _back_to(path: Path, branch: str, sha: str) -> None:
+    """Put a repository back on the run's branch at `sha`, whatever branch an agent left it on."""
+    current = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], cwd=path, capture_output=True,
+                             text=True).stdout.strip()
+    if current != branch:
+        git_ops.git(path, "checkout", "--quiet", "--force", "-B", branch, sha)
+    git_ops.reset_hard(path, sha)
+
+
+def _repo_left(ws: Path, path: Path, branch: str, start: str) -> str | None:
+    """Why a step's repository is not where a step may leave it, or None: still on the run's feature branch, with the
+    commit the step started from in its history (an agent commits on top, or reverts; it never moves or rewrites)."""
+    name = subprocess.run(["git", "symbolic-ref", "--quiet", "--short", "HEAD"], cwd=path, capture_output=True,
+                          text=True).stdout.strip()
+    root = ws.resolve()
+    where = path.resolve().relative_to(root).as_posix() if path.resolve() != root else "the workspace root"
+    if name != branch:
+        return f"{where} is on {name or 'a detached HEAD'}, not the run's branch {branch}"
+    if subprocess.run(["git", "merge-base", "--is-ancestor", start, "HEAD"], cwd=path).returncode != 0:
+        return f"{where} no longer has the commit the step started from ({start[:10]}): its history was rewritten"
+    return None
+
+
 def _previous_outputs(run_id: str, stage: str) -> list[str]:
     """The documents of the stage's latest completed attempt, for a re-run that updates them."""
     with session_scope() as s:
@@ -142,12 +181,13 @@ def _repository_notes(nested: list[dict]) -> list[dict]:
     return [{"key": r["key"], "url": r["url"], "path": r["path"], "base_branch": r.get("base_branch")} for r in nested]
 
 
-def _undo_code_changes(ws: Path, start_sha: str, nested: list[dict], nested_starts: dict[str, str]) -> list[str]:
-    """Put the workspace's code (the root and the run's other repositories) back as it was when a step started,
-    keeping its documents (which git ignores); returns the paths that had changed."""
+def _undo_code_changes(ws: Path, start_sha: str, nested: list[dict], nested_starts: dict[str, str],
+                       include_root: bool = True) -> list[str]:
+    """Put the workspace's code (the root, unless not `include_root`, and the given repositories of the run) back as
+    it was when a step started, keeping its documents (which git ignores); returns the paths that had changed."""
     undone = []
-    for prefix, path, sha in [("", ws, start_sha)] + [(r["path"] + "/", ws / r["path"], nested_starts[r["key"]])
-                                                     for r in nested if r["key"] in nested_starts]:
+    for prefix, path, sha in [("", ws, start_sha)] * include_root + [
+            (r["path"] + "/", ws / r["path"], nested_starts[r["key"]]) for r in nested if r["key"] in nested_starts]:
         changed = git_ops.git(path, "diff", "--name-only", sha).splitlines()
         changed += git_ops.git(path, "ls-files", "--others", "--exclude-standard").splitlines()
         if changed or git_ops.head(path) != sha:
@@ -225,6 +265,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             legacy=legacy_info, legacy_dir=legacy.path_for(_project_of(run_id), legacy_info, started_by),
             ask=lambda question, options=None: questions.ask(run_id, stage.key, attempt, question, options),
             refresh=refresh, previous_outputs=_previous_outputs(run_id, stage.key) if refresh else [],
+            locked_documents=_locked_documents(workflow, run_id, stage),
         )
         try:
             if config is None:
@@ -238,12 +279,25 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
                                    "current settings and asks for that repository's branches")
             else:
                 outputs = get_agent(stage.key, config, settings["ai_provider"]).run(ctx)
+            if stage.code and not skipped:  # the step's repository: still on the branch, its history kept
+                with session_scope() as s:
+                    branch = s.get(Run, run_id).branch
+                own = (ws / code_dir).resolve()
+                start = start_sha if own == ws.resolve() else next(
+                    (nested_starts[r["key"]] for r in nested if (ws / r["path"]).resolve() == own), None)
+                problem = start and _repo_left(ws, own, branch, start)
+                if problem:
+                    raise RuntimeError(f"{problem}. A step commits on top of the branch (or reverts its own commits) "
+                                       "and never switches branches or rewrites history; its changes were undone")
         except Exception as e:
             workspace.clear_documents(ws)
-            git_ops.reset_hard(ws, start_sha)  # leave clean trees for the retry
+            with session_scope() as s:
+                branch = s.get(Run, run_id).branch
+            # Clean trees for the retry, on the run's branch (an agent may have switched to another one).
+            _back_to(ws, branch, start_sha)
             for r in nested:
                 if r["key"] in nested_starts:
-                    git_ops.reset_hard(ws / r["path"], nested_starts[r["key"]])
+                    _back_to(ws / r["path"], branch, nested_starts[r["key"]])
             with session_scope() as s:
                 ex = s.get(StageExecution, exec_id)
                 ex.status, ex.error, ex.finished_at = "failed", str(e), utcnow()
@@ -256,6 +310,15 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
                 emit(run_id, "log", f"{stage.title} writes documents only, so its changes to code were undone: "
                                     f"{', '.join(undone[:20])}{f' and {len(undone) - 20} more' if len(undone) > 20 else ''}",
                      stage.key)
+        else:  # a step changes code in its own repository only: changes to the run's others are undone
+            own = (ws / code_dir).resolve()
+            others = [r for r in nested if (ws / r["path"]).resolve() != own]
+            undone = _undo_code_changes(ws, start_sha, others, nested_starts) if own != ws.resolve() else \
+                _undo_code_changes(ws, start_sha, others, nested_starts, include_root=False)
+            if undone:
+                emit(run_id, "log", f"{stage.title} changes code in {code_dir if code_dir != '.' else 'the monolith'} "
+                                    f"only, so its changes elsewhere were undone: {', '.join(undone[:20])}"
+                                    f"{f' and {len(undone) - 20} more' if len(undone) > 20 else ''}", stage.key)
 
         message = f"[{stage.key}] {discovery_store.subject(state['domain'], state['operation'])} attempt {attempt}"
         end_sha = git_ops.commit_all(ws, message)
@@ -268,6 +331,11 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             nested_changes[r["key"]] = {"start": start, **({"end": end, "diff": git_ops.diff(path, start, end, binary=True)}
                                                           if end != start else {})}
         outputs = _documents(ws, outputs, docs_dir(domain, state["operation"]), before_docs)
+        kept_back = sorted(out.path for out in outputs if out.path in ctx.locked_documents)
+        if kept_back:  # changed some other way than the file tools: the approved version stays
+            outputs = [out for out in outputs if out.path not in ctx.locked_documents]
+            emit(run_id, "log", f"{stage.title} may not change documents a gate approved, so its changes to "
+                                f"{', '.join(kept_back)} were not kept", stage.key)
         contents = {out.path: (ws / out.path).read_text(encoding="utf-8") for out in outputs}
         workspace.clear_documents(ws)  # stored in the database below; not kept on disk
         with session_scope() as s:

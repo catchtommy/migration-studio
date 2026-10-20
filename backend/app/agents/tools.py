@@ -1,12 +1,13 @@
 """Tools the Claude stage agents use on the run workspace. Paths are relative to the workspace and cannot leave it."""
 
 import os
+import re
 import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 
 from app import (boundary_check, module_guardrails, orchestrator_guardrails, orchestrator_service_guardrails,
-                 service_guardrails)
+                 release_guardrails, service_guardrails, test_guardrails)
 from app.text import decode, decode_with, encode_like
 from app.agents.base_agent import DOCS_ROOT, AgentContext
 
@@ -89,6 +90,24 @@ SCHEMAS: dict[str, dict] = {
                        "it after every step and before finishing. Needs orchestrator-service-extraction.yaml.",
         "input_schema": _obj({}, []),
     },
+    "check_test_guardrails": {
+        "description": "Check everything you changed in the service's repository since this step started against the "
+                       "test step's limits: the Independent tests step changes only the acceptance suite in "
+                       "acceptance-tests/ (black-box: no import of the service's code, a build of its own); the "
+                       "Modernisation step leaves acceptance-tests/ unchanged; the Service tests step changes only "
+                       "test sources (src/test/) and adds only test-scoped dependencies. The monolith stays untouched "
+                       "and no test is disabled. Run it before finishing.",
+        "input_schema": _obj({}, []),
+    },
+    "check_release_guardrails": {
+        "description": "Check everything you changed since this step started against the release step's limits. "
+                       "Modernisation: the schema unchanged (no DDL, schema scripts, Flyway or Liquibase; Hibernate's "
+                       "ddl-auto none or validate), Java 25 on Spring Boot 4, no secrets, no test disabled, the "
+                       "monolith untouched. Monolith integration: no UI, DDL or SQL change, only an HTTP client and "
+                       "the Azure Service Bus SDK added to the build, the domain and orchestrator modules unchanged, "
+                       "no secrets, no test deleted or disabled. Run it before finishing.",
+        "input_schema": _obj({}, []),
+    },
     "check_service_guardrails": {
         "description": "Check everything you changed in the service repository since this step started against the "
                        "step's limits: the monolith untouched, the copied code equal to the module's apart from "
@@ -134,6 +153,35 @@ def validate(name: str, args: object) -> dict:
 
 # Environment variables a language's tools look for, pointed at the configured toolchain.
 TOOLCHAIN_VARS = {"java": ["JAVA_HOME"], "csharp": ["DOTNET_ROOT"]}
+# What commands an agent runs inherit from the server's environment: what builds need, never its secrets (API keys,
+# database passwords, tokens). Anything not listed here is left out.
+COMMAND_ENV = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "TMPDIR", "TEMP", "TMP", "TZ",
+               "JAVA_HOME", "MAVEN_HOME", "M2_HOME", "MAVEN_OPTS", "GRADLE_HOME", "GRADLE_USER_HOME", "DOTNET_ROOT",
+               "NUGET_PACKAGES", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+               "SYSTEMROOT", "COMSPEC", "PATHEXT", "WINDIR", "APPDATA", "LOCALAPPDATA", "USERPROFILE",
+               "PROGRAMFILES", "PROGRAMDATA"}
+# Git commands that reach beyond the step's own commits: publishing, remotes, configuration, rewriting refs or
+# history. The run commits and pushes through the review, never from an agent.
+FORBIDDEN_GIT = re.compile(
+    r"\bgit\b(?:\s+(?:-[cC]\s+\S+|--\S+))*\s+(?:push|remote|config|filter-branch|filter-repo|update-ref|symbolic-ref|"
+    r"replace|reflog|gc|prune|worktree|submodule|credential|send-email|branch\s+(?:-[dDmMcC]|--(?:delete|move|copy))|"
+    r"checkout\s+(?:-[bB]|--orphan)|switch\b|rebase|commit\s+(?:.*\s)?--amend|tag\b)")
+
+
+# The guardrail checks that compare with git from the commit the step started from (and the monolith's, for the
+# steps that change another repository).
+GIT_CHECK_TOOLS = {"check_module_guardrails", "check_orchestrator_guardrails", "check_service_guardrails",
+                   "check_orchestrator_service_guardrails", "check_test_guardrails", "check_release_guardrails"}
+GIT_CHECKS = {"module_guardrails", "orchestrator_guardrails", "service_guardrails", "orchestrator_service_guardrails",
+              "acceptance_test_guardrails", "acceptance_suite_unchanged", "service_test_guardrails",
+              "modernise_guardrails", "integration_guardrails"}
+MONOLITH_CHECKS = {"service_guardrails", "orchestrator_service_guardrails", "acceptance_test_guardrails",
+                   "service_test_guardrails", "modernise_guardrails"}
+
+
+def command_env() -> dict[str, str]:
+    """The server's environment, reduced to what builds need (COMMAND_ENV, LC_*)."""
+    return {k: v for k, v in os.environ.items() if k in COMMAND_ENV or k.startswith("LC_")}
 
 
 def toolchain_env(env: dict[str, str], home: str | None, language: str) -> dict[str, str]:
@@ -157,11 +205,13 @@ class Toolbox:
         # A step not set to change code (Workflows page) writes its documents and nothing else.
         self.docs_only = ctx.stage_def is not None and not ctx.stage_def.code
         tools = ctx.config.get("tools", [])
-        if ctx.base_sha is None and {"check_module_guardrails", "check_orchestrator_guardrails",
-                                     "check_service_guardrails", "check_orchestrator_service_guardrails"} & set(tools):
+        from app.agents.defaults import _CHECKS
+        checks = set(ctx.config.get("checks") or []) | set(_CHECKS.get(ctx.stage, []))  # as common.required_checks
+        if ctx.base_sha is None and (GIT_CHECK_TOOLS & set(tools) or GIT_CHECKS & checks):
             ctx.base_sha = module_guardrails.head(self.root / ctx.code_dir)
-        if ctx.monolith_sha is None and {"check_service_guardrails", "check_orchestrator_service_guardrails"} & set(tools) \
-                and ctx.code_dir not in (".", ""):
+        if ctx.monolith_sha is None and ctx.code_dir not in (".", "") and (
+                {"check_service_guardrails", "check_orchestrator_service_guardrails", "check_test_guardrails",
+                 "check_release_guardrails"} & set(tools) or MONOLITH_CHECKS & checks):
             ctx.monolith_sha = module_guardrails.head(self.root)  # the monolith checkout the service copies from
 
     def run(self, name: str, args: dict) -> str:
@@ -189,7 +239,19 @@ class Toolbox:
 
     def _write_path(self, path: str) -> Path:
         p = self._resolve(path)
-        if self.docs_only and not p.is_relative_to(self.root / DOCS_ROOT):
+        rel = self._rel(p)
+        if rel in self.ctx.locked_documents:
+            raise ToolError(f"{path} is a document a gate has already approved; this step may read it but not "
+                            "change it. Write your own documents, and raise what should change with ask_user")
+        docs = p.is_relative_to(self.root / DOCS_ROOT)
+        if not docs and not self.docs_only:
+            code = (self.root / self.ctx.code_dir).resolve()
+            nested = self.root / ".studio"
+            if not p.is_relative_to(code) or (code == self.root and p.is_relative_to(nested)):
+                where = "the monolith" if code == self.root else self.ctx.code_dir
+                raise ToolError(f"{path} is outside the repository this step changes ({where}); the run's other "
+                                "repositories are changed by their own steps")
+        if self.docs_only and not docs:
             raise ToolError(f"{path} is code, and this step writes documents only: write under "
                             f"{DOCS_ROOT}/ (your documents folder). To let a step change code, set it to on the "
                             "Workflows page")
@@ -285,7 +347,12 @@ class Toolbox:
         if self.docs_only:
             raise ToolError("This step writes documents only, so it can't run commands (they could change code). "
                             "Read the code with list_files, read_file and search_code")
-        env = toolchain_env(dict(os.environ), self.toolchain_home, self.ctx.settings.get("language") or "java")
+        hit = FORBIDDEN_GIT.search(command) or re.search(r"(?:^|[;&|]\s*)sudo\b", command)
+        if hit:
+            raise ToolError(f"`{hit.group(0).strip()}` is not allowed: an agent commits locally only (git add, commit, "
+                            "revert, restore, reset within this step). Pushing, remotes, configuration and rewriting "
+                            "branches or history are done by the run, through the review")
+        env = toolchain_env(command_env(), self.toolchain_home, self.ctx.settings.get("language") or "java")
         if self.legacy is not None:
             env["STUDIO_LEGACY_DIR"] = str(self.legacy)  # the read-only monolith, for commands that read it
         self.ctx.log(f"$ {command}")
@@ -310,6 +377,14 @@ class Toolbox:
 
     def check_orchestrator_service_guardrails(self) -> str:
         return orchestrator_service_guardrails.report(orchestrator_service_guardrails.for_context(self.ctx))
+
+    def check_test_guardrails(self) -> str:
+        from app.agents.common import required_checks
+        return test_guardrails.report(test_guardrails.for_context(self.ctx, sorted(required_checks(self.ctx))))
+
+    def check_release_guardrails(self) -> str:
+        from app.agents.common import required_checks
+        return release_guardrails.report(release_guardrails.for_context(self.ctx, sorted(required_checks(self.ctx))))
 
     def check_service_guardrails(self) -> str:
         return service_guardrails.report(service_guardrails.for_context(self.ctx))

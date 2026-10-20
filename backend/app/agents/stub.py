@@ -652,7 +652,9 @@ def _sample_code_change(ctx: AgentContext, stage: StageDef) -> None:
     """A step that changes code leaves a small file in its repository, so the review has something to show."""
     if not stage.code:
         return
-    code = ctx.workspace / ctx.code_dir / "studio-stub" / f"{ctx.stage}.txt"
+    # Where the step may change code: the test steps only add tests (app/test_guardrails.py).
+    folder = {"independent_tests": "acceptance-tests/studio-stub", "service_tests": "src/test/studio-stub"}
+    code = ctx.workspace / ctx.code_dir / folder.get(ctx.stage, "studio-stub") / f"{ctx.stage}.txt"
     code.parent.mkdir(parents=True, exist_ok=True)
     code.write_text(f"{stage.title} for {ctx.domain}/{ctx.operation} (stub agent, attempt {ctx.attempt})\n", encoding="utf-8")
     ctx.log(f"[stub] changed code: {ctx.rel(code)}")

@@ -41,8 +41,8 @@ def steps_of(workflow: Workflow) -> list[dict]:
 
 STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → Modulith design (linked-domain contracts, domain, "
                         "orchestrator) → cross-domain integration → module → orchestrator (cross-domain features) → "
-                        "microservice → orchestrator service (when there is an orchestrator) → tests → modernisation "
-                        "→ integration, with four approval gates.")
+                        "microservice → orchestrator service (when there is an orchestrator) → acceptance tests → "
+                        "modernisation → service tests → integration, with four approval gates.")
 
 
 def _shape(steps: list[dict]) -> list[tuple]:
@@ -83,23 +83,33 @@ _STANDARD_V5 = [*_STANDARD_V4[:_STANDARD_V4.index(("agent", "modular_monolith", 
                 ("agent", "independent_tests", ()),
                 ("gate", "gate_tests", ("modular_monolith", "monolith_orchestrator", "microservice_scaffold",
                                         "independent_tests")), *_TAIL[4:]]
+# Sixth release: the orchestrator microservice; tests on the lifted service, no Service tests step yet.
+_STANDARD_V6 = [*_STANDARD_V5[:_STANDARD_V5.index(("agent", "microservice_scaffold", ())) + 1],
+                ("agent", "orchestrator_service", ()), ("agent", "independent_tests", ()),
+                ("gate", "gate_tests", ("modular_monolith", "monolith_orchestrator", "microservice_scaffold",
+                                        "orchestrator_service", "independent_tests")), *_TAIL[4:]]
 # The releases a stored standard workflow (shared, or a project's copy) is brought up from, by marker.
 _RELEASES = (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2),
              ("_standard_workflow_v4", _STANDARD_V3), ("_standard_workflow_v5", _STANDARD_V4),
-             ("_standard_workflow_v6", _STANDARD_V5))
+             ("_standard_workflow_v6", _STANDARD_V5), ("_standard_workflow_v7", _STANDARD_V6))
 # Projects' copies are upgraded from these releases on (copies older than that were never upgraded, so stay as they are).
-_PROJECT_RELEASES = (("_standard_project_copies_v5", _STANDARD_V4), ("_standard_project_copies_v6", _STANDARD_V5))
+_PROJECT_RELEASES = (("_standard_project_copies_v5", _STANDARD_V4), ("_standard_project_copies_v6", _STANDARD_V5),
+                     ("_standard_project_copies_v7", _STANDARD_V6))
 
 
 def _upgraded(steps: list[dict]) -> list[dict]:
     """The current STANDARD, keeping the settings of the stored steps (code, uses, publishing). A step new in this
     release that changes the same code as an earlier one (the orchestrator, after the module) gets its settings."""
     stored = {st["key"]: st for st in steps if st.get("kind") == "agent"}
-    inherit = {"monolith_orchestrator": "modular_monolith"}
+    # A step that changes the same repository as another gets its code settings: new steps, and Independent tests,
+    # which now writes its acceptance suite in the domain service's repository (it could only write documents before).
+    inherit = {"monolith_orchestrator": "modular_monolith", "service_tests": "modernise",
+               "independent_tests": "microservice_scaffold"}
     out = []
     for st in steps_of(STANDARD):
         if st["kind"] == "agent":
-            source = stored.get(st["key"]) or stored.get(inherit.get(st["key"], ""))
+            own = stored.get(st["key"])
+            source = own if own and own.get("code") else stored.get(inherit.get(st["key"], "")) or own
             if source and source.get("code"):
                 st = {**st, "code": source["code"]}
             if st["key"] in stored:

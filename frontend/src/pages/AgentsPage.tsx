@@ -603,6 +603,82 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
               </span>
             </span>
           </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={(form.checks ?? []).includes("acceptance_test_guardrails")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "acceptance_test_guardrails", e.target.checked))}
+            />
+            <span>
+              Acceptance suite guardrails
+              <span className="block text-xs text-subtle">
+                Before finishing, a git comparison must pass: only the acceptance suite in acceptance-tests/ changed, it is black-box (no import of the service's code, a build of its own), the monolith is untouched and no test is disabled.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={(form.checks ?? []).includes("acceptance_suite_unchanged")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "acceptance_suite_unchanged", e.target.checked))}
+            />
+            <span>
+              Acceptance suite unchanged
+              <span className="block text-xs text-subtle">
+                Before finishing, nothing under acceptance-tests/ may have changed: the suite is the proof that behaviour is unchanged, so it is run, never edited.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={(form.checks ?? []).includes("service_test_guardrails")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "service_test_guardrails", e.target.checked))}
+            />
+            <span>
+              Service test guardrails
+              <span className="block text-xs text-subtle">
+                Before finishing, a git comparison must pass: only test sources (src/test/) and test-scoped dependencies changed, no production code or configuration, and no test is disabled.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={(form.checks ?? []).includes("modernise_guardrails")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "modernise_guardrails", e.target.checked))}
+            />
+            <span>
+              Modernisation guardrails
+              <span className="block text-xs text-subtle">
+                Before finishing, a git comparison must pass: the schema unchanged (no DDL, schema scripts, Flyway or Liquibase; ddl-auto none or validate), Java 25 on Spring Boot 4, no secrets, no test disabled, the monolith untouched.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={(form.checks ?? []).includes("integration_guardrails")}
+              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "integration_guardrails", e.target.checked))}
+            />
+            <span>
+              Integration guardrails
+              <span className="block text-xs text-subtle">
+                Before finishing, a git comparison must pass: no UI, DDL or SQL change in the monolith, only an HTTP client and the Azure Service Bus SDK added, the domain and orchestrator modules unchanged, no secrets, no test deleted or disabled.
+              </span>
+            </span>
+          </label>
+          <p className="text-xs text-subtle">A built-in agent always passes its own guardrails before it may finish, even if they are unticked here.</p>
         </div>
 
       </>
