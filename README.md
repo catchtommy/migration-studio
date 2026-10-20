@@ -4,7 +4,9 @@ A web UI that drives the migration of the Java 8 / Spring MVC 3 / iBatis monolit
 one domain operation at a time. Each operation goes through a workflow of agent stages and human approval gates.
 Workflows are editable (Workflows page); the built-in *Standard migration* workflow is:
 
-AS-IS docs → Deep dive → 👤 → **Cross-domain dependency finder → Modulith design (Linked-domain contracts → Domain → Orchestrator)** → Cross-domain integration design → 👤 → Module in monolith → Spring Boot microservice → Independent tests → 👤 → Modernisation → Monolith integration → 👤
+AS-IS docs → Deep dive → 👤 → **Cross-domain dependency finder → Modulith design (Linked-domain contracts → Domain → Orchestrator)** → Cross-domain integration design → 👤 → Module in monolith → Orchestrator in monolith\* → Spring Boot microservice → Orchestrator microservice\* → Independent tests (acceptance suite) → 👤 → Modernisation → Service tests → Monolith integration → 👤
+
+\* Only for a cross-domain feature that has an orchestrator; skipped otherwise.
 
 ### Modulith design
 
@@ -52,9 +54,9 @@ owned or read directly if another domain owns it, and `other_domain_dependencies
 ### Module in monolith
 
 The *Module in monolith* agent is a careful legacy refactorer: it implements one feature exactly as the designs say, in
-small mechanical steps, and proves that behaviour is unchanged. It creates new Maven modules (a **domain** module and,
-for a cross-domain feature, an **orchestrator** module), deletes the moved code from the monolith and re-points the
-callers. A domain-only feature gets no orchestrator and no bridge; its callers use the domain's public API directly.
+small mechanical steps, and proves that behaviour is unchanged. It creates the feature's **domain** module (a new Maven
+module), deletes the moved code from the monolith and re-points the callers. The orchestrator of a cross-domain feature
+is the next step's (*Orchestrator in monolith*); until then the callers use the domain's public API.
 
 1. **Baseline** build of the affected modules (stop and ask if it is red), then **characterization tests** first: new
    Mockito tests for every public method of the feature, green on the old code before anything moves.
@@ -66,8 +68,9 @@ callers. A domain-only feature gets no orchestrator and no bridge; its callers u
    reference lines; the module's API keeps the legacy method names and signatures. Controllers are never moved.
 4. **Events** are only those the approved designs name, published with Spring's own event publishing after commit.
    There is no outbox (that would need a table), so delivery is not guaranteed; the pull request description says so.
-5. **Cross-domain**: the `local` adapters and the contract bindings sit in a temporary bridge package in the monolith
-   (`bridge_dir`), one class per binding, resolving the legacy bean lazily.
+5. **Cross-domain**: every call the moved code makes to another domain goes through a port of the domain module; its
+   `local` adapter sits in a temporary bridge package in the monolith (`bridge_dir`), one class per contract binding,
+   resolving the legacy bean lazily.
 
 The step writes `module-extraction.yaml` (the new modules, `bridge_dir`, every file changed outside the modules,
 `shared_copies`, `events`) and `modular-monolith.md`, which is the pull request description (what moved, how behaviour
@@ -82,7 +85,21 @@ library the monolith does not already use, or a version it does not use (the exc
 `domain-design.yaml`); edits outside the modules other than imports, declarations, injection annotations and bean or
 wiring lines of moved classes; existing tests that are deleted, ignored or changed beyond package and import lines; any
 use of another domain's tables or packages or of a God module in the modules; and more than 10 changed files outside
-the modules (stop and ask). Turn it off or on per agent with the *Module guardrails* check on the Agents page.
+the modules (stop and ask). The built-in agent always runs it; tick the *Module guardrails* check on the Agents page
+to give it to a custom agent.
+
+### Orchestrator in monolith
+
+Only a cross-domain feature has an orchestrator (a domain-only feature skips the step). The *Orchestrator in monolith*
+agent builds it as its own Maven module beside the domain module, from `orchestrator-design.md`, so that a request flows
+**controller → orchestrator → domain module**. The orchestrator sequences the calls to the domain's public API and to
+the other domains (through ports, each with a `local`/`contract` mode switch, `local` by default), and holds **no
+database access and no transaction**: data and transactions stay in the domain module, which this step doesn't change.
+Controllers change only in their import, injected type and bean reference lines: the orchestrator offers the same
+method names and signatures as the domain API methods they called. It writes `orchestrator-extraction.yaml` (or
+`orchestrator: none` with the reason) and `orchestrator-module.md`. **`check_orchestrator_guardrails`** refuses DAO,
+iBatis, JDBC, JPA, SQL maps or transactions in the orchestrator, changes to the domain module, and everything the module
+check refuses outside the module.
 
 ### Microservice
 
@@ -102,6 +119,7 @@ server, with a health endpoint, not Spring Boot, because Spring's own iBatis 2 s
   headers. The step also lists, without solving them, the callers that use the module inside a larger transaction and
   the calls inside loops: over HTTP the first loses atomicity and the second becomes many calls.
 - There is no authentication yet (internal network only); the pull request description records that limitation.
+- Only the domain module is lifted: the orchestrator, when there is one, becomes a service of its own (next section).
 
 **`check_service_guardrails`** compares the service repository with its starting commit, and runs again when the agent
 tries to finish. It refuses: any change to the monolith repository; copied code or tests that differ from the module's
@@ -109,7 +127,55 @@ beyond package and import lines (or that were not copied); SQL that is not the m
 than the module's (same versions) plus an embedded server, JSON, Azure Service Bus, an HTTP client, logging and the
 module's test tools; a dependency on a module of the monolith; a Java level other than 8; secrets, DDL, new SQL scripts
 or UI files; God modules and other domains' packages; operations that differ from `openapi.yaml`; events the designs do
-not name; and a context port without an adapter. Turn it on or off per agent with the *Service guardrails* check.
+not name; and a context port without an adapter. The built-in agent always runs it; tick the *Service guardrails*
+check to give it to a custom agent.
+
+### Orchestrator microservice
+
+When the feature has an orchestrator, the *Orchestrator microservice* step lifts it into its own **Java 25 / Spring
+Boot 4** service (it has no data layer to rewrite, so it goes straight to the target stack). Afterwards the monolith
+calls the feature through it: **monolith → orchestrator service → domain service**, and the other domains through their
+contracts. The orchestrator's classes and tests are copied unchanged apart from package and import lines; the domain
+API becomes a REST client of the domain service, each port is wired straight to its contract adapter (outside the
+monolith there is no `local` mode), and the Spring XML becomes Boot configuration. It writes `orchestrator-openapi.yaml`
+(under `/internal/api/v1/<domain>/orchestrator/`), `orchestrator-service-extraction.yaml` and `orchestrator-service.md`.
+**`check_orchestrator_service_guardrails`** refuses any database (data-access code, transactions, SQL, JDBC/JPA/iBatis
+libraries, datasource or migration-tool settings), a stack other than Java 25 on Spring Boot 4, changes to the monolith,
+secrets, other domains' code, and operations other than the declared ones. Set the step's *Changes code* to the
+orchestrator service's own repository.
+
+### Tests
+
+- **Independent tests** writes a black-box **acceptance suite** in `acceptance-tests/` of the domain service's
+  repository: a Maven project of its own (Java 8 language level, JUnit 5, REST Assured, WireMock 2) that calls the
+  running service over HTTP and checks the database over JDBC, for every scenario of `test-scenarios.md`. It never
+  imports the service's classes, so the same suite runs unchanged against the lifted service (the baseline in
+  `test-report.md`) and after modernisation. The orchestrator service's tests are its own step's.
+- **Modernisation** must run that suite unchanged; everything that passed before must still pass.
+- **Service tests** (after Modernisation) adds JUnit 5 tests on the final code: `@WebMvcTest` controllers with the
+  REST rules, `@DataJpaTest` repositories on the existing schema (Testcontainers when Docker is available), Mockito
+  services, and the adapters to other domains. It adds tests only.
+
+`check_test_guardrails` enforces this: Independent tests changes only `acceptance-tests/` (black-box, its own build);
+Modernisation leaves `acceptance-tests/` unchanged; Service tests changes only `src/test/` and adds only test-scoped
+dependencies. **`check_release_guardrails`** keeps Modernisation on the same schema (no DDL, schema scripts, Flyway or
+Liquibase; `ddl-auto` `none` or `validate`), on Java 25 / Spring Boot 4, without secrets; and Monolith integration to
+the switch only (no UI, DDL or SQL change; only an HTTP client and the Azure Service Bus SDK added; the domain and
+orchestrator modules unchanged).
+
+### What keeps agents within their step
+
+- **Every built-in agent's guardrail checks run before it may finish**, even if they are unticked on the Agents page;
+  when they keep failing, the step fails and its changes are reset.
+- **File tools** write only in the step's own repository and the documents folder. Documents a gate before the step
+  approved are read-only to it (a change made some other way isn't kept). Steps without *Changes code* write
+  documents only and can't run commands.
+- **Commands** run with the server's environment reduced to what builds need (no API keys, database URLs or tokens),
+  and refuse git commands that publish or rewrite (push, remote, config, amend, rebase, branch switching, tags,
+  `sudo`). Agents commit locally; the run commits and pushes through the review, as you.
+- **After a step**, changes it made to the run's other repositories are undone, and the step fails if its repository
+  is no longer on the run's branch with the step's starting commit in its history.
+- `run_command` is still a shell on the server: see *Deployment* below.
 
 The earlier *Modular monolith design* (`boundary_design`) and *Modulith design: Wrapper* (`wrapper_design`) agents are
 no longer part of the Standard migration workflow. They stay in the code and the database but are hidden from the
@@ -402,12 +468,15 @@ commit in every repository it changed.
 2. **Workflow → Git** sets whether runs end with a review and commit, and the **feature branch name**
    (`migration/{domain}/{feature}` by default; `{run}` and `{date}` also work).
 3. **New migration** starts the run on a feature branch named by that pattern, in every repository it will change.
-   Names a repository already has, or that another unfinished run uses there, are refused. **Add / show entry
+   A name another unfinished run uses there is refused; a branch that already exists is continued on (next point). **Add / show entry
    points** shows the feature's entry points, pre-filled, to change for this run, with notes for the agents.
-4. **Before a step changes code in a repository for the first time**, the run pauses as **Confirm branches**: the
-   run page shows the repository, its base branch (editable while it isn't checked out yet) and the feature branch
-   (renaming it renames it in every repository of the run). **Confirm and start** (needs *Run migrations*) checks the
-   names against the repository and starts the step.
+4. **Before every step that changes code** (each time it runs), the run pauses as **Confirm branches**: the run page
+   shows the repository, its base branch (editable while it isn't checked out yet) and the feature branch (renaming it
+   renames it in every repository of the run), with the workflow's current settings for the step. It says when the
+   branch **already exists** (the step then continues on it), and lists **other unfinished runs changing the same
+   repository** (their branches may conflict when merged). **Confirm and start** (needs *Run migrations*) checks the
+   names, then **brings in the latest of the feature branch from git** (fast-forward, or a merge: where only this run
+   pushed, git's version wins; work not pushed yet is kept, and a conflict with it stops the step) and starts it.
    The run checks out the monolith at the workspace root when it starts, and the other repositories inside it
    (`.studio/repos/<name>`, kept out of the monolith's git) when they're confirmed, all on the same feature branch,
    each cut from its own base branch. Agents can read
@@ -419,9 +488,11 @@ commit in every repository it changed.
    goes on too; the changes are offered again at the next commit of that repository or at the end.
    When the workflow finishes with code changes still uncommitted, it waits again, with a tab per repository that has
    them. Changes to the studio's documents alone don't need a commit. The review shows:
-   - every changed file, with a checkbox: code starts ticked, the studio's documents (`.migration/`, in the monolith's
-     tab) unticked;
-   - a side-by-side diff, what the base branch changed since the run started, and the merged result;
+   - every file with a change, with a checkbox: code starts ticked, the studio's documents (`.migration/`, in the
+     monolith's tab) unticked. Files already on the feature branch in git as they are aren't listed (the header says
+     how many), and **files you leave out stay as they are on the branch in git**;
+   - a side-by-side diff against the branch in git once it's pushed (or against where the run started), what the base
+     branch changed since, and the merged result;
    - **conflicts** with the latest base branch, to resolve per conflict (this run's side, the base branch's, or both)
      or by editing the result. Files one side deleted, and binary files, are resolved by choosing a version.
 6. **Commit & push** (per repository, needs *Approve workflow runs*) makes one commit with the ticked files on top of
@@ -434,8 +505,9 @@ change code (or before git support) ask for branches and end with the review too
 committed if the run's workspace was cloned from the monolith; otherwise start a new run. Restarting a step after
 committing checks the repository out from the feature branch it pushed (with anything others pushed there since), and
 the run comes back to *Ready to commit* with the new changes, committed on top. The studio's documents aren't
-committed: they stay in its database. Commits never force-push. If someone pushes to the feature branch while the
-run is checked out, committing is refused (re-run a step to pick their commits up, or choose another branch name).
+committed: they stay in its database. Commits never force-push. If someone pushes to the feature branch meanwhile,
+the commit goes on top of their work, unless they changed a file you're committing (then leave it out, or re-run the
+step: the latest is brought in before it starts).
 
 **Git access is per user.** Under **My settings** (account menu), everyone sets the **name and email** their commits
 use, and an **access token per git host** (e.g. github.com, mycompany.ghe.com). Fetches and pushes over HTTPS use the
@@ -469,8 +541,10 @@ reviewed documentation before the code, which saves tokens and time.
 ## How it works
 
 - **Run** = one `(domain, feature)` through one workflow; one LangGraph thread, checkpointed in the studio database
-  (`orchestrator/checkpointer.py`). The run keeps a snapshot of its workflow, so editing or deleting a workflow only
-  affects runs started afterwards. The graph is built per workflow snapshot (`orchestrator/graph.py`).
+  (`orchestrator/checkpointer.py`). The run keeps a snapshot of its workflow, so editing or deleting a workflow doesn't
+  reshape a run behind its back; a waiting run whose workflow changed offers **Update this run**, which changes only
+  the steps it hasn't reached. Each step's *Changes code* settings are picked up whenever the run goes on. The graph
+  is built per workflow snapshot (`orchestrator/graph.py`).
 - **Workflows** (Workflows page): create, copy, edit and delete named workflows. Steps are agents from the library and
   approval gates; each gate chooses which earlier agent steps it reviews (and can send back to on rejection).
   Each domain can set a default workflow; the run form preselects it.
@@ -528,14 +602,35 @@ reviewed documentation before the code, which saves tokens and time.
   editor says so. To set them in the text too, add `metadata` with `mode`, `effort`, `jdk`, `max-turns`,
   `required-documents` and `checks`. Required documents are added to the agent's brief automatically, so your
   instructions don't need to repeat them. *Import agent.md* and *Download agent.md* use the same format.
-- **Upgrades**: built-in agents still holding an earlier release's default instructions (never edited) are brought
-  up to the current defaults once, keeping their mode and model.
+- **Shared texts** (Agents page): the preamble every agent gets and the blocks several agents' instructions include
+  as `{{key}}` (legacy stack, Modulith guardrails, REST rules, the machine-readable formats). A change reaches every
+  agent that includes the block from its next step; *Reset* puts a default back. Exported agent.md files have them
+  written out, and importing turns them back into placeholders.
+- **Upgrades**: built-in agents still holding an earlier release's default instructions (never edited), and shared
+  texts still holding their default, are brought up to the current defaults once, keeping their mode and model. An
+  unchanged *Standard migration* workflow (shared, or a project's copy with only its step settings changed) gains new
+  steps, keeping each step's settings.
 - **Domains** (Domains page): add and edit domains; give every agent shared context, and each stage's agent its own
   *where to look* paths and notes. Starting a run can add operation-specific entry points and notes. The domain's
   *Documentation* tab shows the latest documents of every operation.
 - **Questions**: agents can ask questions (`ask_user`). The run shows *Needs input* and an answer panel; the stage
   continues once answered (or skipped). A restart while waiting fails the run; *Retry* asks again, reusing answers
   already given to the same question.
+
+## Deployment
+
+- **One backend process.** Runs (up to 16 at once), reviews and catalogue updates are coordinated with in-process
+  locks, so run one backend process (as `dev.sh` does). Several processes or instances would need database or file
+  locks instead.
+- **Toolchains**: the project's legacy and target toolchain homes (Project → Settings), e.g. a JDK 8 and a JDK 25:
+  the lift and acceptance steps build with the legacy one, Modernisation, the orchestrator service and Service tests
+  with the target one. Service tests uses Docker for Testcontainers when available (`DOCKER_HOST` and
+  `TESTCONTAINERS_*` reach the agents' commands, as do proxy and certificate settings).
+- **Sandbox the agents' commands.** `run_command` runs a shell on the server, limited as described above but not
+  contained by the OS. Before giving agents real repositories and credentials, run the backend in a container (or VM)
+  that mounts only its data folder and reaches only the git hosts and package registries it needs.
+- **Back up** the database, and `STUDIO_SECRET_KEY` (or `backend/data/secret.key`), which encrypts users' git tokens.
+- **Upgrading** runs the database migrations at startup, including for databases from before migrations.
 
 ## Tests
 

@@ -179,9 +179,16 @@ MONOLITH_CHECKS = {"service_guardrails", "orchestrator_service_guardrails", "acc
                    "service_test_guardrails", "modernise_guardrails"}
 
 
+# Also kept: certificates and JVM options for builds behind a corporate proxy, and Docker for Testcontainers.
+COMMAND_ENV |= {"JAVA_TOOL_OPTIONS", "MAVEN_ARGS", "GRADLE_OPTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+                "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "DOCKER_HOST", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
+                "DOCKER_CONFIG"}
+COMMAND_ENV_PREFIXES = ("LC_", "TESTCONTAINERS_")
+
+
 def command_env() -> dict[str, str]:
-    """The server's environment, reduced to what builds need (COMMAND_ENV, LC_*)."""
-    return {k: v for k, v in os.environ.items() if k in COMMAND_ENV or k.startswith("LC_")}
+    """The server's environment, reduced to what builds need (COMMAND_ENV and its prefixes)."""
+    return {k: v for k, v in os.environ.items() if k in COMMAND_ENV or k.startswith(COMMAND_ENV_PREFIXES)}
 
 
 def toolchain_env(env: dict[str, str], home: str | None, language: str) -> dict[str, str]:

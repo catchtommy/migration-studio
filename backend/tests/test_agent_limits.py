@@ -278,3 +278,32 @@ def test_rerunning_an_approved_step_with_an_updated_agent_updates_its_documents(
     assert {a["stage"] for a in docs} == {"as_is_doc"}  # the later step's rewrite was not kept
     latest = client.get(f"/api/artifacts/{max(docs, key=lambda a: a['attempt'])['id']}").json()["content"]
     assert "second version" in latest
+
+
+def test_commands_keep_what_builds_need_behind_a_proxy_and_for_testcontainers(ctx, monkeypatch):
+    ctx, _, _ = ctx
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    monkeypatch.setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
+    monkeypatch.setenv("JAVA_TOOL_OPTIONS", "-Djavax.net.ssl.trustStore=/etc/corp.jks")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_notforagents")
+    out = _code_step(ctx).run("run_command", {"command": "env"})
+    assert "DOCKER_HOST=" in out and "TESTCONTAINERS_RYUK_DISABLED=" in out and "trustStore" in out
+    assert "ghp_notforagents" not in out
+
+
+def test_the_spring_boot_version_may_come_from_a_property(tmp_path):
+    service = tmp_path / "service"
+    base = _repo(service, {"pom.xml": "<project><artifactId>customer-service</artifactId></project>\n"})
+    bom = """<project>
+  <artifactId>customer-service</artifactId>
+  <properties><java.version>25</java.version><spring-boot.version>4.0.1</spring-boot.version></properties>
+  <dependencyManagement><dependencies><dependency>
+    <groupId>org.springframework.boot</groupId><artifactId>spring-boot-dependencies</artifactId>
+    <version>${spring-boot.version}</version><type>pom</type><scope>import</scope>
+  </dependency></dependencies></dependencyManagement>
+</project>
+"""
+    (service / "pom.xml").write_text(bom)
+    assert rg.modernise(service, base, None, None) == []
+    (service / "pom.xml").write_text(bom.replace(">4.0.1<", ">3.5.0<"))
+    assert any("Spring Boot 4 (its parent or BOM, found 3.5.0)" in p for p in rg.modernise(service, base, None, None))

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import or_, select
 
-from app import projects, repos
+from app import repos
 from app.agents.base_agent import DOCS_ROOT
 from app.db.models import Artifact, Run, StageExecution
 from app.db.session import emit, session_scope

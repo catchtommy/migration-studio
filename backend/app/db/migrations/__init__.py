@@ -4,10 +4,12 @@ To change the schema: edit app/db/models.py, then add a revision under versions/
 SQLite, PostgreSQL and Oracle (e.g. `alembic revision --autogenerate` against a scratch database, then review it).
 """
 
+import importlib.util
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import Engine, inspect, text
 
@@ -33,12 +35,54 @@ def upgrade(engine: Engine) -> None:
         cfg = _config(conn)
         tables = set(inspect(conn).get_table_names())
         if MigrationContext.configure(conn).get_current_revision() is None and "runs" in tables:
-            # A SQLite database from before migrations (all of its tables exist): bring its columns up to the
-            # baseline the old way, then track it.
-            Base.metadata.create_all(conn, tables=[t for t in _baseline_tables() if t.name.startswith("graph_")])
+            # A SQLite database from before migrations: the baseline's tables it doesn't have yet (older releases
+            # had fewer), its columns brought up to the baseline the old way, then tracked.
+            _create_missing_baseline_tables(conn, tables)
             _add_missing_columns(conn)
             command.stamp(cfg, BASELINE)
         command.upgrade(cfg, "head")
+
+
+def _create_missing_baseline_tables(conn, existing: set[str]) -> None:
+    """Run the baseline revision's table definitions for the tables the database lacks, as the baseline has them (not
+    as the models have them now: later revisions add the rest)."""
+    path = Path(__file__).parent / "versions" / "0001_baseline.py"
+    spec = importlib.util.spec_from_file_location("studio_baseline_revision", path)
+    baseline = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(baseline)
+    ops = Operations(MigrationContext.configure(conn))
+
+    class MissingIndexes:  # a table the database has: only the baseline's indexes it lacks are created
+        def __init__(self, table):
+            self.table = table
+            self.have = {i["name"] for i in inspect(conn).get_indexes(table)}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def f(self, name):
+            return name
+
+        def create_index(self, name, columns, unique=False, **kw):
+            if name not in self.have:
+                ops.create_index(name, self.table, columns, unique=unique)
+
+    class OnlyMissing:
+        def create_table(self, name, *columns, **kw):
+            if name not in existing:
+                ops.create_table(name, *columns, **kw)
+
+        def batch_alter_table(self, name, **kw):
+            return MissingIndexes(name) if name in existing else ops.batch_alter_table(name, **kw)
+
+        def __getattr__(self, attr):  # anything else the baseline does, as Alembic does it
+            return getattr(ops, attr)
+
+    baseline.op = OnlyMissing()
+    baseline.upgrade()
 
 
 def _baseline_tables():

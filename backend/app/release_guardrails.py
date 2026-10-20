@@ -87,10 +87,10 @@ def modernise(service: Path, base: str, monolith: Path | None, monolith_base: st
     root = service / "pom.xml"
     if root.is_file():
         text = root.read_text(encoding="utf-8", errors="replace")
-        boot = osg.SPRING_BOOT.search(text)
-        if not boot or not boot.group(1).startswith("4."):
+        boot = osg.spring_boot_version(text)
+        if not boot or not boot.startswith("4."):
             problems.append("pom.xml: the modernised service is on Spring Boot 4 (its parent or BOM, "
-                            f"{'found ' + boot.group(1) if boot else 'not found'})")
+                            f"{'found ' + boot if boot else 'not found'})")
         levels = set(osg.JAVA_LEVEL.findall(text))
         if levels != {"25"}:
             problems.append(f"pom.xml: the Java level is 25 (found {', '.join(sorted(levels)) or 'none set'})")

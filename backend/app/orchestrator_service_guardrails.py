@@ -30,6 +30,19 @@ DATASOURCE_CONFIG = re.compile(r"(?im)^\s*(?:spring\.(?:datasource|jpa|flyway|li
                                r"liquibase)\s*:)|jdbc:")
 SPRING_BOOT = re.compile(r"<artifactId>\s*spring-boot-(?:starter-parent|dependencies)\s*</artifactId>\s*"
                          r"<version>\s*([^<\s]+)\s*</version>")
+def spring_boot_version(pom: str) -> str | None:
+    """The Spring Boot version of a POM's parent or imported BOM, with a ${property} resolved from its properties."""
+    m = SPRING_BOOT.search(pom)
+    if not m:
+        return None
+    version = m.group(1)
+    prop = re.fullmatch(r"\$\{([\w.\-]+)\}", version)
+    if prop:
+        value = re.search(rf"<{re.escape(prop.group(1))}>\s*([^<\s]+)\s*</{re.escape(prop.group(1))}>", pom)
+        version = value.group(1) if value else version
+    return version
+
+
 JAVA_LEVEL = re.compile(r"<(?:java\.version|maven\.compiler\.(?:release|source|target)|release|source|target)>\s*"
                         r"([^<\s]+)\s*<")
 
@@ -101,12 +114,12 @@ def check(service: Path, base: str, monolith: Path | None, monolith_base: str | 
                                 "database")
     root_pom = service / "pom.xml"
     if poms and root_pom.is_file():
-        boot = SPRING_BOOT.search(root_pom.read_text(encoding="utf-8", errors="replace"))
+        boot = spring_boot_version(root_pom.read_text(encoding="utf-8", errors="replace"))
         if not boot:
             problems.append("pom.xml: the service is a Spring Boot application: use the Spring Boot 4 parent "
                             "(spring-boot-starter-parent) or import its BOM (spring-boot-dependencies)")
-        elif not boot.group(1).startswith("4."):
-            problems.append(f"pom.xml: Spring Boot {boot.group(1)}; the service uses Spring Boot 4")
+        elif not boot.startswith("4."):
+            problems.append(f"pom.xml: Spring Boot {boot}; the service uses Spring Boot 4")
 
     # 5. The orchestrator module's code is copied unchanged, unless replaced.
     replaced = {str(r.get("file")) for r in declaration.get("replaced") or [] if isinstance(r, dict)}

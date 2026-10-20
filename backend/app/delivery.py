@@ -457,9 +457,12 @@ def update_from_git(run_id: str, key: str, user_id: int | None, log) -> None:
     except git_ops.GitError:
         conflicts = git_ops.git(ws, "diff", "--name-only", "--diff-filter=U").split()
         git_ops.git(ws, "merge", "--abort")
-        raise DeliveryError(f"{where} has changes in git that conflict with this run's work not pushed yet, in "
-                            f"{', '.join(conflicts[:10]) or 'some files'}. Resolve it in git (or commit the run's work "
-                            "first), then retry the run")
+        files = ", ".join(conflicts[:10]) or "some files"
+        raise DeliveryError(
+            f"{where} has changes in git that conflict with this run's work not pushed yet, in {files}. Resolve it in "
+            "git (or commit the run's work first), then retry the run" if unpushed else
+            f"{where} in git could not be merged into this run's copy automatically, in {files} (for example a file "
+            "deleted on one side and changed on the other). Resolve it in git, then retry the run")
     log(f"Fetched the latest of {where} ({remote[:10]}) and merged it into this run's copy"
         + (", keeping this run's work not pushed yet" if unpushed else ""))
     _brought_in(run_id, key, feature, remote, None if unpushed else git_ops.head(ws))
