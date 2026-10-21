@@ -139,6 +139,89 @@ def _previous_outputs(run_id: str, stage: str) -> list[str]:
                                                                  Artifact.attempt == latest).order_by(Artifact.id))]
 
 
+def _stopped_attempt(run_id: str, stage: str) -> dict | None:
+    """The stage's latest attempt when it stopped (failed) with its work kept (end_sha set by _keep_stopped_work), for
+    a retry to continue from: its documents and where its repositories were."""
+    with session_scope() as s:
+        ex = s.scalar(select(StageExecution).where(StageExecution.run_id == run_id, StageExecution.stage == stage)
+                      .order_by(StageExecution.id.desc()).limit(1))
+        if ex is None or ex.status != "failed" or not ex.end_sha:
+            return None
+        documents = {a.path: a.content for a in s.scalars(select(Artifact).where(
+            Artifact.run_id == run_id, Artifact.stage == stage, Artifact.attempt == ex.attempt).order_by(Artifact.id))}
+        return {"attempt": ex.attempt, "error": ex.error or "", "start": ex.start_sha, "end": ex.end_sha,
+                "repos": dict(ex.repos or {}), "documents": documents}
+
+
+def _code_kept(stopped: dict, head: str, nested_heads: dict[str, str]) -> bool:
+    """Whether the repositories are where the stopped attempt left them. A rebuilt workspace replays completed steps
+    only, so its commits would be gone."""
+    if head != stopped["end"]:
+        return False
+    for key, now in nested_heads.items():
+        was = stopped["repos"].get(key)
+        if was and now != was.get("end", was.get("start")):
+            return False
+    return True
+
+
+def _keep_stopped_work(ws: Path, run_id: str, stage: StageDef, attempt: int, code_dir: str, nested: list[dict],
+                       start_sha: str, nested_starts: dict[str, str], before_docs: dict[str, str],
+                       locked: set[str], docs: str, message: str) -> tuple[str | None, str | None, dict]:
+    """When a step fails: keep what it did, so a retry continues from there instead of starting over. Its documents
+    are stored for the attempt, and its commits stay on the run's branch in its own repository (uncommitted changes
+    committed too); everything else goes back to where the step started, as before. Returns the attempt's end_sha
+    (None when it kept nothing: the retry starts over), the diff of the workspace root, and its repos record."""
+    partial = [o for o in _documents(ws, [], docs, before_docs) if o.path not in locked]
+    contents = {o.path: (ws / o.path).read_text(encoding="utf-8") for o in partial}
+    workspace.clear_documents(ws)
+    with session_scope() as s:
+        branch = s.get(Run, run_id).branch
+        for o in partial:
+            s.add(Artifact(run_id=run_id, stage=stage.key, attempt=attempt, name=o.name, path=o.path, kind=o.kind,
+                           content=contents[o.path]))
+    own = (ws / code_dir).resolve() if stage.code else None  # a documents-only step never keeps code changes
+
+    def keep(path: Path, start: str) -> str:
+        if own == path.resolve() and _repo_left(ws, path, branch, start) is None:
+            return git_ops.commit_all(path, message)
+        _back_to(path, branch, start)  # not its repository, or left where a step may not leave it: undone
+        return start
+
+    end = keep(ws, start_sha)
+    repos = {key: {"start": start} for key, start in nested_starts.items()}
+    for r in nested:
+        if r["key"] in nested_starts:
+            path, start = ws / r["path"], nested_starts[r["key"]]
+            nested_end = keep(path, start)
+            if nested_end != start:
+                repos[r["key"]].update(end=nested_end, diff=git_ops.diff(path, start, nested_end, binary=True))
+    if not partial and end == start_sha and not any("end" in v for v in repos.values()):
+        return None, None, repos
+    return end, git_ops.diff(ws, start_sha, end, binary=True) if end != start_sha else None, repos
+
+
+def discard_stopped_work(run_id: str) -> bool:
+    """Undo what a stopped attempt kept, so the step starts over (a retry from scratch, or any re-run of the
+    workflow): its repositories go back to where it started, and no attempt is continued from any more."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        kept = [ex for ex in run.stages if ex.status == "failed" and ex.end_sha]
+        if not kept:
+            return False
+        latest = max(kept, key=lambda ex: ex.id)
+        ws, branch = Path(run.workspace), run.branch
+        paths = {r["key"]: ws / r["path"] for r in run.repositories or []}
+        if ws.exists() and git_ops.head(ws) == latest.end_sha:  # still where it stopped (not rebuilt since)
+            _back_to(ws, branch, latest.start_sha)
+            for key, rec in (latest.repos or {}).items():
+                if key in paths and paths[key].exists() and rec.get("start"):
+                    _back_to(paths[key], branch, rec["start"])
+        for ex in kept:
+            ex.end_sha = None
+    return True
+
+
 def _documents(ws: Path, outputs: list[ArtifactOut], docs: str, before: dict[str, str]) -> list[ArtifactOut]:
     """The stage's documents: what the agent returned plus anything else it wrote or changed in the run's documents
     folder (contract specs, notes), so the database has every document."""
@@ -217,6 +300,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
 
         workspace.exclude_nested(ws)  # documents live in the database, never in the workspace's git
         workspace.untrack_documents(ws)
+        stopped = _stopped_attempt(run_id, stage.key)  # a retry after it failed: continue from what it kept
         with session_scope() as s:
             attempt = 1 + s.scalar(
                 select(func.count()).where(StageExecution.run_id == run_id, StageExecution.stage == stage.key)
@@ -226,6 +310,10 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             legacy_info, started_by = run_row.legacy, run_row.started_by
             start_sha = git_ops.head(ws)
             nested_starts = workspace.nested_heads(ws, nested)  # the run's other repositories, for rollbacks
+            code_kept = stopped is not None and _code_kept(stopped, start_sha, nested_starts)
+            if code_kept:  # on top of its commits: the step's changes still count from where it first started
+                start_sha = stopped["start"]
+                nested_starts = {k: (stopped["repos"].get(k) or {}).get("start", v) for k, v in nested_starts.items()}
             execution = StageExecution(run_id=run_id, stage=stage.key, attempt=attempt, status="running",
                                        start_sha=start_sha, feedback=feedback, rerun=refresh or None,
                                        repos={k: {"start": v} for k, v in nested_starts.items()} or None)
@@ -233,8 +321,11 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             s.flush()
             exec_id = execution.id
         _set_run(run_id, status="running", current_stage=stage.key)
-        emit(run_id, "status", f"{stage.title} {'re-run, updating its documents' if refresh else 'started'} "
-                               f"(attempt {attempt})", stage.key)
+        how = ("re-run, updating its documents" if refresh else "started")
+        if stopped:
+            how = f"continuing where attempt {stopped['attempt']} stopped" + ("" if code_kept or not stage.code else
+                                                                              " (its documents; its code was not kept)")
+        emit(run_id, "status", f"{stage.title} {how} (attempt {attempt})", stage.key)
 
         try:
             config = agent_store.get(stage.key)
@@ -250,6 +341,26 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             emit(run_id, "log", f"Copied the contracts catalogue's specs to {contracts_store.CATALOGUE_DIR}/",
                  stage.key)
         before_docs = workspace.snapshot_documents(ws)
+        locked = _locked_documents(workflow, run_id, stage)
+        resume = None
+        if stopped:  # put back what it kept (after the snapshot, so they count as this attempt's documents)
+            restored = []
+            for path, content in stopped["documents"].items():
+                if path not in locked:
+                    f = ws / path
+                    f.parent.mkdir(parents=True, exist_ok=True)
+                    f.write_text(content, encoding="utf-8")
+                    restored.append(path)
+            own = (ws / code_dir).resolve()
+            own_start = start_sha if own == ws.resolve() else next(
+                (nested_starts[r["key"]] for r in nested if (ws / r["path"]).resolve() == own and r["key"] in nested_starts),
+                None)
+            commits, files = [], []
+            if code_kept and stage.code and own_start:
+                commits = git_ops.git(own, "log", "--format=%h %s", "-n", "30", f"{own_start}..HEAD").splitlines()
+                files = git_ops.changed_files(own, own_start, "HEAD")
+            resume = {"attempt": stopped["attempt"], "error": stopped["error"], "documents": sorted(restored),
+                      "commits": commits, "files": files, "code_kept": code_kept, "base_sha": own_start}
         ctx = AgentContext(
             run_id=run_id, domain=state["domain"], operation=state["operation"], stage=stage.key,
             attempt=attempt, workspace=ws, feedback=feedback, settings=settings,
@@ -265,7 +376,9 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             legacy=legacy_info, legacy_dir=legacy.path_for(_project_of(run_id), legacy_info, started_by),
             ask=lambda question, options=None: questions.ask(run_id, stage.key, attempt, question, options),
             refresh=refresh, previous_outputs=_previous_outputs(run_id, stage.key) if refresh else [],
-            locked_documents=_locked_documents(workflow, run_id, stage),
+            locked_documents=locked, resume=resume,
+            # Continuing on its commits: the checks compare with where the step first started, not with them.
+            base_sha=resume["base_sha"] if resume and resume["code_kept"] and stage.code else None,
         )
         try:
             if config is None:
@@ -290,18 +403,23 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
                     raise RuntimeError(f"{problem}. A step commits on top of the branch (or reverts its own commits) "
                                        "and never switches branches or rewrites history; its changes were undone")
         except Exception as e:
-            workspace.clear_documents(ws)
-            with session_scope() as s:
-                branch = s.get(Run, run_id).branch
-            # Clean trees for the retry, on the run's branch (an agent may have switched to another one).
-            _back_to(ws, branch, start_sha)
-            for r in nested:
-                if r["key"] in nested_starts:
-                    _back_to(ws / r["path"], branch, nested_starts[r["key"]])
+            # What it did is kept for a retry to continue from; anything else goes back to where it started, on the
+            # run's branch (an agent may have switched to another one).
+            subject = discovery_store.subject(state["domain"], state["operation"])
+            end, root_diff, repos = _keep_stopped_work(
+                ws, run_id, stage, attempt, code_dir, nested, start_sha, nested_starts, before_docs, locked,
+                docs_dir(domain, state["operation"]), f"[{stage.key}] {subject} attempt {attempt} (stopped)")
             with session_scope() as s:
                 ex = s.get(StageExecution, exec_id)
                 ex.status, ex.error, ex.finished_at = "failed", str(e), utcnow()
+                ex.end_sha, ex.diff, ex.repos = end, root_diff, repos or None
+                kept = s.scalar(select(func.count()).where(Artifact.run_id == run_id, Artifact.stage == stage.key,
+                                                          Artifact.attempt == attempt))
             emit(run_id, "error", f"{stage.title} failed: {e}", stage.key)
+            if end:
+                emit(run_id, "log", f"Kept what {stage.title} did ({kept} document(s)"
+                                    f"{', and its code commits' if root_diff or any('end' in v for v in repos.values()) else ''}"
+                                    "): Retry continues from there; Retry from scratch starts over", stage.key)
             raise
 
         if not stage.code:  # a step that writes documents only never changes code, whatever its agent did

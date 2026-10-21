@@ -34,7 +34,7 @@ export function RunPage() {
   }, [run?.current_stage, pinned]);
 
   const retry = useMutation({
-    mutationFn: () => api.retry(runId),
+    mutationFn: (fresh: boolean) => api.retry(runId, fresh),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["run", runId] }),
   });
 
@@ -127,16 +127,39 @@ export function RunPage() {
       {run.status === "changes_requested" && run.pending_rerun && <AmendPanel key={run.pending_rerun.gate + run.stages.length} run={run} />}
 
       {run.status === "failed" && (
-        <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-bad/40 bg-bad/5 p-4">
+        <section className="space-y-3 rounded-lg border border-bad/40 bg-bad/5 p-4">
           <p className="text-sm text-bad">{run.error}</p>
-          <button
-            className="rounded-md bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
-            disabled={!canRetry || retry.isPending}
-            title={canRetry ? undefined : "Needs the “Run migrations” permission"}
-            onClick={() => retry.mutate()}
-          >
-            Retry from failed stage
-          </button>
+          {(() => {
+            // The failed attempt kept what it did (documents, and commits in its repository): a retry continues from it.
+            const last = run.stages[run.stages.length - 1];
+            const kept = !!last && last.status === "failed" && !!last.end_sha;
+            return (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  className="rounded-md bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
+                  disabled={!canRetry || retry.isPending}
+                  title={canRetry ? undefined : "Needs the “Run migrations” permission"}
+                  onClick={() => retry.mutate(false)}
+                >
+                  {kept ? "Retry, continuing where it stopped" : "Retry from failed stage"}
+                </button>
+                {kept && (
+                  <button
+                    className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg disabled:opacity-50"
+                    disabled={!canRetry || retry.isPending}
+                    onClick={() => window.confirm("Undo what the failed attempt did and start the step over?") && retry.mutate(true)}
+                  >
+                    Retry from scratch
+                  </button>
+                )}
+                {kept && (
+                  <span className="text-xs text-subtle">
+                    The failed attempt's documents and code are kept, so the retry carries on from them instead of redoing that work.
+                  </span>
+                )}
+              </div>
+            );
+          })()}
         </section>
       )}
 

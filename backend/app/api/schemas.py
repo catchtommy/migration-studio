@@ -144,6 +144,14 @@ class Restart(BaseModel):
     fresh: bool = False  # regenerate from scratch instead of updating the existing documents
 
 
+class RetryIn(BaseModel):
+    fresh: bool = False  # start the failed step over instead of continuing from what its attempt kept
+
+
+class WorkflowUpdateIn(BaseModel):
+    rerun: bool = False  # take all the workflow's current steps and re-run from the earliest one a change affects
+
+
 class Rerun(BaseModel):
     comments: str | None = None  # replaces the rejection's comments when given
     target_stage: str | None = None

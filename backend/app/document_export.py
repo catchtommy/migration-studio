@@ -15,16 +15,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.base_agent import DOCS_ROOT
-from app.db.models import Artifact, Run
+from app.db.models import Artifact, Run, StageExecution
 
 
 def latest_artifacts(db: Session, run_id: str) -> list[Artifact]:
-    """The run's documents from the latest attempt of each stage, in the order they were written."""
+    """The run's documents from the latest completed attempt of each stage (the latest attempt, when none completed:
+    what a stopped step kept), in the order they were written."""
     artifacts = db.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
-    latest: dict[str, int] = {}
+    done = {(stage, attempt) for stage, attempt in db.execute(select(StageExecution.stage, StageExecution.attempt)
+                                                             .where(StageExecution.run_id == run_id,
+                                                                    StageExecution.status == "completed"))}
+
+    def rank(a: Artifact) -> tuple[bool, int]:
+        return (a.stage, a.attempt) in done, a.attempt
+
+    best: dict[str, tuple[bool, int]] = {}
     for a in artifacts:
-        latest[a.stage] = max(latest.get(a.stage, 0), a.attempt)
-    return [a for a in artifacts if a.attempt == latest[a.stage]]
+        best[a.stage] = max(best.get(a.stage, (False, 0)), rank(a))
+    return [a for a in artifacts if rank(a) == best[a.stage]]
 
 
 def _safe(name: str) -> str:

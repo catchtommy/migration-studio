@@ -291,3 +291,56 @@ def test_after_a_rerun_from_an_earlier_step_the_steps_after_it_are_upcoming(clie
         run.current_stage = "modular_monolith"  # as after a re-run from it
         update = run_workflow.plan(run)
     assert update["added"] == ["Orchestrator microservice"] and not update["missed"]
+
+
+def test_a_run_can_be_re_run_with_an_agent_edited_since_its_step_ran(client):
+    """Steps a run hasn't reached use their agents as they are; a step that already ran keeps its output until the
+    run is re-run from it, which the run offers once the agent changed."""
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})  # AS-IS and deep dive have run
+    assert client.get(f"/api/runs/{run_id}").json()["workflow_update"] is None
+    agent = client.get("/api/agents/deep_dive").json()
+    assert client.put("/api/agents/deep_dive", json={**agent, "guardrails": "Name every table."}).status_code == 200
+    try:
+        update = client.get(f"/api/runs/{run_id}").json()["workflow_update"]
+        assert update["agents_changed"] == ["Deep dive"] and update["rerun"]["from"] == "deep_dive"
+        assert "Deep dive: its agent changed" in update["rerun"]["reasons"]
+        assert client.post(f"/api/runs/{run_id}/update-workflow", json={}).status_code == 422  # nothing upcoming
+
+        r = client.post(f"/api/runs/{run_id}/update-workflow", json={"rerun": True})
+        assert r.status_code == 200, r.text
+        run = wait_for(client, run_id, {"awaiting_approval"})
+        assert run["pending_gate"]["gate"] == "gate_analysis"
+        assert [e["status"] for e in executions(run, "deep_dive")] == ["completed", "completed"]  # ran again
+        assert [e["status"] for e in executions(run, "as_is_doc")] == ["completed"]  # unchanged: not re-run
+        assert run["workflow_update"] is None  # up to date again
+    finally:
+        client.put("/api/agents/deep_dive", json=agent)
+
+
+def test_a_step_the_workflow_gained_before_the_point_reached_runs_in_a_re_run(client):
+    """A step added before the point a run has reached can't be an upcoming step (it is missed); a re-run takes the
+    workflow's current steps and runs it, as a new step, then goes on."""
+    wf = client.get("/api/workflows/standard").json()
+    def drop(st):  # the step, without deep_dive among the steps it reviews or reads
+        if st["kind"] == "gate":
+            return {**st, "reviews": [r for r in st["reviews"] if r != "deep_dive"]}
+        return {**st, "uses": None if st.get("uses") is None else [u for u in st["uses"] if u != "deep_dive"]}
+
+    without = [drop(st) for st in wf["steps"] if st["key"] != "deep_dive"]
+    assert client.put("/api/workflows/standard?library=project", json={"steps": without}).status_code == 200
+    try:
+        run_id = new_run(client)
+        wait_for(client, run_id, {"awaiting_approval"})  # only AS-IS ran
+    finally:
+        assert client.post("/api/workflows/standard/revert").status_code == 200
+
+    update = client.get(f"/api/runs/{run_id}").json()["workflow_update"]
+    assert update["missed"] == ["Deep dive"] and update["rerun"]["from"] == "deep_dive"
+    r = client.post(f"/api/runs/{run_id}/update-workflow", json={"rerun": True})
+    assert r.status_code == 200, r.text
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    assert run["pending_gate"] == {"gate": "gate_analysis", "reviews": ["as_is_doc", "deep_dive"]}
+    deep = executions(run, "deep_dive")
+    assert [e["status"] for e in deep] == ["completed"] and not deep[0].get("rerun")  # a new step, not an update
+    assert [e["status"] for e in executions(run, "as_is_doc")] == ["completed"]

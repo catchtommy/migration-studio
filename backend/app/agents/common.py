@@ -138,6 +138,31 @@ def refresh_brief(ctx: AgentContext) -> str:
             "they are and say so.")
 
 
+def resume_brief(ctx: AgentContext) -> str:
+    """For a retry after the step stopped: carry on from the work the stopped attempt kept, rather than redo it."""
+    r = ctx.resume or {}
+    error = (r.get("error") or "no reason recorded").strip()
+    lines = ["## Continue where the last attempt stopped",
+             f"Attempt {r.get('attempt')} of this step stopped before it finished: {error[:2000]}",
+             "What it did is kept, so don't start over: check what is there, keep what is right, finish what is "
+             "missing and fix what made it stop."]
+    if r.get("documents"):
+        lines.append("Its documents, in place (read them before you write; edit them rather than rewrite them):\n"
+                     + "\n".join(f"- `{p}`" for p in r["documents"]))
+    if r.get("code_kept") and (r.get("commits") or r.get("files")):
+        lines.append("Its code changes, committed on the branch: the checks count them as this step's.")
+        if r.get("commits"):
+            lines.append("Commits (newest first):\n" + "\n".join(f"- {c}" for c in r["commits"]))
+        if r.get("files"):
+            more = len(r["files"]) - 50
+            lines.append("Files changed:\n" + "\n".join(f"- `{f}`" for f in r["files"][:50])
+                         + (f"\n- … and {more} more" if more > 0 else ""))
+    elif ctx.stage_def is not None and ctx.stage_def.code and not r.get("code_kept"):
+        lines.append("Its code changes are not in the workspace any more (it was rebuilt since): redo them, using "
+                     "its documents for what it had decided.")
+    return "\n\n".join(lines)
+
+
 def brief(ctx: AgentContext) -> str:
     """The agent's opening message: the task, where to write, earlier documents, guidance, answers and feedback."""
     title = ctx.stage_def.title if ctx.stage_def else ctx.config.get("title", ctx.stage)
@@ -160,6 +185,8 @@ def brief(ctx: AgentContext) -> str:
         parts.append(docs)
     if ctx.refresh:
         parts.append(refresh_brief(ctx))
+    if ctx.resume:
+        parts.append(resume_brief(ctx))
     if ctx.previous_artifacts:
         parts.append(prior_documents(ctx))
     guidance = ctx.inputs.as_markdown()

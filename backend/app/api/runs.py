@@ -11,7 +11,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.api.schemas import (
     AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, Decision, EventOut, QuestionOut,
-    RunCreate, RunDetail, RunOut, Rerun, Restart,
+    RetryIn, RunCreate, RunDetail, RunOut, Rerun, Restart, WorkflowUpdateIn,
 )
 from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
@@ -21,7 +21,7 @@ from app import (auth, contracts_store, delivery, discovery_store, docs_publish,
                  run_workflow, settings_store, workflow_store, workspace)
 from app.auth import CurrentUser, require
 from app.domain_store import normalize_inputs
-from app.orchestrator import questions
+from app.orchestrator import graph, questions
 from app.orchestrator.runner import RunBusyError, get_runner
 from app.tools import git_ops
 
@@ -154,22 +154,35 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
     if run.status == "awaiting_publish":
         detail.pending_publish = get_runner().pending_gate(run_id)
     update = None if get_runner().is_active(run_id) else run_workflow.plan(run)
-    detail.workflow_update = update and {k: v for k, v in update.items() if k != "stages"}
+    detail.workflow_update = update and {k: v for k, v in update.items() if k not in ("stages", "rerun_stages")}
     return detail
 
 
 @router.post("/runs/{run_id}/update-workflow", response_model=RunOut)
-def update_workflow(run_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("runs.start"))):
-    """Bring the steps this run has not reached yet up to date with its workflow. The steps it has reached stay as
-    they ran; the run then goes on with the workflow's current steps."""
+def update_workflow(run_id: str, body: WorkflowUpdateIn | None = None, db: Session = Depends(get_db),
+                    user: CurrentUser = Depends(require("runs.start"))):
+    """Bring the run up to date with its workflow and agents. By default only the steps it has not reached yet change:
+    the steps it has reached stay as they ran, and the run goes on with the workflow's current steps. With `rerun`, the
+    run takes all of the workflow's current steps and runs again from the earliest step a change affects (in the
+    workflow, or an agent edited since its step ran), updating those documents with the current agents."""
     run = _run_or_404(db, run_id)
     if get_runner().is_active(run_id):
         raise HTTPException(409, "The run is working; wait for it to stop or reach a gate, then update it")
     update = run_workflow.plan(run)
-    if update is None:
-        raise HTTPException(422, "The run's upcoming steps already match its workflow")
-    if "blocked" in update:
-        raise HTTPException(409, update["blocked"])
+    if body is not None and body.rerun:
+        if not update or not update.get("rerun"):
+            raise HTTPException(422, "Nothing the run has already run differs from its workflow and agents")
+        target = update["rerun"]
+        run.workflow_stages = update["rerun_stages"]
+        db.commit()
+        emit(run_id, "status", f"{user.display_name} updated the run to the workflow's current steps and agents, "
+                               f"re-running from {target['title']}: {'; '.join(target['reasons'])}", run.current_stage)
+        return _restart(db, run, target["from"], user, must_have_run=False)
+    if update is None or not update.get("stages"):
+        if update and update.get("blocked"):
+            raise HTTPException(409, update["blocked"])
+        raise HTTPException(422, "The run's upcoming steps already match its workflow"
+                            + (" (re-run it to apply the changed agents)" if update and update.get("rerun") else ""))
     run.workflow_stages = update["stages"]
     db.commit()
     emit(run_id, "status", f"{user.display_name} updated the run to the workflow's current steps: "
@@ -320,33 +333,42 @@ def restart(run_id: str, body: Restart, db: Session = Depends(get_db),
     """Re-run the workflow from a stage that already completed, e.g. after its agent's instructions changed. That
     stage and the ones after it update their existing documents with the agents' current settings, or with `fresh`
     regenerate them from where the stage started (earlier attempts, approvals and diffs stay recorded)."""
-    run = _run_or_404(db, run_id)
+    return _restart(db, _run_or_404(db, run_id), body.stage, user, body.notes, body.fresh)
+
+
+def _restart(db: Session, run: Run, stage: str, user: CurrentUser, notes: str | None = None, fresh: bool = False,
+             must_have_run: bool = True) -> Run:
+    """Run the workflow again from `stage`. `must_have_run`: only from a stage that completed (a re-run that brings
+    the run up to date may start at a step the workflow added before the point it had reached)."""
+    run_id = run.id
     if run.status not in RESTARTABLE or get_runner().is_active(run_id):
         raise HTTPException(409, "The run is working; wait for it to stop or reach a gate, then re-run")
-    step = next((s for s in run.stage_defs if s["key"] == body.stage), None)
+    step = next((s for s in run.stage_defs if s["key"] == stage), None)
     if step is None or step["kind"] != "agent":
-        raise HTTPException(422, f"{body.stage} is not an agent step of this run's workflow")
-    if not db.scalar(select(StageExecution.id).where(StageExecution.run_id == run_id, StageExecution.stage == body.stage,
-                                                     StageExecution.status == "completed").limit(1)):
+        raise HTTPException(422, f"{stage} is not an agent step of this run's workflow")
+    if must_have_run and not db.scalar(select(StageExecution.id).where(
+            StageExecution.run_id == run_id, StageExecution.stage == stage, StageExecution.status == "completed").limit(1)):
         raise HTTPException(422, f"{step['title']} hasn't completed yet, so there is nothing to re-run")
     if run.status == "changes_requested" and run.pending_rerun:
         latest = db.scalar(select(Approval).where(Approval.run_id == run_id, Approval.gate == run.pending_rerun["gate"])
                            .order_by(Approval.id.desc()).limit(1))
         if latest is not None and latest.decision == "reject":
             db.delete(latest)  # the held rejection never took effect; the restart replaces it
+    if graph.discard_stopped_work(run_id):  # a re-run starts the steps over: nothing stopped is continued
+        emit(run_id, "log", "What the failed attempt kept was undone, as the workflow re-runs")
     before, before_stage = run.status, run.current_stage
     # current_stage moves now, so the timeline shows the step re-running at once, not only once its agent starts.
-    run.status, run.error, run.pending_rerun, run.current_stage = "running", None, None, body.stage
+    run.status, run.error, run.pending_rerun, run.current_stage = "running", None, None, stage
     db.commit()
     later = sum(1 for s in run.stage_defs[run.stage_defs.index(step) + 1:] if s["kind"] == "agent")
-    how = ("starting fresh: the workspace is rolled back and the documents regenerated" if body.fresh else
+    how = ("starting fresh: the workspace is rolled back and the documents regenerated" if fresh else
            "documents are updated with the agents' current settings")
     emit(run_id, "status", f"{user.display_name} re-ran the workflow from {step['title']}"
-                           + (f" and the {later} step(s) after it" if later else "") + f": {how}", body.stage)
+                           + (f" and the {later} step(s) after it" if later else "") + f": {how}", stage)
     delivery.refresh_code_settings(run_id)  # the workflow's current code settings (which steps change code, where)
     db.refresh(run)
     try:
-        get_runner().restart(run_id, body.stage, body.notes, fresh=body.fresh)
+        get_runner().restart(run_id, stage, notes, fresh=fresh)
     except RunBusyError as e:
         run.status, run.current_stage = before, before_stage
         db.commit()
@@ -355,11 +377,17 @@ def restart(run_id: str, body: Restart, db: Session = Depends(get_db),
 
 
 @router.post("/runs/{run_id}/retry", response_model=RunOut, dependencies=[Depends(require("runs.start"))])
-def retry(run_id: str, db: Session = Depends(get_db)):
+def retry(run_id: str, body: RetryIn | None = None, db: Session = Depends(get_db)):
+    """Run the failed step again. It continues from what its stopped attempt kept (documents, and commits in its
+    repository), so finished work isn't paid for twice; with `fresh` it starts over from where the step started."""
     run = _run_or_404(db, run_id)
     if run.status != "failed":
         raise HTTPException(409, "Only failed runs can be retried")
-    emit(run_id, "status", "Retrying")
+    fresh = body is not None and body.fresh
+    if fresh and graph.discard_stopped_work(run_id):
+        emit(run_id, "status", "Retrying from scratch: what the failed attempt kept was undone")
+    else:
+        emit(run_id, "status", "Retrying" + ("" if fresh else ", continuing from what the failed attempt kept"))
     delivery.refresh_code_settings(run_id)
     try:
         get_runner().retry(run_id)
@@ -454,9 +482,13 @@ def _document_diff(db: Session, ex: StageExecution) -> str:
     out = []
     mine = db.scalars(select(Artifact).where(Artifact.run_id == ex.run_id, Artifact.stage == ex.stage,
                                              Artifact.attempt == ex.attempt).order_by(Artifact.id)).all()
+    # Documents a stopped attempt kept are where a retry continued from: the diff is against the version before them.
+    stopped = {(stage, attempt) for stage, attempt in db.execute(select(StageExecution.stage, StageExecution.attempt)
+               .where(StageExecution.run_id == ex.run_id, StageExecution.status == "failed"))} - {(ex.stage, ex.attempt)}
     for a in mine:
-        before = db.scalar(select(Artifact).where(Artifact.run_id == ex.run_id, Artifact.path == a.path,
-                                                  Artifact.id < a.id).order_by(Artifact.id.desc()).limit(1))
+        before = next((b for b in db.scalars(select(Artifact).where(
+            Artifact.run_id == ex.run_id, Artifact.path == a.path, Artifact.id < a.id).order_by(Artifact.id.desc()))
+            if (b.stage, b.attempt) not in stopped), None)
         old = before.content if before is not None else ""
         if old == a.content:
             continue

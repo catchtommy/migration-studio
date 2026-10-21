@@ -93,10 +93,14 @@ class Runner:
         ask for approval again. By default they update their existing documents in place; `fresh` first rolls the
         workspace back to where the stage started, so they regenerate everything (earlier attempts stay recorded)."""
         with session_scope() as s:
-            stages = s.get(Run, run_id).stage_defs
+            run = s.get(Run, run_id)
+            stages = run.stage_defs
+            ran = {e.stage for e in run.stages if e.status == "completed"}
         keys = [d["key"] for d in stages]
         at = keys.index(stage)
-        values: dict = {"refresh": [] if fresh else [d["key"] for d in stages[at:] if d["kind"] == "agent"],
+        # Steps that ran update their documents; a step the workflow gained since (never run here) runs as new.
+        values: dict = {"refresh": [] if fresh else [d["key"] for d in stages[at:] if d["kind"] == "agent"
+                                                     and d["key"] in ran],
                         "route": stage}
         if notes:
             values["feedback"] = {stage: notes}

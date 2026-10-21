@@ -219,7 +219,9 @@ export interface WorkflowUpdate {
   changed?: string[];
   missed?: string[]; // new steps before the point the run has reached: this run won't run them
   reordered?: boolean;
-  blocked?: string;
+  blocked?: string; // the upcoming steps can't follow the workflow (a re-run still can)
+  agents_changed?: string[]; // completed steps whose agent (or a shared text it uses) changed since they ran
+  rerun?: { from: string; title: string; reasons: string[] }; // a re-run that brings the run up to date
 }
 
 /** The server's copy of a project's monolith repository, shared by its runs. */
@@ -726,8 +728,8 @@ export const api = {
   rerun: (id: string, body: { comments?: string; target_stage?: string }) => request<Run>(`/runs/${id}/rerun`, json("POST", body)),
   backToReview: (id: string) => request<Run>(`/runs/${id}/back-to-review`, { method: "POST" }),
   updateRunInputs: (id: string, inputs: AgentInputs) => request<RunDetail>(`/runs/${id}/inputs`, json("PUT", inputs)),
-  retry: (id: string) => request<Run>(`/runs/${id}/retry`, { method: "POST" }),
-  updateRunWorkflow: (id: string) => request<Run>(`/runs/${id}/update-workflow`, { method: "POST" }),
+  retry: (id: string, fresh = false) => request<Run>(`/runs/${id}/retry`, json("POST", { fresh })),
+  updateRunWorkflow: (id: string, rerun = false) => request<Run>(`/runs/${id}/update-workflow`, json("POST", { rerun })),
   restart: (id: string, stage: string, notes?: string, fresh = false) => request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh })),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
