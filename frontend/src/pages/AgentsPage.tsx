@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, looksLikeAgentMd, type Agent, type AgentCatalog, type AgentInput, type Library, type ParsedAgentFile } from "../lib/api";
+import {
+  api,
+  expandPlaceholders,
+  looksLikeAgentMd,
+  placeholders,
+  type Agent,
+  type AgentCatalog,
+  type AgentInput,
+  type Library,
+  type ParsedAgentFile,
+  type SharedText,
+} from "../lib/api";
 import { useAgents, useCanGlobally, useWorkflows } from "../lib/hooks";
 import { LibraryBadge, SaveTarget } from "../components/LibraryBadge";
 import { slug } from "../lib/slug";
 import { Field, inputClass } from "../components/Field";
 import { PageTitle } from "../components/PageTitle";
 import { ChipIcon } from "../components/icons";
-
-function toggleCheck(checks: string[], name: string, on: boolean): string[] {
-  const rest = checks.filter((c) => c !== name);
-  return on ? [...rest, name] : rest;
-}
 
 function toInput(agent: Agent): AgentInput {
   const { key: _key, builtin: _builtin, created_at: _created, updated_at: _updated, scope: _scope, customised: _customised, ...rest } = agent;
@@ -199,46 +205,39 @@ function ModeBadge({ mode }: { mode: string }) {
   );
 }
 
-/** This agent's own guardrails in plain words (editable), and the built-in checks it is held to (read-only). */
+/** This agent's guardrails: one text in plain words. The built-in checks it runs are always on, so only named here. */
 function AgentGuardrails({ agent, form, onChange }: { agent: Agent; form: AgentInput; onChange: (text: string) => void }) {
   const { data } = useQuery({ queryKey: ["guardrails"], queryFn: api.guardrails, staleTime: 60_000 });
   const runsCommands = form.tools.includes("run_command");
   const builtin = (data?.builtin ?? []).filter((b) => b.checks.some((c) => form.checks.includes(c)) || (b.key === "agent_limits" && runsCommands));
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <Field
-        label="Guardrails of this agent"
-        hint="Rules in plain words, given to this agent as hard rules: in its instructions, and again each time it runs a guardrail check. They add to the global and project guardrails (which only agents that change code get). No tool checks them against git."
+        label="Guardrails"
+        hint="Rules in plain words this agent must follow, one per line. It gets them as hard rules, and again each time it checks its work; when it can't keep one, it stops and asks. To give one project different rules, customise the agent for that project."
       >
         <textarea
           aria-label={`Guardrails of ${agent.title}`}
-          className={`${inputClass} min-h-32 font-mono text-xs`}
+          rows={Math.min(24, Math.max(6, (form.guardrails ?? "").split("\n").length + 1))}
+          className={`${inputClass} font-mono text-xs leading-5`}
           value={form.guardrails ?? ""}
           placeholder={"e.g.\n- Keep the router under 200 lines.\n- Never change classes under com.acme.common."}
           onChange={(e) => onChange(e.target.value)}
         />
       </Field>
-      <p className="text-xs text-subtle">
-        Also in effect:{" "}
-        <Link to="?guardrails=1" className="text-accent hover:underline">
-          global guardrails
-        </Link>{" "}
-        and the project's (
-        <Link to="/project" className="text-accent hover:underline">
-          Project settings
-        </Link>
-        ), for agents that change code.
-      </p>
+      <InstructionPlaceholders instructions={form.guardrails ?? ""} what="guardrails" />
       {builtin.length > 0 && (
-        <div className="space-y-2">
-          <h3 className="text-sm font-medium">Built-in checks of this agent (enforced in code)</h3>
-          {builtin.map((b) => (
-            <details key={b.key} className="rounded-md border border-border px-3 py-2 text-sm">
-              <summary className="cursor-pointer font-medium">{b.title}</summary>
-              <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-subtle">{b.description}</pre>
-            </details>
-          ))}
-        </div>
+        <details className="text-xs text-subtle">
+          <summary className="cursor-pointer hover:text-fg">Also enforced automatically for this agent: {builtin.map((b) => b.title).join(", ")}</summary>
+          <div className="mt-2 space-y-3">
+            {builtin.map((b) => (
+              <div key={b.key}>
+                <p className="font-medium text-fg">{b.title}</p>
+                <pre className="mt-1 whitespace-pre-wrap font-sans">{b.description}</pre>
+              </div>
+            ))}
+          </div>
+        </details>
       )}
     </div>
   );
@@ -265,6 +264,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
   const onSaved = (saved: Agent) => {
     queryClient.setQueryData<Agent[]>(["agents"], (prev) => prev?.map((a) => (a.key === saved.key ? saved : a)));
     queryClient.invalidateQueries({ queryKey: ["workflows"] }); // step titles come from agents
+    queryClient.invalidateQueries({ queryKey: ["sharedTexts"] }); // which agents include each shared text
   };
   const save = useMutation({
     mutationFn: () => api.updateAgent(config.key, { ...form, outputs: outputs.split("\n").map((o) => o.trim()).filter(Boolean) }, target),
@@ -489,36 +489,22 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
           )}
         </p>
 
-        <div className={`space-y-6 ${ai ? "" : "opacity-60"}`}>
-          <div className="grid gap-4 sm:grid-cols-4">
-            <Field
-              label="Model"
-              hint={catalog.provider === "copilot" && catalog.models.length <= 1 ? "Sign in to Copilot to see your models" : "auto lets the provider choose"}
-            >
-              <input className={inputClass} list="model-options" value={form.model} onChange={(e) => set("model", e.target.value)} />
-              <datalist id="model-options">
-                {catalog.models.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-            </Field>
-            <Field label="Effort" hint="Used when the model supports it">
-              <select className={inputClass} value={form.effort} onChange={(e) => set("effort", e.target.value)}>
-                {catalog.efforts.map((v) => (
-                  <option key={v}>{v}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="JDK" hint="For run_command">
-              <select className={inputClass} value={form.jdk} onChange={(e) => set("jdk", e.target.value as AgentInput["jdk"])}>
-                <option value="legacy">JDK 8 (legacy)</option>
-                <option value="modern">JDK 25 (modern)</option>
-              </select>
-            </Field>
-            <Field label="Max turns">
-              <input type="number" min={1} max={500} className={inputClass} value={form.max_turns} onChange={(e) => set("max_turns", Number(e.target.value))} />
-            </Field>
-          </div>
+        <div className="space-y-6">
+          {ai && (
+            <div className="max-w-sm">
+              <Field
+                label="Model"
+                hint={catalog.provider === "copilot" && catalog.models.length <= 1 ? "Sign in to Copilot to see your models" : "auto lets the provider choose"}
+              >
+                <input className={inputClass} list="model-options" value={form.model} onChange={(e) => set("model", e.target.value)} />
+                <datalist id="model-options">
+                  {catalog.models.map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+              </Field>
+            </div>
+          )}
 
           <Field
             label="Instructions"
@@ -526,6 +512,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
           >
             <textarea rows={22} className={`${inputClass} font-mono text-xs leading-5`} value={form.instructions} onChange={(e) => set("instructions", e.target.value)} />
           </Field>
+          <InstructionPlaceholders instructions={form.instructions} />
           {looksLikeAgentMd(form.instructions) && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-warn/40 bg-warn/5 p-3 text-sm">
               <span>This looks like a whole agent.md file. Apply it, so its header sets the agent's settings and only the instructions go to the model.</span>
@@ -545,188 +532,57 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
             </div>
           )}
 
-          <div className="grid gap-6 md:grid-cols-2">
-            <fieldset className="text-sm">
-              <legend className="mb-2 font-medium">Tools</legend>
-              <div className="space-y-1.5">
-                {catalog.tools.map((t) => (
-                  <label key={t.name} className="flex items-start gap-2">
-                    <input type="checkbox" className="mt-1" checked={form.tools.includes(t.name)} onChange={() => toggleTool(t.name)} />
-                    <span>
-                      <code className="text-xs">{t.name}</code>
-                      <span className="block text-xs text-subtle">{t.description}</span>
-                    </span>
-                  </label>
-                ))}
+          <AgentGuardrails agent={config} form={form} onChange={(text) => set("guardrails", text)} />
+
+          <details className="rounded-md border border-border px-4 py-3">
+            <summary className="cursor-pointer text-sm font-medium">Advanced settings</summary>
+            <p className="mt-1 text-xs text-subtle">Effort, toolchain, turn limit, tools and required documents. The defaults suit most agents.</p>
+            <div className="mt-4 space-y-6">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <Field label="Effort" hint="Used when the model supports it">
+                  <select className={inputClass} value={form.effort} onChange={(e) => set("effort", e.target.value)}>
+                    {catalog.efforts.map((v) => (
+                      <option key={v}>{v}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="JDK" hint="For run_command">
+                  <select className={inputClass} value={form.jdk} onChange={(e) => set("jdk", e.target.value as AgentInput["jdk"])}>
+                    <option value="legacy">JDK 8 (legacy)</option>
+                    <option value="modern">JDK 25 (modern)</option>
+                  </select>
+                </Field>
+                <Field label="Max turns">
+                  <input type="number" min={1} max={500} className={inputClass} value={form.max_turns} onChange={(e) => set("max_turns", Number(e.target.value))} />
+                </Field>
               </div>
-            </fieldset>
-            <Field label="Required documents" hint="One per line, relative to .migration/<domain>/<operation>/. The agent is sent back if any is missing.">
-              <textarea rows={5} className={`${inputClass} font-mono text-xs`} value={outputs} onChange={(e) => {
-                  save.reset();
-                  setOutputs(e.target.value);
-                }}
-              />
-            </Field>
-          </div>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("boundary")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "boundary", e.target.checked))}
-            />
-            <span>
-              Boundary check
-              <span className="block text-xs text-subtle">
-                Before finishing, the agent must remove every use of another domain's packages or tables from this domain's service (ownership is set on each
-                domain's Boundary tab).
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("module_guardrails")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "module_guardrails", e.target.checked))}
-            />
-            <span>
-              Module guardrails
-              <span className="block text-xs text-subtle">
-                Before finishing, a git comparison with the commit the step started from must pass: no UI, DDL, version or build changes, only call-site and
-                wiring edits outside the new modules, SQL text identical to the monolith's, and no other domain's or God module's code in the modules.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("orchestrator_guardrails")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "orchestrator_guardrails", e.target.checked))}
-            />
-            <span>
-              Orchestrator guardrails
-              <span className="block text-xs text-subtle">
-                Before finishing, a git comparison with the commit the step started from must pass: no database access or transactions in the orchestrator
-                module, the domain module unchanged, and only call-site and wiring edits outside the orchestrator module.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("service_guardrails")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "service_guardrails", e.target.checked))}
-            />
-            <span>
-              Service guardrails
-              <span className="block text-xs text-subtle">
-                Before finishing, a git comparison must pass: the monolith untouched, the copied code and tests equal to the module's apart from package and import
-                lines, SQL text identical, only the module's libraries plus the allowed infrastructure ones, and exactly the approved operations.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("orchestrator_service_guardrails")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "orchestrator_service_guardrails", e.target.checked))}
-            />
-            <span>
-              Orchestrator service guardrails
-              <span className="block text-xs text-subtle">
-                Before finishing, a git comparison must pass: no database of any kind in the service, the monolith untouched, the orchestrator module's code copied
-                unchanged apart from package and import lines, Java 25 on Spring Boot, and exactly the declared operations.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("acceptance_test_guardrails")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "acceptance_test_guardrails", e.target.checked))}
-            />
-            <span>
-              Acceptance suite guardrails
-              <span className="block text-xs text-subtle">
-                Before finishing, a git comparison must pass: only the acceptance suite in acceptance-tests/ changed, it is black-box (no import of the service's code, a build of its own), the monolith is untouched and no test is disabled.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("acceptance_suite_unchanged")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "acceptance_suite_unchanged", e.target.checked))}
-            />
-            <span>
-              Acceptance suite unchanged
-              <span className="block text-xs text-subtle">
-                Before finishing, nothing under acceptance-tests/ may have changed: the suite is the proof that behaviour is unchanged, so it is run, never edited.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("service_test_guardrails")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "service_test_guardrails", e.target.checked))}
-            />
-            <span>
-              Service test guardrails
-              <span className="block text-xs text-subtle">
-                Before finishing, a git comparison must pass: only test sources (src/test/) and test-scoped dependencies changed, no production code or configuration, and no test is disabled.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("modernise_guardrails")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "modernise_guardrails", e.target.checked))}
-            />
-            <span>
-              Modernisation guardrails
-              <span className="block text-xs text-subtle">
-                Before finishing, a git comparison must pass: the schema unchanged (no DDL, schema scripts, Flyway or Liquibase; ddl-auto none or validate), Java 25 on Spring Boot 4, no secrets, no test disabled, the monolith untouched.
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={(form.checks ?? []).includes("integration_guardrails")}
-              onChange={(e) => set("checks", toggleCheck(form.checks ?? [], "integration_guardrails", e.target.checked))}
-            />
-            <span>
-              Integration guardrails
-              <span className="block text-xs text-subtle">
-                Before finishing, a git comparison must pass: no UI, DDL or SQL change in the monolith, only an HTTP client and the Azure Service Bus SDK added, the domain and orchestrator modules unchanged, no secrets, no test deleted or disabled.
-              </span>
-            </span>
-          </label>
-          <p className="text-xs text-subtle">A built-in agent always passes its own guardrails before it may finish, even if they are unticked here.</p>
+              <div className="grid gap-6 md:grid-cols-2">
+                <fieldset className="text-sm">
+                  <legend className="mb-2 font-medium">Tools</legend>
+                  <div className="space-y-1.5">
+                    {/* Check tools aren't chosen: an agent gets those of the checks it must pass (common.tools_of). */}
+                    {catalog.tools.filter((t) => !t.name.startsWith("check_")).map((t) => (
+                      <label key={t.name} className="flex items-start gap-2">
+                        <input type="checkbox" className="mt-1" checked={form.tools.includes(t.name)} onChange={() => toggleTool(t.name)} />
+                        <span>
+                          <code className="text-xs">{t.name}</code>
+                          <span className="block text-xs text-subtle">{t.description}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                <Field label="Required documents" hint="One per line, relative to .migration/<domain>/<operation>/. The agent is sent back if any is missing.">
+                  <textarea rows={5} className={`${inputClass} font-mono text-xs`} value={outputs} onChange={(e) => {
+                      save.reset();
+                      setOutputs(e.target.value);
+                    }}
+                  />
+                </Field>
+              </div>
+            </div>
+          </details>
         </div>
-
-        <AgentGuardrails agent={config} form={form} onChange={(text) => set("guardrails", text)} />
 
       </>
       )}
@@ -783,69 +639,160 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
 }
 
 /** The global guardrails in plain words (editable) and what the built-in checks enforce (read-only). */
-function GuardrailsPanel({ onClose }: { onClose: () => void }) {
+function useSharedTexts() {
+  return useQuery({ queryKey: ["sharedTexts"], queryFn: api.sharedTexts });
+}
+
+/** One shared text: what it is, where it is used, and its text, editable by those who may change the library. */
+function SharedTextEditor({ text }: { text: SharedText }) {
   const queryClient = useQueryClient();
   const canEdit = useCanGlobally("agents.manage");
-  const { data } = useQuery({ queryKey: ["guardrails"], queryFn: api.guardrails });
-  const [text, setText] = useState<string | null>(null);
-  const save = useMutation({
-    mutationFn: () => api.updateGuardrails(text ?? ""),
-    onSuccess: (saved) => {
-      queryClient.setQueryData(["guardrails"], saved);
-      setText(null);
-    },
-  });
-  if (!data) return <p className="text-subtle">Loading…</p>;
-  const value = text ?? data.text;
+  const [draft, setDraft] = useState<string | null>(null);
+  const onSaved = (saved: SharedText) => {
+    queryClient.setQueryData<SharedText[]>(["sharedTexts"], (prev) => prev?.map((t) => (t.key === saved.key ? saved : t)));
+    setDraft(null);
+  };
+  const save = useMutation({ mutationFn: () => api.updateSharedText(text.key, draft ?? text.text), onSuccess: onSaved });
+  const reset = useMutation({ mutationFn: () => api.resetSharedText(text.key), onSuccess: onSaved });
+  const value = draft ?? text.text;
+  const error = (save.error ?? reset.error) as Error | null;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-medium">{text.title}</span>
+        <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{`{{${text.key}}}`}</code>
+        {text.customised && <span className="rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn">Customised</span>}
+      </div>
+      {text.description && <p className="text-xs text-subtle">{text.description}</p>}
+      <p className="text-xs text-subtle">
+        Used by: {text.used_by.length ? text.used_by.join(", ") : "no agent"}
+        {text.updated_by && ` · last changed by ${text.updated_by}`}
+      </p>
+      <textarea
+        aria-label={`Shared text ${text.title}`}
+        rows={Math.min(24, Math.max(6, value.split("\n").length + 1))}
+        className={`${inputClass} font-mono text-xs leading-5`}
+        value={value}
+        readOnly={!canEdit}
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      {canEdit ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={save.isPending || draft === null || draft === text.text || !draft.trim()}
+            onClick={() => save.mutate()}
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          >
+            Save shared text
+          </button>
+          {draft !== null && draft !== text.text && (
+            <button type="button" onClick={() => setDraft(null)} className="text-sm text-subtle hover:text-fg">
+              Discard changes
+            </button>
+          )}
+          {text.builtin && text.customised && (
+            <button type="button" disabled={reset.isPending} onClick={() => reset.mutate()} className="text-sm text-accent hover:underline disabled:opacity-50">
+              Reset to default
+            </button>
+          )}
+          {(save.isSuccess || reset.isSuccess) && draft === null && <span className="text-sm text-ok">Saved: every agent above gets it from the next step that starts</span>}
+          {error && <span className="text-sm text-bad">{error.message}</span>}
+        </div>
+      ) : (
+        <p className="text-xs text-subtle">Changing a shared text affects every project, so it needs Manage agents.</p>
+      )}
+    </div>
+  );
+}
+
+/** The shared texts an agent's instructions include: each one viewable and editable in place, and the full prompt. */
+function InstructionPlaceholders({ instructions, what = "instructions" }: { instructions: string; what?: "instructions" | "guardrails" }) {
+  const { data: texts } = useSharedTexts();
+  const [open, setOpen] = useState<string | null>(null);
+  const [preview, setPreview] = useState(false);
+  const keys = placeholders(instructions);
+  if (keys.length === 0 || !texts) return null;
+  const byKey = new Map(texts.map((t) => [t.key, t]));
+  const opened = open ? byKey.get(open) : undefined;
+
+  return (
+    <div className="space-y-3 rounded-md border border-border p-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-subtle">Shared texts in these {what}:</span>
+        {keys.map((key) => {
+          const known = byKey.get(key);
+          return known ? (
+            <button
+              key={key}
+              type="button"
+              title={known.description || known.title}
+              onClick={() => setOpen(open === key ? null : key)}
+              className={`rounded-full border px-2 py-0.5 font-mono text-xs ${open === key ? "border-accent bg-accent/10 text-accent" : "border-border hover:border-accent/50"}`}
+            >
+              {`{{${key}}}`}
+              {known.customised && " •"}
+            </button>
+          ) : (
+            <span key={key} title="No shared text has this key: saving will be refused" className="rounded-full border border-bad/50 px-2 py-0.5 font-mono text-xs text-bad">
+              {`{{${key}}}`} unknown
+            </span>
+          );
+        })}
+        <button type="button" onClick={() => setPreview(!preview)} className="ml-auto text-xs font-medium text-accent hover:underline">
+          {preview ? "Hide full text" : what === "guardrails" ? "Show the full guardrails" : "Preview full prompt"}
+        </button>
+      </div>
+      {opened && <SharedTextEditor key={opened.key} text={opened} />}
+      {preview && (
+        <div className="space-y-1">
+          <p className="text-xs text-subtle">
+            {what === "guardrails"
+              ? "The guardrails as the agent gets them, with the shared texts filled in, after its instructions."
+              : "The instructions as the agent gets them, with the shared texts filled in (the preamble and, in a feature's migration, the feature rules come before them; the guardrails come after)."}
+          </p>
+          <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-xs leading-5">
+            {expandPlaceholders(instructions, Object.fromEntries(texts.map((t) => [t.key, t.text])))}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Every shared text, the preamble and feature rules included. */
+function SharedTextsPanel({ onClose, focus }: { onClose: () => void; focus: string | null }) {
+  const { data: texts } = useSharedTexts();
+  if (!texts) return <p className="text-subtle">Loading…</p>;
   return (
     <section className="space-y-4 rounded-lg border border-border p-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="font-semibold">Guardrails</h2>
+          <h2 className="font-semibold">Shared texts</h2>
           <p className="text-sm text-subtle">
-            Rules in plain words, given to every agent whose step changes code, in every project, as hard rules: in its instructions, and again each
-            time it runs a guardrail check. A project can add to them or replace them in its{" "}
-            <Link to="/project" className="text-accent hover:underline">
-              Project settings
-            </Link>
-            . No tool checks these against git; the agent is told to stop and ask when it can't keep one.
+            Texts several agents share. Instructions include one with its placeholder, such as <code>{"{{rest_rules}}"}</code>, filled in when a step
+            starts, so a change here reaches every agent that includes it, in every project. The preamble and the feature rules are given to every agent.
           </p>
         </div>
         <button type="button" onClick={onClose} className="text-sm text-subtle hover:text-fg">
           Close
         </button>
       </div>
-      <textarea
-        aria-label="Global guardrails"
-        className={`${inputClass} min-h-48 font-mono text-xs`}
-        value={value}
-        readOnly={!canEdit}
-        placeholder={"e.g.\n- Never change classes under com.acme.common.\n- Every new public method has a unit test.\n- No new Spring XML files; add beans to the module's context file."}
-        onChange={(e) => setText(e.target.value)}
-      />
-      {canEdit && (
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            disabled={save.isPending || text === null || text === data.text}
-            onClick={() => save.mutate()}
-            className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-          >
-            Save guardrails
-          </button>
-          {save.isSuccess && text === null && <span className="text-sm text-ok">Saved: steps that start from now on get them</span>}
-          {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
-        </div>
-      )}
-      <div className="space-y-2">
-        <h3 className="text-sm font-medium">Built-in checks (enforced in code, always on)</h3>
-        {data.builtin.map((b) => (
-          <details key={b.key} className="rounded-md border border-border px-3 py-2 text-sm">
-            <summary className="cursor-pointer font-medium">{b.title}</summary>
-            <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-subtle">{b.description}</pre>
-          </details>
-        ))}
-      </div>
+      {texts.map((t) => (
+        <details key={t.key} open={t.key === focus} className="rounded-md border border-border px-3 py-2">
+          <summary className="cursor-pointer text-sm">
+            <span className="font-medium">{t.title}</span> <code className="text-xs text-subtle">{`{{${t.key}}}`}</code>
+            {t.customised && <span className="ml-2 text-xs text-warn">Customised</span>}
+            <span className="ml-2 text-xs text-subtle">
+              {t.used_by.length} agent{t.used_by.length === 1 ? "" : "s"}
+            </span>
+          </summary>
+          <div className="mt-3">
+            <SharedTextEditor text={t} />
+          </div>
+        </details>
+      ))}
     </section>
   );
 }
@@ -860,8 +807,20 @@ export function AgentsPage() {
   const [workflowKey, setWorkflowKey] = useState(""); // "": every agent
   const { data: workflows = [] } = useWorkflows();
   const [params, setParams] = useSearchParams();
-  const showGuardrails = params.get("guardrails") === "1";
-  const setShowGuardrails = (on: boolean) => setParams(on ? { guardrails: "1" } : {}, { replace: true });
+  // The Shared texts panel is a search parameter (with `text` for the one opened), keeping the others in the URL.
+  const toggleParam = (name: string, on: boolean) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (on) next.set(name, "1");
+        else next.delete(name);
+        if (name === "shared" && !on) next.delete("text");
+        return next;
+      },
+      { replace: true },
+    );
+  const showShared = params.get("shared") === "1";
+  const setShowShared = (on: boolean) => toggleParam("shared", on);
 
   useEffect(() => {
     if (!selected && agents?.length) navigate(`/agents/${agents[0].key}${window.location.search}`, { replace: true });
@@ -880,8 +839,8 @@ export function AgentsPage() {
   return (
     <div className="space-y-6">
       <PageTitle icon={<ChipIcon />} title="Agents" subtitle="The agent library. Workflows use these agents as steps; changes apply to stages that start after saving." tone="from-emerald-500 to-teal-500">
-        <button onClick={() => setShowGuardrails(!showGuardrails)} className="rounded-md border border-border px-4 py-1.5 text-sm font-medium hover:bg-muted">
-          Guardrails
+        <button onClick={() => setShowShared(!showShared)} className="rounded-md border border-border px-4 py-1.5 text-sm font-medium hover:bg-muted">
+          Shared texts
         </button>
         {!adding && (
           <button onClick={() => setAdding(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
@@ -889,7 +848,7 @@ export function AgentsPage() {
           </button>
         )}
       </PageTitle>
-      {showGuardrails && <GuardrailsPanel onClose={() => setShowGuardrails(false)} />}
+      {showShared && <SharedTextsPanel onClose={() => setShowShared(false)} focus={params.get("text")} />}
       {adding && <NewAgentForm onCancel={() => setAdding(false)} />}
       <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
         <nav className="space-y-0.5 lg:sticky lg:top-4 lg:self-start">

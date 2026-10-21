@@ -8,11 +8,14 @@ from sqlalchemy import select
 
 from app import agent_store, contracts_store, modulith_scope, workflow_store
 from app.agents import stub
-from app.agents.defaults import INSTRUCTIONS, default_config
+from app.agents.defaults import GUARDRAILS, INSTRUCTIONS, default_config
 from app.db.models import SHARED, Agent, AuditEvent, Setting, WorkflowDef
 from app.db.session import session_scope
 from tests.conftest import start_run, wait_for
 from tests.test_cross_domain import _approve, _steps_of_shape
+
+# What each built-in agent is given: its instructions, then its guardrails (moved out of the instructions).
+GIVEN = {key: f"{text}\n\n{GUARDRAILS.get(key, '')}" for key, text in INSTRUCTIONS.items()}
 
 _ids = itertools.count()
 MODULITH = ["domain_dependencies", "linked_domain_contracts", "domain_design", "orchestrator_design"]
@@ -53,17 +56,17 @@ def test_modulith_agents_are_read_only_design_agents(client):
 
 
 def test_instructions_carry_each_agents_focus():
-    deps, domain = INSTRUCTIONS["domain_dependencies"], INSTRUCTIONS["domain_design"]
-    contracts, orchestrator = INSTRUCTIONS["linked_domain_contracts"], INSTRUCTIONS["orchestrator_design"]
+    deps, domain = GIVEN["domain_dependencies"], GIVEN["domain_design"]
+    contracts, orchestrator = GIVEN["linked_domain_contracts"], GIVEN["orchestrator_design"]
     assert "domain-dependencies.yaml" in deps and "considered_unrelated" in deps and "touchpoints" in deps
     assert "same database and the same UI" in domain and "No DDL" in domain
     assert "domain-dependencies.yaml" in contracts and "reuse" in contracts and "binding" in contracts
     assert "temporary" in contracts and "linked-domain-contracts.yaml" in contracts
     assert "`local` mode" in orchestrator and "`contract` mode" in orchestrator
     assert "linked-domain-contracts.yaml" in domain  # ports name the contract they call
-    assert all(k in INSTRUCTIONS["modular_monolith"] for k in ("orchestrator", "binding", "linked-domain contracts"))
-    assert "boundary design" not in INSTRUCTIONS["integration_design"]
-    assert "linked-domain" in INSTRUCTIONS["integration_design"]
+    assert all(k in GIVEN["modular_monolith"] for k in ("orchestrator", "binding", "linked-domain contracts"))
+    assert "boundary design" not in GIVEN["integration_design"]
+    assert "linked-domain" in GIVEN["integration_design"]
     assert "wrapper" not in orchestrator.lower() and "wrapper" not in deps.lower()
 
 
@@ -553,12 +556,12 @@ exceptions: []
 
 def test_every_modulith_agent_carries_the_guardrails():
     for key in ("domain_design", "linked_domain_contracts", "orchestrator_design"):
-        text = INSTRUCTIONS[key]
+        text = GIVEN[key]
         assert "WITHOUT changing the UI, the database schema or the technology stack" in text, key
         assert "WHO WRITES WHICH TABLES" in text and "God module" in text and "Utility modules only" in text, key
     assert "domain-design.yaml" in default_config("domain_design")["outputs"]
-    assert "Hard rules for this step" in INSTRUCTIONS["modular_monolith"] and "WHO WRITES WHICH TABLES" in INSTRUCTIONS["modular_monolith"]
-    assert "god_modules" in INSTRUCTIONS["domain_dependencies"]
+    assert "Hard rules for this step" in GIVEN["modular_monolith"] and "WHO WRITES WHICH TABLES" in GIVEN["modular_monolith"]
+    assert "god_modules" in GIVEN["domain_dependencies"]
 
 
 def test_domain_design_declaration_must_keep_the_locked_lists_empty():
@@ -680,7 +683,7 @@ def test_module_in_monolith_agent_is_configured_for_the_guardrails():
     assert {"check_module_guardrails", "edit_file", "run_command", "ask_user"} <= set(c["tools"])
     assert c["checks"] == ["module_guardrails"] and c["max_turns"] == 200
     assert c["outputs"] == ["modular-monolith.md", "module-extraction.yaml"]
-    text = INSTRUCTIONS["modular_monolith"]
+    text = GIVEN["modular_monolith"]
     for phrase in ("Characterization tests first", "a **copy** of the feature's code, never a move",
                    "a **router** takes over the legacy service's bean", "bridge_dir", "module-extraction.yaml",
                    "Stop and ask with ask_user", "Rollback: set the toggle to `legacy`", "never the reverse"):
@@ -718,8 +721,8 @@ def test_context_ports_are_required_and_their_adapters_share_the_routers_bridge(
 
 
 def test_ambient_inputs_are_part_of_the_designs_and_the_module_agent():
-    assert "No ambient inputs" in INSTRUCTIONS["domain_design"] and "context_ports" in INSTRUCTIONS["domain_design"]
-    text = INSTRUCTIONS["modular_monolith"]
+    assert "No ambient inputs" in GIVEN["domain_design"] and "context_ports" in GIVEN["domain_design"]
+    text = GIVEN["modular_monolith"]
     assert "Context ports:" in text and "never reads the session" in text
 
 
@@ -730,7 +733,7 @@ def test_microservice_agent_is_configured_for_the_guardrails():
     assert "check_service_guardrails" in c["tools"] and c["max_turns"] == 200
     assert c["checks"] == ["boundary", "service_guardrails"]
     assert c["outputs"] == ["microservice.md", "microservice-extraction.yaml"]
-    text = INSTRUCTIONS["microservice_scaffold"]
+    text = GIVEN["microservice_scaffold"]
     for phrase in ("Copy, do not rewrite", "No Spring Boot", "no outbox", "request headers", "No authentication in this step",
                    "open_decisions", "Stop and ask with ask_user", "WITHOUT changing the UI"):
         assert phrase in text, phrase

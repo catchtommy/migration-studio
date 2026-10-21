@@ -116,6 +116,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
 UPGRADE_MARKER = "_upgraded_builtin_defaults_v20"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
+GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
+GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
 # editor unless a workflow uses them.
@@ -161,6 +163,8 @@ def seed() -> None:
             _add_later_builtins(s)
             _upgrade_untouched_builtins(s)
             _add_guardrails(s)
+            _move_guardrails_to_agents(s)
+            _move_guardrails_out_of_instructions(s)
             return
         for marker in [*LATER_BUILTINS, UPGRADE_MARKER, GUARDRAILS_MARKER]:  # a fresh database: the current built-ins
             s.add(Setting(key=marker, value=True))
@@ -182,6 +186,80 @@ def seed() -> None:
                 if "agent_effort" in old_settings:
                     config["effort"] = old_settings["agent_effort"]
             s.add(Agent(project=SHARED, key=key, **config))
+        s.flush()
+        _move_guardrails_to_agents(s)
+        _move_guardrails_out_of_instructions(s)  # settings saved under older versions may hold them
+
+
+def _changes_code(row: Agent) -> bool:
+    """An agent that can change code: the kind the global and project guardrails were given to."""
+    return bool({"edit_file", "run_command"} & set(row.tools or []))
+
+
+def _joined(*texts: str | None) -> str:
+    return "\n\n".join(t.strip() for t in texts if t and t.strip())
+
+
+def _move_guardrails_to_agents(s) -> None:
+    """Once: guardrails are kept per agent only. The global guardrails (Agents page) and each project's own (Project
+    settings, added to the global ones or in their place) went to every agent whose step changed code; their text is
+    moved into the guardrails of each agent that can change code, so every agent keeps the rules it was given:
+    the global text into the shared agents (and projects' copies), a project's text into that project's copies (made
+    where the project had none). The old settings are then removed."""
+    if s.get(Setting, (GLOBAL, GUARDRAILS_MOVED_MARKER)) is not None:
+        return
+    keys = ("custom_guardrails", "project_guardrails", "project_guardrails_mode")
+    rows = list(s.scalars(select(Setting).where(Setting.key.in_(keys))))
+    stored = {(r.project, r.key): r.value for r in rows}
+    shared_text = str(stored.get((GLOBAL, "custom_guardrails")) or "")
+    own = {p: (str(stored.get((p, "project_guardrails")) or ""), stored.get((p, "project_guardrails_mode")) or "add")
+           for p, k in stored if k == "project_guardrails" and p != GLOBAL}
+
+    def text_for(project: str, current: str) -> str:
+        project_text, mode = own.get(project, ("", "add"))
+        if not project_text.strip():
+            return _joined(current, shared_text)
+        return _joined(current, project_text) if mode == "replace" else _joined(current, shared_text, project_text)
+
+    agents = list(s.scalars(select(Agent)))
+    have = {(a.project, a.key) for a in agents}
+    coders = [a for a in agents if _changes_code(a)]
+    # A project with guardrails of its own gets a copy of each shared agent that changes code, made from the shared
+    # agent as it is before the move (its own guardrails only), so the copy's text is the project's effective one.
+    copies = [Agent(project=project, key=shared.key, **{f: getattr(shared, f) for f in FIELDS})
+              for project, (project_text, _mode) in own.items() if project_text.strip()
+              for shared in coders if shared.project == SHARED and (project, shared.key) not in have]
+    for row in [*coders, *copies]:
+        row.guardrails = _joined(row.guardrails, shared_text) if row.project == SHARED else \
+            text_for(row.project, row.guardrails)
+    s.add_all(copies)
+    for r in rows:
+        s.delete(r)
+    s.add(Setting(key=GUARDRAILS_MOVED_MARKER, value=True))
+
+
+def _move_guardrails_out_of_instructions(s) -> None:
+    """Once: built-in agents' guardrails (the fixed rules, the Modulith guardrails, the step's hard rules) moved from
+    their instructions to their Guardrails. In every copy of a built-in agent, shared or a project's, each guardrail
+    section still in the instructions word for word is taken out and put first in its guardrails, so an agent edited
+    elsewhere moves too; a section someone changed stays where it is."""
+    if s.get(Setting, (GLOBAL, GUARDRAILS_OUT_MARKER)) is not None:
+        return
+    from app.agents.defaults import GUARDRAIL_SECTION_TEMPLATES, GUARDRAIL_SECTIONS, without
+
+    for row in s.scalars(select(Agent).where(Agent.key.in_(list(GUARDRAIL_SECTIONS)))):
+        text = row.instructions or ""
+        moved = []
+        for stored, written in zip(GUARDRAIL_SECTION_TEMPLATES[row.key], GUARDRAIL_SECTIONS[row.key]):
+            # As stored (shared texts as placeholders), or written out where instructions never got placeholders.
+            if stored in text:
+                moved.append(stored)
+            elif written in text:
+                moved.append(written)
+        if moved:
+            row.instructions = without(text, moved)
+            row.guardrails = _joined(*moved, row.guardrails)
+    s.add(Setting(key=GUARDRAILS_OUT_MARKER, value=True))
 
 
 def _add_later_builtins(s) -> None:
@@ -206,6 +284,7 @@ def _upgrade_untouched_builtins(s) -> None:
         if row is not None and hashlib.sha256(row.instructions.encode()).hexdigest() in hashes:
             current = default_config(key)
             row.instructions, row.outputs = current["instructions"], current["outputs"]
+            row.guardrails = _joined(current["guardrails"], row.guardrails)  # moved out of the instructions
             row.tools, row.checks = current["tools"], current["checks"]
             if key in MORE_TURNS:
                 row.max_turns = max(row.max_turns, current["max_turns"])

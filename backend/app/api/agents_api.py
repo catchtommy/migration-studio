@@ -25,11 +25,12 @@ def _visible(agent: dict, access: ProjectAccess) -> dict:
     return agent if access.can("agents.manage") else {**agent, "instructions": ""}
 
 
-def _check_placeholders(instructions: str) -> None:
-    missing = shared_texts.unknown(instructions)
-    if missing:
-        raise HTTPException(422, f"The instructions include {', '.join('{{' + m + '}}' for m in missing)}, which "
-                                 "is not a shared text. Check the spelling, or see Shared texts on the Agents page.")
+def _check_placeholders(instructions: str, guardrails: str | None = None) -> None:
+    for what, text in (("instructions", instructions), ("guardrails", guardrails or "")):
+        missing = shared_texts.unknown(text)
+        if missing:
+            raise HTTPException(422, f"The {what} include {', '.join('{{' + m + '}}' for m in missing)}, which is "
+                                     "not a shared text. Check the spelling, or see Shared texts on the Agents page.")
 
 
 def _check_scope(scope: Scope, access: ProjectAccess) -> None:
@@ -93,7 +94,7 @@ def save_agent_md(key: str, body: AgentFile, scope: Scope = "shared", access: Pr
     except ValidationError as e:
         raise HTTPException(422, "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors()))
     _check_scope(scope, access)
-    _check_placeholders(fields.instructions)
+    _check_placeholders(fields.instructions, fields.guardrails)
     return {"agent": agent_store.update(key, fields.model_dump(), scope), "warnings": warnings}
 
 
@@ -131,7 +132,7 @@ def get_agent(key: str, access: ProjectAccess = Depends(project_context)):
 def update_agent(key: str, body: AgentIn, scope: Scope = "shared", access: ProjectAccess = Depends(project_context)):
     """Change the shared agent, or (scope=project) this project's copy, made from the shared one if needed."""
     _check_scope(scope, access)
-    _check_placeholders(body.instructions)
+    _check_placeholders(body.instructions, body.guardrails)
     try:
         return agent_store.update(key, body.model_dump(), scope)
     except KeyError:

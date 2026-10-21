@@ -106,8 +106,8 @@ def list_all() -> list[dict[str, Any]]:
         agents = list(s.scalars(select(Agent)))
     for item in out:
         token = item["key"]
-        item["used_by"] = sorted({a.title for a in agents
-                                  if any(m.group(1) == token for m in PLACEHOLDER.finditer(a.instructions or ""))})
+        item["used_by"] = sorted({a.title for a in agents if any(
+            m.group(1) == token for m in PLACEHOLDER.finditer(f"{a.instructions or ''}\n{a.guardrails or ''}"))})
     return out
 
 

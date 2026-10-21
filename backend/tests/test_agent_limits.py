@@ -76,9 +76,24 @@ def test_commands_commit_locally_and_never_see_the_servers_secrets(ctx, monkeypa
     assert out.startswith("exit code 0")
 
 
+def test_an_agent_gets_the_check_tools_of_its_checks_and_no_others(ctx):
+    from app.agents.common import tools_of
+
+    ctx, _, _ = ctx
+    ctx.stage = "modular_monolith"
+    ctx.config = {**default_config("modular_monolith"), "tools": ["read_file", "edit_file"]}  # none chosen
+    assert tools_of(ctx) == ["read_file", "edit_file", "check_module_guardrails"]
+    ctx.config["tools"] = ["read_file", "check_service_guardrails", "check_boundaries"]  # not its checks: dropped
+    assert tools_of(ctx) == ["read_file", "check_module_guardrails"]
+    ctx.stage, ctx.config = "modernise_and_test", default_config("modernise_and_test")
+    assert {"check_boundaries", "check_test_guardrails", "check_release_guardrails"} <= set(tools_of(ctx))
+    ctx.stage, ctx.config = "domain_design", default_config("domain_design")  # a design step: no check tools
+    assert not [t for t in tools_of(ctx) if t.startswith("check_")]
+
+
 def test_a_built_in_agent_always_passes_its_own_guardrails(ctx):
     ctx, _, _ = ctx
-    ctx.stage, ctx.config = "modular_monolith", {**default_config("modular_monolith"), "checks": []}  # unticked
+    ctx.stage, ctx.config = "modular_monolith", {**default_config("modular_monolith"), "checks": []}  # none stored
     assert "module_guardrails" in required_checks(ctx)
     ctx.stage, ctx.config = "my_custom_agent", {"checks": ["boundary"]}  # a custom agent: what it is configured with
     assert required_checks(ctx) == {"boundary"}

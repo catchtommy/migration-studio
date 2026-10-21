@@ -84,6 +84,15 @@ def test_viewer_can_read_but_not_change(client):
     assert viewer.get("/api/users").status_code == 403
 
 
+def test_viewer_can_read_shared_texts_but_not_change_them(client):
+    viewer = signed_in(make_user(client, ["viewer"])["username"])
+    texts = {t["key"]: t for t in viewer.get("/api/shared-texts").json()}
+    assert "rest_rules" in texts and texts["rest_rules"]["text"]  # what a placeholder in the instructions stands for
+    assert viewer.put("/api/shared-texts/rest_rules", json={"text": "Mine."}).status_code == 403
+    assert viewer.post("/api/shared-texts/rest_rules/reset").status_code == 403
+    assert client.get("/api/shared-texts").json() == list(texts.values())  # the same texts an admin sees
+
+
 def test_developer_runs_but_reviewer_approves(client):
     dev_user = make_user(client, ["developer"])
     reviewer_user = make_user(client, ["reviewer"])

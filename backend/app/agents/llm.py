@@ -32,7 +32,7 @@ class ClaudeAgent(StageAgent):
         toolbox = Toolbox(ctx, common.toolchain_home(ctx))
         common.preflight_or_fail(ctx)  # before any model call: a step that can't finish costs nothing
         client = make_client()
-        tools = definitions(config["tools"])
+        tools = definitions(common.tools_of(ctx))
         system = common.system_prompt(ctx)
         messages: list[dict] = [{"role": "user", "content": common.brief(ctx)}]
         checks_left, previous = ctx.settings["max_attempts"], None

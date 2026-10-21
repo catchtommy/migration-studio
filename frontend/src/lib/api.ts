@@ -246,6 +246,32 @@ export interface ArtifactSummary {
   updated_at: string;
 }
 
+/** A text several agents' instructions include as a placeholder, `{{key}}`, filled in when a step starts. */
+export interface SharedText {
+  key: string;
+  title: string;
+  description: string;
+  text: string;
+  builtin: boolean; // shipped with the studio: it has a default to reset to
+  customised: boolean; // differs from that default
+  used_by: string[]; // titles of the agents whose instructions include it
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+/** Placeholders of shared texts, as the backend reads them (app/shared_texts.py PLACEHOLDER). */
+const PLACEHOLDER = /\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g;
+
+/** The shared-text keys the instructions include, each once, in order of first use. */
+export function placeholders(instructions: string): string[] {
+  return [...new Set([...instructions.matchAll(PLACEHOLDER)].map((m) => m[1]))];
+}
+
+/** The instructions with every known placeholder filled in (unknown ones are left as they are), as the agent gets them. */
+export function expandPlaceholders(instructions: string, texts: Record<string, string>): string {
+  return instructions.replace(PLACEHOLDER, (whole, key: string) => texts[key] ?? whole);
+}
+
 export interface Artifact extends ArtifactSummary {
   content: string;
 }
@@ -531,7 +557,7 @@ export type ProjectSettings = Record<string, string | number | boolean>;
 
 /** A built-in guardrail check and what it enforces (read-only: it lives in code). */
 export type BuiltinGuardrail = { key: string; title: string; description: string; checks: string[] }; // checks: the agent checks it serves
-export type Guardrails = { text: string; builtin: BuiltinGuardrail[] };
+export type Guardrails = { builtin: BuiltinGuardrail[] };
 
 export interface ProjectDetail extends Project {
   settings: ProjectSettings;
@@ -705,6 +731,9 @@ export const api = {
   restart: (id: string, stage: string, notes?: string, fresh = false) => request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh })),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
+  sharedTexts: () => request<SharedText[]>("/shared-texts"),
+  updateSharedText: (key: string, text: string) => request<SharedText>(`/shared-texts/${key}`, json("PUT", { text })),
+  resetSharedText: (key: string) => request<SharedText>(`/shared-texts/${key}/reset`, { method: "POST" }),
   downloadRunDocuments: (runId: string) => download(`/runs/${runId}/documents.zip`, "documents.zip"),
   downloadDomainDocuments: (key: string) => download(`/domains/${key}/documents.zip`, `${key}-documents.zip`),
   updateArtifact: (id: number, content: string) => request<Artifact>(`/artifacts/${id}`, json("PUT", { content })),
@@ -769,7 +798,6 @@ export const api = {
   deleteProject: (key: string) => request<void>(`/projects/${key}`, { method: "DELETE" }),
   updateProjectSettings: (key: string, values: ProjectSettings) => request<ProjectSettings>(`/projects/${key}/settings`, json("PUT", values)),
   guardrails: () => request<Guardrails>("/guardrails"),
-  updateGuardrails: (text: string) => request<Guardrails>("/guardrails", json("PUT", { text })),
   repository: (key: string) => request<RepositoryStatus>(`/projects/${key}/repository`),
   fetchRepository: (key: string) => request<RepositoryStatus>(`/projects/${key}/repository/fetch`, { method: "POST" }),
   members: (key: string) => request<Member[]>(`/projects/${key}/members`),

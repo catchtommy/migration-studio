@@ -214,9 +214,9 @@ class Toolbox:
         self.written: set[str] = set()  # workspace-relative paths written by this agent
         # A step not set to change code (Workflows page) writes its documents and nothing else.
         self.docs_only = ctx.stage_def is not None and not ctx.stage_def.code
-        tools = ctx.config.get("tools", [])
-        from app.agents.defaults import _CHECKS
-        checks = set(ctx.config.get("checks") or []) | set(_CHECKS.get(ctx.stage, []))  # as common.required_checks
+        from app.agents.common import required_checks, tools_of
+        self.tools = tools = tools_of(ctx)
+        checks = required_checks(ctx)
         if ctx.base_sha is None and (GIT_CHECK_TOOLS & set(tools) or GIT_CHECKS & checks):
             ctx.base_sha = module_guardrails.head(self.root / ctx.code_dir)
         if ctx.monolith_sha is None and ctx.code_dir not in (".", "") and (
@@ -225,7 +225,7 @@ class Toolbox:
             ctx.monolith_sha = module_guardrails.head(self.root)  # the monolith checkout the service copies from
 
     def run(self, name: str, args: dict) -> str:
-        if name not in self.ctx.config.get("tools", []):
+        if name not in self.tools:
             raise ToolError(f"Tool {name} is not enabled for this agent")
         return getattr(self, name)(**validate(name, args))
 

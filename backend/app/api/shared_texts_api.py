@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app import shared_texts
-from app.auth import CurrentUser, require, require_global
+from app.auth import CurrentUser, require_global
 
 router = APIRouter(prefix="/api/shared-texts")
 
@@ -11,9 +11,10 @@ class SharedTextIn(BaseModel):
     text: str = Field(min_length=1, max_length=200_000)
 
 
-@router.get("", dependencies=[Depends(require("agents.manage"))])
+@router.get("")
 def list_texts():
-    """The texts agents share, with the agents whose instructions include each."""
+    """The texts agents share, with the agents whose instructions include each. Anyone signed in may read them, as
+    they may read the instructions that include them; changing one needs Manage agents."""
     return shared_texts.list_all()
 
 

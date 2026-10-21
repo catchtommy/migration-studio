@@ -19,8 +19,6 @@ GLOBAL_DEFAULTS: dict[str, Any] = {
     "extra_ca_file": "",  # PEM file with the company's root CA(s), if not already trusted by the OS
     "copilot_cli_path": "",  # an IT-installed `copilot` binary instead of the SDK's download
     "copilot_disable_websockets": False,  # for proxies that block WebSockets
-    # Guardrails written in plain words (Agents page), given to every agent that changes code (app/custom_guardrails.py)
-    "custom_guardrails": "",
 }
 PROJECT_DEFAULTS: dict[str, Any] = {
     "monolith_repo": "",  # git URL or local path; empty = blank workspace
@@ -40,13 +38,9 @@ PROJECT_DEFAULTS: dict[str, Any] = {
     "event_topic_pattern": "{domain}-events",  # one topic per publishing domain
     "command_queue_pattern": "{domain}-commands",  # saga commands
     "service_dir_pattern": "services/{domain}-service",  # where each extracted service lives in the workspace
-    # The project's own guardrails in plain words, added to the global ones or replacing them (Project settings)
-    "project_guardrails": "",
-    "project_guardrails_mode": "add",  # see GUARDRAIL_MODES
 }
 DEFAULTS = {**GLOBAL_DEFAULTS, **PROJECT_DEFAULTS}
 NETWORK_KEYS = {"https_proxy", "no_proxy", "extra_ca_file", "copilot_cli_path", "copilot_disable_websockets"}
-GUARDRAIL_MODES = ("add", "replace")
 LANGUAGES = {"java": "Java", "csharp": "C# / .NET", "typescript": "TypeScript / Node.js", "python": "Python",
              "go": "Go", "other": "Other"}
 
@@ -82,11 +76,6 @@ def _check(values: dict[str, Any], allowed: dict[str, Any], kind: str) -> None:
     unknown = set(values) - set(allowed)
     if unknown:
         raise KeyError(f"Unknown {kind} settings: {', '.join(sorted(unknown))}")
-    if "project_guardrails_mode" in values and values["project_guardrails_mode"] not in GUARDRAIL_MODES:
-        raise KeyError(f"project_guardrails_mode must be one of {', '.join(GUARDRAIL_MODES)}")
-    for key in ("custom_guardrails", "project_guardrails"):
-        if key in values and (not isinstance(values[key], str) or len(values[key]) > 50_000):
-            raise KeyError(f"{key} must be text of at most 50,000 characters")
     if "language" in values and values["language"] not in LANGUAGES:
         raise KeyError(f"language must be one of {', '.join(LANGUAGES)}")
     docs = values.get("monolith_docs_dir")

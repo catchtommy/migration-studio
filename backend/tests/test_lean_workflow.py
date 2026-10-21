@@ -52,7 +52,7 @@ def test_lean_agents_write_the_files_the_later_steps_and_checks_read():
 
 def test_lean_agents_include_shared_texts_rather_than_repeat_them():
     for key in LEAN_AGENTS:
-        template = defaults.TEMPLATES[key]
+        template = f"{defaults.TEMPLATES[key]}\n\n{defaults.GUARDRAIL_TEMPLATES.get(key, '')}"  # guardrails included
         used = set(re.findall(r"\{\{(\w+)\}\}", template))
         assert "fixed_rules" in used, key
         assert used <= set(defaults.SHARED_TEXTS), key

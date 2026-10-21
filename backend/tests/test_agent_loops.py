@@ -167,6 +167,6 @@ def test_a_failing_tool_reports_its_error_to_the_agent_instead_of_ending_it(ctx,
     text, is_error = common.run_tool(ctx, tools, "ask_user", {"question": "Which domain owns BANK_ACCOUNT?"})
     assert is_error and "could not be answered" in text and "Don't ask it again" in text
     monkeypatch.setattr(Toolbox, "check_boundaries", lambda self: 1 / 0, raising=False)
-    ctx.config = {**ctx.config, "tools": [*ctx.config["tools"], "check_boundaries"]}
-    text, is_error = common.run_tool(ctx, tools, "check_boundaries", {})
+    ctx.config = {**ctx.config, "checks": [*(ctx.config.get("checks") or []), "boundary"]}  # gives check_boundaries
+    text, is_error = common.run_tool(ctx, Toolbox(ctx, None), "check_boundaries", {})
     assert is_error and "ZeroDivisionError" in text

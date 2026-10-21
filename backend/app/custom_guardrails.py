@@ -1,10 +1,10 @@
-"""Guardrails written in plain words: a global text (Agents page) and each project's own (Project settings), which
-either adds to the global one or replaces it, for every agent whose step changes code; and each agent's own (its page
-on the Agents page), for that agent whatever its step. The agent gets them as hard rules in its system prompt, and
-again with each result of its guardrail check tools, so it re-reads them while it works.
+"""Guardrails written in plain words, kept per agent (its page on the Agents page), for that agent whatever its step:
+for a built-in agent, the fixed rules, the Modulith guardrails and its step's hard rules. The agent gets them as hard
+rules in its system prompt, after its instructions, and each result of its guardrail check tools points back to them. (The global and project guardrails of earlier releases were moved into the agents:
+agent_store._move_guardrails_to_agents.)
 
-Unlike the built-in checks (module_guardrails.py and the others, listed by `builtin()`), these are not checked
-against git: the agent is told to follow them and to stop and ask when one can't be kept.
+Unlike the built-in checks (module_guardrails.py and the others, listed by `builtin()`, always on for the built-in
+agents they belong to), these are not checked against git: the agent is told to follow them and to stop and ask when one can't be kept.
 """
 
 import importlib
@@ -36,49 +36,29 @@ _AGENT_LIMITS = """What every agent that changes code is held to, whatever its s
 """
 
 
-def effective(settings: dict) -> str:
-    """The guardrails in effect for a project: the global text, the project's added to it or in its place."""
-    own = (settings.get("project_guardrails") or "").strip()
-    shared = (settings.get("custom_guardrails") or "").strip()
-    if settings.get("project_guardrails_mode") == "replace":
-        return own
-    return "\n\n".join(t for t in (shared, own) if t)
+def _own(ctx) -> str:
+    """The agent's guardrails, with the shared texts they include ({{modulith_guardrails}}, ...) filled in."""
+    from app import shared_texts
 
-
-def applies(ctx) -> bool:
-    return ctx.stage_def is not None and bool(ctx.stage_def.code)
-
-
-def _parts(ctx) -> list[tuple[str, str]]:
-    """(heading, text) of the guardrails this agent gets: the project's (global and project, for steps that change
-    code) and the agent's own (always)."""
-    parts = []
-    shared = effective(ctx.settings) if applies(ctx) else ""
-    if shared:
-        parts.append(("Project", shared))
-    own = ((ctx.config or {}).get("guardrails") or "").strip()
-    if own:
-        parts.append(("This agent", own))
-    return parts
+    return shared_texts.expand(((ctx.config or {}).get("guardrails") or "").strip())
 
 
 def prompt_section(ctx) -> str:
-    parts = _parts(ctx)
-    if not parts:
+    own = _own(ctx)
+    if not own:
         return ""
     return ("## Guardrails\n"
             "These are hard rules, like the ones in your instructions; where they conflict, these win. No tool checks "
             "them for you, so check your own changes against them before each commit and before you finish. If you "
-            "can't keep one, stop and ask with ask_user instead of working around it.\n\n" +
-            "\n\n".join(f"### {heading}\n{text}" for heading, text in parts))
+            "can't keep one, stop and ask with ask_user instead of working around it.\n\n" + own)
 
 
 def reminder(ctx) -> str:
-    parts = _parts(ctx)
-    if not parts:
+    """A pointer to the guardrails, with each check result: they are in the prompt already, and can be long."""
+    if not _own(ctx):
         return ""
-    return ("\n\nAlso check your changes against these guardrails (not checked by this tool):\n" +
-            "\n\n".join(text for _heading, text in parts))
+    return ("\n\nAlso check your changes against the Guardrails section of your instructions: this tool checks only "
+            "what it reports, not all of them.")
 
 
 def builtin() -> list[dict]:

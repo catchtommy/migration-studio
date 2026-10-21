@@ -1,6 +1,8 @@
 """Starting configuration for each stage's agent. Everything here can be changed on the Agents page;
 "Reset to default" restores these values."""
 
+import re
+
 AUTO = "auto"  # let the AI provider choose the model
 CLAUDE_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -1512,6 +1514,48 @@ result is the same; the acceptance suite's results next to its baseline in `test
 layer), the scenario ids each covers, the coverage of the code the feature moved; and any finding.""",
 }
 
+# Each agent's guardrails: the sections of its instructions that say what it must not do (the fixed rules, the Modulith
+# guardrails and what they mean for the step, the step's hard rules), given as (first words, the words that follow the
+# section). They are kept in the agent's Guardrails, not its instructions, so they can be read and edited in one place;
+# the agent gets them once, as a Guardrails section after its instructions (app/custom_guardrails.py).
+_GUARDRAIL_SPANS: dict[str, list[tuple[str, str]]] = {
+    "linked_domain_contracts": [("Modulith guardrails. The target", "\n\nThis step designs only")],
+    "domain_design": [("Modulith guardrails. The target", "\n\nUsing the AS-IS document")],
+    "orchestrator_design": [("Modulith guardrails. The target", "\n\nRead the dependency finder's")],
+    "modular_monolith": [("Modulith guardrails. The target", "\n\n**Parallel run.**"),
+                         ("Hard rules for this step.", "\n\nRead first:")],
+    "monolith_orchestrator": [("Modulith guardrails. The target", "\n\n**Not every feature has an orchestrator.**"),
+                              ("Hard rules for this step.", "\n\nRead first:")],
+    "microservice_scaffold": [("Modulith guardrails. The target", "\n\nThe REST layer implements")],
+    "orchestrator_service": [("Hard rules for this step.", "\n\nREST API design rules.")],
+    "independent_tests": [("Hard rules for this step.", "\n\nWhat the suite covers:")],
+    "service_tests": [("Hard rules for this step.", "\n\nWhat to test:")],
+    "analysis": [("Fixed rules of this migration.", "\n\nStart from the feature's entry points")],
+    "modulith_design": [("Fixed rules of this migration.", "\n\nREST API design rules.")],
+    "modernise_and_test": [("Fixed rules of this migration.", "\n\nProcedure:")],
+}
+
+
+def _section(text: str, start: str, end: str) -> str:
+    i = text.index(start)
+    return text[i:text.index(end, i)]
+
+
+def without(text: str, sections: list[str]) -> str:
+    """The text with these sections taken out (and the blank lines they leave closed up)."""
+    for section in sections:
+        text = text.replace(section, "")
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+# stage -> its guardrail sections, word for word as they were in its instructions (shared texts written out).
+GUARDRAIL_SECTIONS = {stage: [_section(INSTRUCTIONS[stage], start, end) for start, end in spans]
+                      for stage, spans in _GUARDRAIL_SPANS.items()}
+# The instructions as earlier releases stored them, guardrails included (to recognise them when moving them out).
+INSTRUCTIONS_WITH_GUARDRAILS = INSTRUCTIONS
+INSTRUCTIONS = {stage: without(text, GUARDRAIL_SECTIONS.get(stage, [])) for stage, text in INSTRUCTIONS.items()}
+GUARDRAILS = {stage: "\n\n".join(sections) for stage, sections in GUARDRAIL_SECTIONS.items()}
+
 OUTPUTS = {
     "as_is_doc": ["as-is.md"],
     "deep_dive": ["deep-dive.md", "test-scenarios.md", "cross-domain.yaml"],
@@ -1631,6 +1675,10 @@ def templated(text: str) -> str:
 
 # The built-in agents' default instructions as stored: with placeholders for the shared blocks.
 TEMPLATES = {key: templated(text) for key, text in INSTRUCTIONS.items()}
+# The built-in agents' default guardrails as stored, and their sections one by one (to move them out of stored
+# instructions: agent_store._move_guardrails_out_of_instructions).
+GUARDRAIL_TEMPLATES = {key: templated(text) for key, text in GUARDRAILS.items()}
+GUARDRAIL_SECTION_TEMPLATES = {key: [templated(s) for s in sections] for key, sections in GUARDRAIL_SECTIONS.items()}
 
 
 def default_config(stage: str) -> dict:
@@ -1644,5 +1692,5 @@ def default_config(stage: str) -> dict:
         "outputs": list(OUTPUTS[stage]),
         "max_turns": 200 if stage in _GUARDRAIL_TOOLS else _MORE_TURNS.get(stage, 80),
         "checks": _CHECKS.get(stage, []),
-        "guardrails": "",
+        "guardrails": GUARDRAIL_TEMPLATES.get(stage, ""),
     }

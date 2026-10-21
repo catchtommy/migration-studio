@@ -204,11 +204,29 @@ def run_tool(ctx: AgentContext, toolbox: Toolbox, name: str, args: object) -> tu
 
 
 def required_checks(ctx: AgentContext) -> set[str]:
-    """The checks an agent must pass: those it is configured with, and always a built-in agent's own guardrails
-    (they can't be switched off on the Agents page)."""
+    """The checks an agent must pass: those it is configured with, and always a built-in agent's own guardrail checks
+    (they can't be switched off: the agent's page has only its guardrails in plain words)."""
     from app.agents.defaults import _CHECKS
 
     return set(ctx.config.get("checks") or []) | set(_CHECKS.get(ctx.stage, []))
+
+
+# The tool that runs each check, for the agent to check its own work while it goes (the check runs again when it
+# finishes). An agent gets the tools of the checks it must pass, and no others: they are not chosen on its page.
+CHECK_TOOLS = {"boundary": "check_boundaries", "module_guardrails": "check_module_guardrails",
+               "orchestrator_guardrails": "check_orchestrator_guardrails",
+               "service_guardrails": "check_service_guardrails",
+               "orchestrator_service_guardrails": "check_orchestrator_service_guardrails",
+               "acceptance_test_guardrails": "check_test_guardrails", "acceptance_suite_unchanged": "check_test_guardrails",
+               "service_test_guardrails": "check_test_guardrails", "modernise_guardrails": "check_release_guardrails",
+               "integration_guardrails": "check_release_guardrails"}
+
+
+def tools_of(ctx: AgentContext) -> list[str]:
+    """The tools the agent gets: those enabled on its page (the working tools), and the check tools of its checks."""
+    own = [t for t in ctx.config.get("tools") or [] if not t.startswith("check_")]
+    checks = [CHECK_TOOLS[c] for c in sorted(required_checks(ctx)) if c in CHECK_TOOLS]
+    return list(dict.fromkeys([*own, *checks]))
 
 
 def _tagged(prefix: str, problems: list[str]) -> list[str]:

@@ -27,7 +27,8 @@ def _tools(ctx: AgentContext, toolbox: Toolbox) -> tuple[list, list[str]]:
             return ToolResult(text_result_for_llm=text, result_type="success")
         return handler
 
-    names = [n for n in SCHEMAS if n in ctx.config["tools"]]
+    enabled = common.tools_of(ctx)
+    names = [n for n in SCHEMAS if n in enabled]
     tools = [Tool(name=n, description=SCHEMAS[n]["description"], parameters=SCHEMAS[n]["input_schema"],
                   handler=handler_for(n), overrides_built_in_tool=True, skip_permission=True) for n in names]
     return tools, names

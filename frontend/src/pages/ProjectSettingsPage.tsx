@@ -320,43 +320,16 @@ function General({ project }: { project: string }) {
           </div>
         </section>
 
-        <section className="space-y-4">
+        <section className="space-y-2">
           <h2 className="font-semibold">Guardrails</h2>
           <p className="text-sm text-subtle">
-            Rules in plain words for this project, given to every agent that changes code as hard rules. The global ones are on the{" "}
-            <Link to="/agents?guardrails=1" className="text-accent hover:underline">
+            Guardrails are kept per agent: each agent's page on the{" "}
+            <Link to="/agents" className="text-accent hover:underline">
               Agents page
-            </Link>
-            . The built-in checks always apply as well.
+            </Link>{" "}
+            has its rules in plain words; the built-in checks are always on for the agents they belong to. To give this project different rules,
+            customise the agent for this project.
           </p>
-          <fieldset className="space-y-1 text-sm">
-            <legend className="mb-1 font-medium">This project's guardrails</legend>
-            <div className="flex flex-wrap gap-4">
-              {(
-                [
-                  ["add", "Add to the global guardrails"],
-                  ["replace", "Replace the global guardrails"],
-                ] as const
-              ).map(([mode, label]) => (
-                <label key={mode} className="flex items-center gap-1.5">
-                  <input
-                    type="radio"
-                    name="project_guardrails_mode"
-                    checked={(form.project_guardrails_mode ?? "add") === mode}
-                    onChange={() => set("project_guardrails_mode", mode)}
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-          <textarea
-            aria-label="This project's guardrails"
-            className={`${input} min-h-40 font-mono text-xs`}
-            value={(form.project_guardrails as string) ?? ""}
-            placeholder={"e.g.\n- Never change classes under com.acme.common.\n- Log with the project's AuditLogger, never System.out."}
-            onChange={(e) => set("project_guardrails", e.target.value)}
-          />
         </section>
 
         <div className="flex flex-wrap items-center gap-3">
