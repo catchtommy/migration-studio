@@ -192,6 +192,7 @@ class Agent(Base):
     outputs: Mapped[list] = mapped_column(JSONText)  # documents the agent must write, relative to the operation folder
     max_turns: Mapped[int] = mapped_column(Integer)
     checks: Mapped[list | None] = mapped_column(JSONText)  # extra verifications after the agent finishes: ["boundary"]
+    guardrails: Mapped[str] = mapped_column(NonNullText, default="", nullable=True)  # this agent's, in plain words
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

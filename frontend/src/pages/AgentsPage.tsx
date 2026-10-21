@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
+import { Link, NavLink, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, looksLikeAgentMd, type Agent, type AgentCatalog, type AgentInput, type Library, type ParsedAgentFile } from "../lib/api";
 import { useAgents, useCanGlobally, useWorkflows } from "../lib/hooks";
@@ -196,6 +196,51 @@ function ModeBadge({ mode }: { mode: string }) {
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${mode === "llm" ? "bg-gradient-to-r from-accent to-accent-2 text-white shadow-sm" : "bg-muted text-subtle"}`}>
       {mode === "llm" ? "AI" : "Stub"}
     </span>
+  );
+}
+
+/** This agent's own guardrails in plain words (editable), and the built-in checks it is held to (read-only). */
+function AgentGuardrails({ agent, form, onChange }: { agent: Agent; form: AgentInput; onChange: (text: string) => void }) {
+  const { data } = useQuery({ queryKey: ["guardrails"], queryFn: api.guardrails, staleTime: 60_000 });
+  const runsCommands = form.tools.includes("run_command");
+  const builtin = (data?.builtin ?? []).filter((b) => b.checks.some((c) => form.checks.includes(c)) || (b.key === "agent_limits" && runsCommands));
+  return (
+    <div className="space-y-3">
+      <Field
+        label="Guardrails of this agent"
+        hint="Rules in plain words, given to this agent as hard rules: in its instructions, and again each time it runs a guardrail check. They add to the global and project guardrails (which only agents that change code get). No tool checks them against git."
+      >
+        <textarea
+          aria-label={`Guardrails of ${agent.title}`}
+          className={`${inputClass} min-h-32 font-mono text-xs`}
+          value={form.guardrails ?? ""}
+          placeholder={"e.g.\n- Keep the router under 200 lines.\n- Never change classes under com.acme.common."}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </Field>
+      <p className="text-xs text-subtle">
+        Also in effect:{" "}
+        <Link to="?guardrails=1" className="text-accent hover:underline">
+          global guardrails
+        </Link>{" "}
+        and the project's (
+        <Link to="/project" className="text-accent hover:underline">
+          Project settings
+        </Link>
+        ), for agents that change code.
+      </p>
+      {builtin.length > 0 && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">Built-in checks of this agent (enforced in code)</h3>
+          {builtin.map((b) => (
+            <details key={b.key} className="rounded-md border border-border px-3 py-2 text-sm">
+              <summary className="cursor-pointer font-medium">{b.title}</summary>
+              <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-subtle">{b.description}</pre>
+            </details>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -681,6 +726,8 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
           <p className="text-xs text-subtle">A built-in agent always passes its own guardrails before it may finish, even if they are unticked here.</p>
         </div>
 
+        <AgentGuardrails agent={config} form={form} onChange={(text) => set("guardrails", text)} />
+
       </>
       )}
 
@@ -735,6 +782,74 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
   );
 }
 
+/** The global guardrails in plain words (editable) and what the built-in checks enforce (read-only). */
+function GuardrailsPanel({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const canEdit = useCanGlobally("agents.manage");
+  const { data } = useQuery({ queryKey: ["guardrails"], queryFn: api.guardrails });
+  const [text, setText] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: () => api.updateGuardrails(text ?? ""),
+    onSuccess: (saved) => {
+      queryClient.setQueryData(["guardrails"], saved);
+      setText(null);
+    },
+  });
+  if (!data) return <p className="text-subtle">Loading…</p>;
+  const value = text ?? data.text;
+  return (
+    <section className="space-y-4 rounded-lg border border-border p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="font-semibold">Guardrails</h2>
+          <p className="text-sm text-subtle">
+            Rules in plain words, given to every agent whose step changes code, in every project, as hard rules: in its instructions, and again each
+            time it runs a guardrail check. A project can add to them or replace them in its{" "}
+            <Link to="/project" className="text-accent hover:underline">
+              Project settings
+            </Link>
+            . No tool checks these against git; the agent is told to stop and ask when it can't keep one.
+          </p>
+        </div>
+        <button type="button" onClick={onClose} className="text-sm text-subtle hover:text-fg">
+          Close
+        </button>
+      </div>
+      <textarea
+        aria-label="Global guardrails"
+        className={`${inputClass} min-h-48 font-mono text-xs`}
+        value={value}
+        readOnly={!canEdit}
+        placeholder={"e.g.\n- Never change classes under com.acme.common.\n- Every new public method has a unit test.\n- No new Spring XML files; add beans to the module's context file."}
+        onChange={(e) => setText(e.target.value)}
+      />
+      {canEdit && (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={save.isPending || text === null || text === data.text}
+            onClick={() => save.mutate()}
+            className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          >
+            Save guardrails
+          </button>
+          {save.isSuccess && text === null && <span className="text-sm text-ok">Saved: steps that start from now on get them</span>}
+          {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
+        </div>
+      )}
+      <div className="space-y-2">
+        <h3 className="text-sm font-medium">Built-in checks (enforced in code, always on)</h3>
+        {data.builtin.map((b) => (
+          <details key={b.key} className="rounded-md border border-border px-3 py-2 text-sm">
+            <summary className="cursor-pointer font-medium">{b.title}</summary>
+            <pre className="mt-2 whitespace-pre-wrap font-sans text-xs text-subtle">{b.description}</pre>
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function AgentsPage() {
   const { agentKey: selected } = useParams();
   const navigate = useNavigate();
@@ -742,28 +857,55 @@ export function AgentsPage() {
   const { data: catalog } = useQuery({ queryKey: ["agentCatalog"], queryFn: api.agentCatalog, staleTime: Infinity });
   const [adding, setAdding] = useState(false);
   const [search, setSearch] = useState("");
+  const [workflowKey, setWorkflowKey] = useState(""); // "": every agent
+  const { data: workflows = [] } = useWorkflows();
+  const [params, setParams] = useSearchParams();
+  const showGuardrails = params.get("guardrails") === "1";
+  const setShowGuardrails = (on: boolean) => setParams(on ? { guardrails: "1" } : {}, { replace: true });
 
   useEffect(() => {
-    if (!selected && agents?.length) navigate(`/agents/${agents[0].key}`, { replace: true });
+    if (!selected && agents?.length) navigate(`/agents/${agents[0].key}${window.location.search}`, { replace: true });
   }, [selected, agents, navigate]);
 
   if (!agents || !catalog) return <p className="text-subtle">Loading…</p>;
   const config = agents.find((a) => a.key === selected);
   const query = search.trim().toLowerCase();
-  const shown = query ? agents.filter((a) => [a.title, a.key, a.description].some((s) => s.toLowerCase().includes(query))) : agents;
+  const workflow = workflows.find((w) => w.key === workflowKey);
+  // With a workflow chosen: only its agents, in the order of its steps.
+  const inWorkflow = workflow
+    ? workflow.steps.filter((s) => s.kind === "agent").map((s) => agents.find((a) => a.key === s.key)).filter((a): a is Agent => !!a)
+    : agents;
+  const shown = query ? inWorkflow.filter((a) => [a.title, a.key, a.description].some((s) => s.toLowerCase().includes(query))) : inWorkflow;
 
   return (
     <div className="space-y-6">
       <PageTitle icon={<ChipIcon />} title="Agents" subtitle="The agent library. Workflows use these agents as steps; changes apply to stages that start after saving." tone="from-emerald-500 to-teal-500">
+        <button onClick={() => setShowGuardrails(!showGuardrails)} className="rounded-md border border-border px-4 py-1.5 text-sm font-medium hover:bg-muted">
+          Guardrails
+        </button>
         {!adding && (
           <button onClick={() => setAdding(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
             New agent
           </button>
         )}
       </PageTitle>
+      {showGuardrails && <GuardrailsPanel onClose={() => setShowGuardrails(false)} />}
       {adding && <NewAgentForm onCancel={() => setAdding(false)} />}
       <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
         <nav className="space-y-0.5 lg:sticky lg:top-4 lg:self-start">
+          <select
+            aria-label="Filter agents by workflow"
+            className={`${inputClass} mb-2`}
+            value={workflowKey}
+            onChange={(e) => setWorkflowKey(e.target.value)}
+          >
+            <option value="">All agents</option>
+            {workflows.map((w) => (
+              <option key={w.key} value={w.key}>
+                {w.name}
+              </option>
+            ))}
+          </select>
           <input
             type="search"
             aria-label="Search agents"
@@ -772,7 +914,11 @@ export function AgentsPage() {
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search agents…"
           />
-          {shown.length === 0 && <p className="px-2 py-1.5 text-sm text-subtle">No agent matches “{search.trim()}”.</p>}
+          {shown.length === 0 && (
+            <p className="px-2 py-1.5 text-sm text-subtle">
+              {query ? `No agent matches “${search.trim()}”${workflow ? ` in ${workflow.name}` : ""}.` : `${workflow?.name ?? "This workflow"} has no agents.`}
+            </p>
+          )}
           {shown.map((a) => (
             <NavLink
               key={a.key}

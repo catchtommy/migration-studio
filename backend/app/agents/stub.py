@@ -152,9 +152,14 @@ exceptions: []
                  f"scope: {scope}", "modules:"]
         for kind, path, artifact in modules:
             lines += [f"  - path: {path}", f"    kind: {kind}", f"    artifact: {artifact}"]
-        if scope == "cross-domain":
-            lines.append(f"bridge_dir: src/main/java/com/example/{ctx.domain}/legacybridge")
-        lines += ["outside_changes: []", "shared_copies: []", "events: []"]
+        bridge = f"src/main/java/com/example/{ctx.domain}/legacybridge"
+        name = _ident(ctx.domain)
+        lines += [f"bridge_dir: {bridge}", "routing:", f"  property: migration.{ctx.domain}.{ctx.operation}.route",
+                  "  default: legacy", f"  router: {bridge}/{name}ServiceRouter.java", "  routes:",
+                  f"    - bean: {ctx.domain}Service", f"      legacy_bean: {ctx.domain}ServiceLegacy",
+                  f"      interface: com.example.{ctx.domain}.{name}Service",
+                  f"      module: com.example.{ctx.domain}.domain.{name}Service",
+                  "outside_changes: []", "events: []"]
         files["module-extraction.yaml"] = "\n".join(lines) + "\n"
     if "orchestrator-extraction.yaml" in outputs:  # the orchestrator of a cross-domain feature, beside its domain module
         lines = ["# [stub] sample orchestrator extraction declaration", f"feature: {ctx.operation}",
@@ -166,7 +171,8 @@ exceptions: []
                       f"  artifact: com.example:{ctx.domain}-{ctx.operation}-orchestrator", "operations:",
                       f"  - method: {name}Orchestrator#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
                       f"    replaces: {name}Service#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
-                      "    callers: []", "ports:", f"  - port: {_ident(other)}Directory", f"    contract: {query}",
+                      f"router: src/main/java/com/example/{ctx.domain}/legacybridge/{name}ServiceRouter.java",
+                      "ports:", f"  - port: {_ident(other)}Directory", f"    contract: {query}",
                       f"    property: {ctx.domain}.{other}-directory.mode", "    default: local", "outside_changes: []"]
         else:
             lines += ["orchestrator: none", 'reason: "[stub] The feature is domain-only: controllers call the domain '
@@ -208,8 +214,8 @@ exceptions: []
         old = f"{name}Orchestrator" if target == "orchestrator-service" else f"{name}Service"
         lines = ["# [stub] sample integration routing", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
                  f"target: {target}", f"api: {api}", "toggle:",
-                 f"  property: migration.{ctx.domain}.{ctx.operation}.route", "  default: monolith",
-                 f"router: src/main/java/com/example/{ctx.domain}/routing/{name}Routing.java", "operations:"]
+                 f"  property: migration.{ctx.domain}.{ctx.operation}.route", "  default: legacy",
+                 f"router: src/main/java/com/example/{ctx.domain}/legacybridge/{name}ServiceRouter.java", "operations:"]
         for i in ids or [f"create{name}"]:
             lines += [f"  - operation_id: {i}", f"    monolith: '{old}#{i}'", f"    client: '{old}Client#{i}'"]
         files["integration-routing.yaml"] = "\n".join(lines) + "\n"
@@ -611,7 +617,7 @@ def _sample_api_files(ctx: AgentContext) -> list[ArtifactOut]:
         files["wrapper-api.yaml"] = sample_openapi(
             f"{other} wrapper for {ctx.domain} (stub)", f"/internal/api/v1/{other}", _ident(other),
             f"Operations {other} exposes so {ctx.domain} stops reaching into its tables.")
-    if ctx.stage == "domain_design":
+    if ctx.stage in ("domain_design", "modulith_design"):
         files["domain-events.yaml"] = sample_asyncapi(f"{ctx.domain} events – {ctx.operation} (stub)", ctx.domain,
                                                       ctx.operation)
     written = []

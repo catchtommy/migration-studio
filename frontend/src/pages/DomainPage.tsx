@@ -5,6 +5,7 @@ import { api, FEATURES_OP, type Agent, type AgentInputs, type Dependency, type D
 import { PatternChip } from "../components/Chips";
 import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
 import { ArtifactViewer } from "../components/ArtifactViewer";
+import { DownloadButton } from "../components/DownloadButton";
 import { chosen, DocumentPicker, type DocumentChoice } from "../components/DocumentPicker";
 import { Field, inputClass } from "../components/Field";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
@@ -168,6 +169,13 @@ function Documentation({ domain }: { domain: Domain }) {
   return (
     <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
       <nav className="space-y-0.5 lg:sticky lg:top-4 lg:self-start" aria-label="Operations">
+        <div className="mb-2 px-2">
+          <DownloadButton
+            label="Download all (.zip)"
+            title={`Every document of every feature of ${domain.name}, one folder per feature`}
+            onDownload={() => api.downloadDomainDocuments(domain.key)}
+          />
+        </div>
         {docs.map(({ run }) => (
           <button
             key={run.id}
@@ -184,9 +192,14 @@ function Documentation({ domain }: { domain: Domain }) {
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-lg font-semibold">{opLabel(selected.run.operation)}</h2>
-              <Link to={`/runs/${selected.run.id}`} className="text-sm text-accent hover:underline">
-                Open run →
-              </Link>
+              <div className="flex items-center gap-4">
+                {selected.artifacts.length > 0 && (
+                  <DownloadButton label="Download documents (.zip)" onDownload={() => api.downloadRunDocuments(selected.run.id)} />
+                )}
+                <Link to={`/runs/${selected.run.id}`} className="text-sm text-accent hover:underline">
+                  Open run →
+                </Link>
+              </div>
             </div>
             {withDocs.length === 0 ? (
               <p className="text-sm text-subtle">No documents yet.</p>

@@ -3,7 +3,6 @@ the agent isn't sent back for problems it can't fix or for earlier steps' docume
 problems come back."""
 
 import subprocess
-from pathlib import Path
 
 import pytest
 

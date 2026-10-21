@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Markdown } from "./Markdown";
-import { api } from "../lib/api";
+import { api, saveFile } from "../lib/api";
+import { DownloadButton } from "./DownloadButton";
 import { SpecView } from "./SpecView";
 
 export function ArtifactViewer({ artifactId, editable }: { artifactId: number; editable: boolean }) {
@@ -26,17 +27,24 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
     <div className="card min-w-0 max-w-full">
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
         <code className="truncate text-xs text-subtle">{artifact.path}</code>
-        {editable && !editing && (
-          <button
-            className="text-xs font-medium text-accent hover:underline"
-            onClick={() => {
-              setDraft(artifact.content);
-              setEditing(true);
-            }}
-          >
-            Edit
-          </button>
-        )}
+        <div className="flex shrink-0 items-center gap-3">
+          <DownloadButton
+            label="Download"
+            title={`Download ${artifact.name}`}
+            onDownload={() => saveFile(new Blob([artifact.content], { type: artifact.kind === "markdown" ? "text/markdown" : "text/plain" }), artifact.name)}
+          />
+          {editable && !editing && (
+            <button
+              className="text-xs font-medium text-accent hover:underline"
+              onClick={() => {
+                setDraft(artifact.content);
+                setEditing(true);
+              }}
+            >
+              Edit
+            </button>
+          )}
+        </div>
       </div>
       {editing ? (
         <div className="space-y-2 p-3">

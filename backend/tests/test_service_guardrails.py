@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app import contracts_store, service_guardrails as sg
-from tests.test_module_guardrails import MOD, OWNERSHIP, extract, git, put, repo  # noqa: F401  (repo is a fixture)
+from tests.test_module_guardrails import BRIDGE, MOD, OWNERSHIP, extract, git, put, repo  # noqa: F401  (repo is a fixture)
 
 SERVICE_POM = """<project>
   <groupId>com.acme.services</groupId><artifactId>broker-service</artifactId><version>1.0</version>
@@ -36,8 +36,9 @@ def lift(monolith: Path, service: Path) -> None:
     """The correct lift: code and tests copied (package lines changed), SQL copied, a REST layer added."""
     git(service, "init", "-q") if not (service / ".git").exists() else None
     m = monolith / MOD
-    code = (m / "src/main/java/com/acme/broker/domain/BrokerService.java").read_text()
-    put(service, f"{MAIN}/domain/BrokerService.java", code.replace("package com.acme.broker.domain;", "package com.acme.svc.domain;"))
+    for name in ("BrokerService", "BrokerServiceImpl"):
+        code = (m / f"src/main/java/com/acme/broker/domain/{name}.java").read_text()
+        put(service, f"{MAIN}/domain/{name}.java", code.replace("package com.acme.broker.domain;", "package com.acme.svc.domain;"))
     test = (m / "src/test/java/com/acme/broker/domain/BrokerServiceTest.java").read_text()
     put(service, "src/test/java/com/acme/svc/domain/BrokerServiceTest.java",
         test.replace("package com.acme.broker.domain;", "package com.acme.svc.domain;"))
@@ -79,12 +80,12 @@ def test_the_monolith_must_stay_untouched(lifted):
 
 def test_copied_code_must_equal_the_modules(lifted):
     _, _, service = lifted
-    f = service / MAIN / "domain/BrokerService.java"
+    f = service / MAIN / "domain/BrokerServiceImpl.java"
     f.write_text(f.read_text().replace("dao.insert(name)", "dao.insert(name.trim())"))
-    assert any("BrokerService.java (main) differs from the module's" in p for p in run(lifted))
+    assert any("BrokerServiceImpl.java (main) differs from the module's" in p for p in run(lifted))
     # declared as replaced: allowed
     assert not any("differs" in p for p in run(lifted, {**SERVICE_DECL, "replaced": [
-        {"file": "BrokerService.java", "reason": "uses the trimmed name"}]}))
+        {"file": "BrokerServiceImpl.java", "reason": "uses the trimmed name"}]}))
 
 
 def test_a_file_that_was_not_copied_is_reported(lifted):
@@ -202,7 +203,9 @@ def test_the_agent_tool_and_finish_check_use_the_service_repository(repo, tmp_pa
     out = ctx.output_dir
     (out / "module-extraction.yaml").write_text(
         f"feature: create-broker\ndomain: broker\nscope: domain-only\nmodules:\n"
-        f"  - {{path: {MOD}, kind: domain, artifact: \"com.acme:broker-profile-domain\"}}\nevents: [BrokerCreated]\n")
+        f"  - {{path: {MOD}, kind: domain, artifact: \"com.acme:broker-profile-domain\"}}\nevents: [BrokerCreated]\n"
+        f"bridge_dir: {BRIDGE}\nrouting: {{property: p, default: legacy, router: {BRIDGE}/R.java, routes: "
+        "[{bean: a, legacy_bean: b, interface: I, module: J}]}\n")
     (out / "openapi.yaml").write_text(OPENAPI)
     (out / "microservice-extraction.yaml").write_text(
         "feature: create-broker\ndomain: broker\nmodule_commit: abc\noperations: "

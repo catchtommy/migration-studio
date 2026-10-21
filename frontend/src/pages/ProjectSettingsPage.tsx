@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, getCurrentProject, type ProjectSettings } from "../lib/api";
 import { useCan } from "../lib/hooks";
 import { LANGUAGES, useSwitchProject } from "../lib/projectContext";
@@ -318,6 +318,45 @@ function General({ project }: { project: string }) {
               <input className={input} value={form.service_dir_pattern as string} onChange={(e) => set("service_dir_pattern", e.target.value)} />
             </Field>
           </div>
+        </section>
+
+        <section className="space-y-4">
+          <h2 className="font-semibold">Guardrails</h2>
+          <p className="text-sm text-subtle">
+            Rules in plain words for this project, given to every agent that changes code as hard rules. The global ones are on the{" "}
+            <Link to="/agents?guardrails=1" className="text-accent hover:underline">
+              Agents page
+            </Link>
+            . The built-in checks always apply as well.
+          </p>
+          <fieldset className="space-y-1 text-sm">
+            <legend className="mb-1 font-medium">This project's guardrails</legend>
+            <div className="flex flex-wrap gap-4">
+              {(
+                [
+                  ["add", "Add to the global guardrails"],
+                  ["replace", "Replace the global guardrails"],
+                ] as const
+              ).map(([mode, label]) => (
+                <label key={mode} className="flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    name="project_guardrails_mode"
+                    checked={(form.project_guardrails_mode ?? "add") === mode}
+                    onChange={() => set("project_guardrails_mode", mode)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <textarea
+            aria-label="This project's guardrails"
+            className={`${input} min-h-40 font-mono text-xs`}
+            value={(form.project_guardrails as string) ?? ""}
+            placeholder={"e.g.\n- Never change classes under com.acme.common.\n- Log with the project's AuditLogger, never System.out."}
+            onChange={(e) => set("project_guardrails", e.target.value)}
+          />
         </section>
 
         <div className="flex flex-wrap items-center gap-3">

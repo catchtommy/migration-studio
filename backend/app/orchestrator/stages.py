@@ -151,6 +151,35 @@ DOMAIN_FEATURES = Workflow((
              "Review the feature list. Approving makes these features available to migrate.", ("domain_features",)),
 ))
 
+# The lean migration workflow: the same migration with fewer agents. Analysis, design and modernisation each run as one
+# agent instead of several that re-read the same code; the steps that change code, their guardrails and the documents
+# they read and write are the standard workflow's. A domain switches to it by making it its default workflow.
+LEAN = Workflow((
+    StageDef("analysis", "Analysis", "agent",
+             "One pass from the entry points down to the SQL: the AS-IS flow, business rules and edge cases, the test "
+             "scenario catalogue, and exactly which other domains the feature depends on (the scope decision).",
+             publish_docs=True),
+    StageDef("gate_analysis", "Approve analysis", "gate",
+             "Review the AS-IS documentation, the test scenarios and the dependencies, including the scope decision "
+             "(domain-only or cross-domain).", ("analysis",)),
+    StageDef("modulith_design", "Modulith design", "agent",
+             "Design the feature's domain inside the monolith, the contracts with the domains it depends on, the "
+             "orchestrator and each cross-domain interaction, in one design, without changing the database or the UI.",
+             uses=("analysis",)),
+    StageDef("gate_design", "Approve design", "gate",
+             "Review the domain design, the linked-domain contracts, the orchestrator design and the cross-domain "
+             "integration decisions.", ("modulith_design",)),
+    *(STANDARD.by_key[k] for k in ("modular_monolith", "monolith_orchestrator", "microservice_scaffold",
+                                   "orchestrator_service", "independent_tests", "gate_tests")),
+    StageDef("modernise_and_test", "Modernisation and service tests", "agent",
+             "Java 25, Spring Boot 4, iBatis → Spring Data JPA on the existing tables, with the unit and integration "
+             "tests of the modernised service. The acceptance suite stays unchanged."),
+    STANDARD.by_key["monolith_integration"],
+    StageDef("gate_release", "Approve release", "gate",
+             "Final review of the modernised service with its tests and the monolith integration.",
+             ("modernise_and_test", "monolith_integration")),
+))
+
 # Built-in agents that no built-in workflow uses any more. They stay in the agent library for custom workflows.
 SUPERSEDED = (
     StageDef("boundary_design", "Modular monolith design", "agent",
@@ -164,5 +193,5 @@ SUPERSEDED = (
 )
 
 # Agent stages of every built-in workflow: the built-in agents.
-BUILTIN_STAGES = {s.key: s for s in (*(s for w in (BOUNDED_CONTEXTS, DOMAIN_FEATURES, STANDARD) for s in w.stages),
+BUILTIN_STAGES = {s.key: s for s in (*(s for w in (BOUNDED_CONTEXTS, DOMAIN_FEATURES, STANDARD, LEAN) for s in w.stages),
                                      *SUPERSEDED) if s.kind == "agent"}

@@ -2,7 +2,6 @@
 orchestrator design agents, in the Standard migration workflow."""
 
 import itertools
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -511,7 +510,6 @@ def _events(run_id):
 
 def test_a_proposed_contract_becomes_approved_by_a_decision_and_a_provided_one_stays(client):
     from app import projects
-    from app.db.models import Contract
     from pathlib import PurePosixPath
 
     spec = {"key": "zz.get-thing", "provider": "zz", "kind": "api", "name": "Get thing", "spec": "contracts/a.yaml"}
@@ -618,8 +616,15 @@ domain: broker
 scope: domain-only
 modules:
   - {path: broker-domain/broker-profile/domain, kind: domain, artifact: "com.acme:broker-profile-domain"}
-outside_changes: [web/src/main/java/BrokerController.java]
-shared_copies: [{item: selectBrokerById, remove_when: view-broker is migrated}]
+bridge_dir: web/legacybridge
+routing:
+  property: migration.broker.create-broker.route
+  default: legacy
+  router: web/legacybridge/BrokerServiceRouter.java
+  routes:
+    - {bean: brokerService, legacy_bean: brokerServiceLegacy, interface: com.acme.broker.BrokerService,
+       module: com.acme.broker.domain.BrokerService}
+outside_changes: [web/src/main/resources/applicationContext.xml]
 events: [BrokerCreated]
 """
 
@@ -636,8 +641,14 @@ def test_module_extraction_declaration_is_validated():
         "kind: domain,": "kind: library,",
         'artifact: "com.acme:broker-profile-domain"': "artifact: broker-profile-domain",
         "path: broker-domain/broker-profile/domain": "path: ../elsewhere",
-        "shared_copies: [{item: selectBrokerById, remove_when: view-broker is migrated}]": "shared_copies: [{item: x}]",
+        "bridge_dir: web/legacybridge\n": "",
+        "  default: legacy": "  default: monolith",  # the as-is code is the default
+        "legacy_bean: brokerServiceLegacy": "legacy_bean: brokerService",  # the router takes over the old id
+        "  router: web/legacybridge/": "  router: web/other/",  # the router lives in the bridge package
     }
+    without_routing = _EXTRACTION[:_EXTRACTION.index("routing:")] + _EXTRACTION[_EXTRACTION.index("outside_changes"):]
+    with pytest.raises(contracts_store.InvalidDocument, match="add routing"):
+        contracts_store.parse_module_extraction(without_routing)
     for old, new in bad.items():
         with pytest.raises(contracts_store.InvalidDocument):
             contracts_store.parse_module_extraction(_EXTRACTION.replace(old, new))
@@ -648,15 +659,12 @@ def test_module_extraction_follows_the_scope_decision():
                     "artifact: \"com.acme:broker-profile-orchestrator\"}\n")
     # the domain module only, in either scope: the orchestrator module is the Orchestrator in monolith step's
     cross = _EXTRACTION.replace("scope: domain-only", "scope: cross-domain")
-    for text in (_EXTRACTION, cross + "bridge_dir: web/legacybridge\n"):
+    for text in (_EXTRACTION, cross):
         with pytest.raises(contracts_store.InvalidDocument, match="built by the Orchestrator in monolith step"):
-            contracts_store.parse_module_extraction(text.replace("outside_changes", orchestrator + "outside_changes"))
-    # a domain-only feature may have a bridge package, for context-port adapters (checked against the design)
-    assert contracts_store.parse_module_extraction(_EXTRACTION + "bridge_dir: web/legacybridge\n")
-    # cross-domain: the bridge package, for the local adapters
-    with pytest.raises(contracts_store.InvalidDocument, match="cross-domain"):
-        contracts_store.parse_module_extraction(cross)
-    assert contracts_store.parse_module_extraction(cross + "bridge_dir: web/legacybridge\n")
+            contracts_store.parse_module_extraction(text.replace("bridge_dir", orchestrator + "bridge_dir"))
+        assert contracts_store.parse_module_extraction(text)  # either scope has the bridge package, for the router
+        with pytest.raises(contracts_store.InvalidDocument, match="add the bridge_dir"):
+            contracts_store.parse_module_extraction(text.replace("bridge_dir: web/legacybridge\n", ""))
 
 
 def test_module_extraction_scope_must_match_the_dependency_decision(tmp_path):
@@ -673,8 +681,9 @@ def test_module_in_monolith_agent_is_configured_for_the_guardrails():
     assert c["checks"] == ["module_guardrails"] and c["max_turns"] == 200
     assert c["outputs"] == ["modular-monolith.md", "module-extraction.yaml"]
     text = INSTRUCTIONS["modular_monolith"]
-    for phrase in ("Characterization tests first", "Controllers are never moved", "bridge_dir", "module-extraction.yaml",
-                   "Stop and ask with ask_user", "Rollback: revert the commit", "never the reverse"):
+    for phrase in ("Characterization tests first", "a **copy** of the feature's code, never a move",
+                   "a **router** takes over the legacy service's bean", "bridge_dir", "module-extraction.yaml",
+                   "Stop and ask with ask_user", "Rollback: set the toggle to `legacy`", "never the reverse"):
         assert phrase in text, phrase
     assert "check_module_guardrails" not in default_config("domain_design")["tools"]
 
@@ -699,22 +708,19 @@ def test_untouched_module_agent_is_upgraded_with_more_turns_and_the_new_check(cl
         assert row.checks == ["module_guardrails"] and "check_module_guardrails" in row.tools
 
 
-def test_context_ports_are_required_and_need_a_bridge_for_their_adapters(tmp_path):
+def test_context_ports_are_required_and_their_adapters_share_the_routers_bridge(tmp_path):
     with pytest.raises(contracts_store.InvalidDocument, match="missing context_ports"):
         contracts_store.parse_domain_design(_DESIGN.replace("context_ports: []\n", ""))
-    (tmp_path / "domain-design.yaml").write_text(_DESIGN.replace("context_ports: []", "context_ports: [CurrentUser]"))
     (tmp_path / "module-extraction.yaml").write_text(_EXTRACTION)
-    assert any("context ports (CurrentUser), so add bridge_dir" in p for p in contracts_store.validate_outputs(tmp_path))
-    (tmp_path / "module-extraction.yaml").write_text(_EXTRACTION + "bridge_dir: web/legacybridge\n")
-    assert contracts_store.validate_outputs(tmp_path) == []
-    (tmp_path / "domain-design.yaml").write_text(_DESIGN)  # no ports: nothing to bridge
-    assert any("nothing to bridge" in p for p in contracts_store.validate_outputs(tmp_path))
+    for design in (_DESIGN, _DESIGN.replace("context_ports: []", "context_ports: [CurrentUser]")):
+        (tmp_path / "domain-design.yaml").write_text(design)
+        assert contracts_store.validate_outputs(tmp_path) == []
 
 
 def test_ambient_inputs_are_part_of_the_designs_and_the_module_agent():
     assert "No ambient inputs" in INSTRUCTIONS["domain_design"] and "context_ports" in INSTRUCTIONS["domain_design"]
     text = INSTRUCTIONS["modular_monolith"]
-    assert "Context ports:" in text and "never read the session" in text
+    assert "Context ports:" in text and "never reads the session" in text
 
 
 # ---- Microservice ------------------------------------------------------------------------------------------------

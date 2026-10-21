@@ -379,7 +379,9 @@ class Toolbox:
     def _check(self, name: str, problems: list[str], report) -> str:
         """A check tool's result: its report, and what to do when the agent can't fix a problem or keeps getting the
         same result (so it doesn't loop on a check it can't pass)."""
-        text = report(problems)
+        from app import custom_guardrails
+
+        text = report(problems) + custom_guardrails.reminder(self.ctx)
         stuck = blockers(problems)
         if stuck:
             text += ("\n\nYou can't fix these: they need the workflow's settings, an earlier step, the environment or a "

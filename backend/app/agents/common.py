@@ -23,8 +23,12 @@ def system_prompt(ctx: AgentContext) -> str:
     """The preamble and the agent's instructions, with the shared texts they include (app/shared_texts.py)."""
     from app import shared_texts
 
+    from app import custom_guardrails
+
     values = shared_texts.texts()
-    return f"{shared_texts.expand(values['preamble'], values)}\n\n{shared_texts.expand(ctx.config['instructions'], values)}"
+    prompt = f"{shared_texts.expand(values['preamble'], values)}\n\n{shared_texts.expand(ctx.config['instructions'], values)}"
+    own = custom_guardrails.prompt_section(ctx)
+    return f"{prompt}\n\n{own}" if own else prompt
 
 
 def toolchain_home(ctx: AgentContext) -> str | None:

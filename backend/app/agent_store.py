@@ -17,7 +17,7 @@ from app.db.session import get_engine, session_scope
 from app.orchestrator.stages import BUILTIN_STAGES, SUPERSEDED
 
 FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instructions", "tools", "outputs", "max_turns",
-          "checks")
+          "checks", "guardrails")
 # Built-in agents added after the first release, keyed by the settings marker that records they were added once.
 LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
                   "_added_linked_domain_contracts": ["linked_domain_contracts"],
@@ -26,7 +26,8 @@ LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
                                                     "wrapper_design", "orchestrator_design"],
                   "_added_monolith_orchestrator": ["monolith_orchestrator"],
                   "_added_orchestrator_service": ["orchestrator_service"],
-                  "_added_service_tests": ["service_tests"]}
+                  "_added_service_tests": ["service_tests"],
+                  "_added_lean_agents": ["analysis", "modulith_design", "modernise_and_test"]}
 
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
@@ -48,7 +49,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                               "45ad59b8a91325d3caa86f53505051bda11071e52282340470b7eef5fa0649eb",
                       "142d8a42236f9e844bcd3445647e9f34787655dece2bc6ccc0b05ec30862e3c8",
                       "5a7035410502576364098df1291b71788fdbe7e10be7644db0a102550a7f8ab7",
-                      "e5ac314731ee2cea532d10917f03304365e33b91c1f7358103bbe9d314ddd8db"},
+                      "e5ac314731ee2cea532d10917f03304365e33b91c1f7358103bbe9d314ddd8db",
+        "12b7b3cd2ffc888c21f10cd8fab6141eb9140dd450081f452843ddd0662b1e84"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
     "orchestrator_design": {"fec9b1a759bfbb513210a58472431041d014335317139309281fd8546c42b34a",
@@ -93,18 +95,26 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                               "31d5f8f0bbaa53df1978c04257e99924dade1b2b41f230a985b8bd08830d9adc",
                          "9bf4007e9337fafdab89a901c912245fcd3d44a29989b7732603c7fcada2129b",
                          "164e46fabe89f188ecce8525da9ebda4b9fea4d35b97992f92542414da55c7b9",
-                         "db8c731241fbb0878e4b93b12357d93ff4cd2f2160b350346523dcdd883e9765"},
+                         "db8c731241fbb0878e4b93b12357d93ff4cd2f2160b350346523dcdd883e9765",
+        "96dfbf2199cd58075a513f4725fd874e7e8c9affec24e412e666dc32a02e38a8",
+        "bf380585492e901711e22a95479416a47e226cbcb962a457bd4c74fca23d02b0",
+        "018556caac91c817f3094eb211d8cf971a0d33e110f92bf2741b2a7cf922c134"},
     "monolith_integration": {"b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
                              "29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
                              "11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
                              "686fec3600f472af2216b6e1805795367b9dd761933e094e3bf424dfbbf8d6b1",
-                             "08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791"},
+                             "08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791",
+        "b82822208202ff2dfd10ff0e77918503973178a46c10673641e4a95fad988f2c",
+        "e031ab929248d9c9b40ade7b6f9b782f099ad0daefaa39db19e50624a7722887"},
     "as_is_doc": {"9fb0392d1747e6a478a3e0cd6d77ea8cd4564fd9e815959b5baf2f48ee52c892"},
     "bounded_contexts": {"0fe37358d0947d3a11a0fc7d5440eb9ebaa72ec9171caff82a4612112c073294"},
+    "monolith_orchestrator": {"35a24835d71b95dc27b3516c23305bb5ba7eb9525e031f7931aa5d1fb4af382e",
+        "cae3d71b1aea57fadae64e5ddcf348386475d4f6890dc311606ccbf486e96e47",
+        "74d58902f2f8850ab0f40a8ae931b69d0d12745d6b21071d848463d786cfe630"},
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v17"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v20"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 # Built-in agents the Standard migration workflow no longer uses. They stay in the code and the database, and keep
 # working in custom workflows and runs that use them, but are not listed on the Agents page or offered in the workflow
@@ -115,6 +125,7 @@ BUILTIN = tuple(BUILTIN_STAGES)
 
 def _as_dict(row: Agent, customised: bool = False) -> dict[str, Any]:
     return {"key": row.key, **{f: getattr(row, f) for f in FIELDS}, "checks": row.checks or [],
+            "guardrails": row.guardrails or "",
             "builtin": row.key in BUILTIN, "scope": "shared" if row.project == SHARED else "project",
             "customised": customised, "created_at": row.created_at, "updated_at": row.updated_at}
 
@@ -128,7 +139,7 @@ def custom_default(key: str, title: str, description: str) -> dict[str, Any]:
     return {
         "title": title, "description": description, "mode": "stub", "model": default_config("deep_dive")["model"],
         "effort": "high", "jdk": "legacy", "tools": list(DOCS), "outputs": [f"{key}.md"], "max_turns": 80, "checks": [],
-        "instructions": f"You are the {title} agent.\n\nDescribe what this agent should do, which code and documents "
+        "guardrails": "", "instructions": f"You are the {title} agent.\n\nDescribe what this agent should do, which code and documents "
                         "it should read, and what it must produce.",
     }
 

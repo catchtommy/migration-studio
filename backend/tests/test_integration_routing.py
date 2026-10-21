@@ -1,5 +1,6 @@
-"""Monolith integration's toggle: the new flow calls the orchestrator service when the feature has an orchestrator,
-and the domain service when it has none; the old flow stays the default."""
+"""Monolith integration's toggle: the feature's toggle (from Module in monolith) gains the service value, which calls
+the orchestrator service when the feature has an orchestrator and the domain service when it has none; the as-is
+code (legacy) stays the default."""
 
 import subprocess
 from pathlib import Path
@@ -16,13 +17,15 @@ paths:
     post: {operationId: createLoan, responses: {"201": {description: Created}}}
 """
 DOMAIN_API = ORCH_API.replace("/orchestrator", "")
+ROUTER = "web/src/main/java/com/acme/loan/legacybridge/LoanServiceRouter.java"
+PROPERTY = "migration.loan.create-loan.route"
 
 
-def routing(target="orchestrator-service", api="orchestrator-openapi.yaml", default="monolith", ops=("createLoan",)):
+def routing(target="orchestrator-service", api="orchestrator-openapi.yaml", default="legacy", ops=("createLoan",),
+            prop=PROPERTY):
     return "\n".join([
         "feature: create-loan", "domain: loan", f"target: {target}", f"api: {api}",
-        "toggle:", "  property: migration.loan.create-loan.route", f"  default: {default}",
-        "router: web/src/main/java/com/acme/loan/routing/LoanRouting.java", "operations:",
+        "toggle:", f"  property: {prop}", f"  default: {default}", f"router: {ROUTER}", "operations:",
         *(f"  - {{operation_id: {o}, monolith: 'LoanOrchestrator#create', client: 'LoanClient#create'}}" for o in ops),
     ]) + "\n"
 
@@ -32,8 +35,12 @@ def documents(tmp_path, orchestrator: bool, service: bool = True) -> Path:
     d.mkdir()
     (d / "openapi.yaml").write_text(DOMAIN_API)
     (d / cs.MODULE_EXTRACTION_FILE).write_text(  # the domain module the orchestrator is built on
-        "feature: create-loan\ndomain: loan\nscope: cross-domain\nbridge_dir: web/bridge\n"
-        "modules: [{path: loan/domain, kind: domain, artifact: 'a:d'}]\n")
+        "feature: create-loan\ndomain: loan\nscope: cross-domain\n"
+        "bridge_dir: web/src/main/java/com/acme/loan/legacybridge\n"
+        "modules: [{path: loan/domain, kind: domain, artifact: 'a:d'}]\n"
+        f"routing: {{property: {PROPERTY}, default: legacy, router: {ROUTER}, routes: [{{bean: loanService, "
+        "legacy_bean: loanServiceLegacy, interface: com.acme.loan.LoanService, "
+        "module: com.acme.loan.domain.LoanService}]}\n")
     if orchestrator:
         (d / cs.ORCHESTRATOR_EXTRACTION_FILE).write_text(
             "feature: create-loan\ndomain: loan\norchestrator: module\nmodule: {path: loan/orchestrator, artifact: 'a:o'}\n"
@@ -78,8 +85,13 @@ def test_every_operation_of_the_target_is_routed_and_the_old_flow_is_the_default
     out = problems(d, routing(ops=("createLoan", "deleteLoan")))
     assert "operation deleteLoan is not in orchestrator-openapi.yaml" in out
     assert "operation createLoan of orchestrator-openapi.yaml is not routed" in problems(d, routing(ops=("other",)))
-    with pytest.raises(cs.InvalidDocument, match="defaults to monolith"):
-        cs.parse_integration_routing(routing(default="service"))
+    with pytest.raises(cs.InvalidDocument, match="defaults to legacy"):
+        cs.parse_integration_routing(routing(default="monolith"))
+
+
+def test_the_service_value_goes_on_the_features_own_toggle(tmp_path):
+    d = documents(tmp_path, orchestrator=True)
+    assert "use the feature's toggle" in problems(d, routing(prop="migration.loan.other.route"))
 
 
 def _git(root, *args):
@@ -97,13 +109,10 @@ def _monolith(tmp_path):
     return root, _git(root, "rev-parse", "HEAD")
 
 
-ROUTER = "web/src/main/java/com/acme/loan/routing/LoanRouting.java"
-
-
-def _switch(root, url, prop_value="monolith"):
+def _switch(root, url, prop_value="legacy"):
     (root / ROUTER).parent.mkdir(parents=True, exist_ok=True)
-    (root / ROUTER).write_text('class LoanRouting { @Value("${migration.loan.create-loan.route:monolith}") String route; }\n')
-    (root / "web/src/main/java/com/acme/loan/routing/LoanClient.java").write_text(f'class LoanClient {{ String path = "{url}"; }}\n')
+    (root / ROUTER).write_text('class LoanServiceRouter { @Value("${migration.loan.create-loan.route:legacy}") String route; }\n')
+    (root / "web/src/main/java/com/acme/loan/legacybridge/LoanClient.java").write_text(f'class LoanClient {{ String path = "{url}"; }}\n')
     (root / "web/src/main/resources/application.properties").write_text(
         f"app.name=web\nmigration.loan.create-loan.route={prop_value}\n")
 
@@ -124,7 +133,7 @@ def test_the_code_reads_the_toggle_and_calls_only_the_target(tmp_path):
     assert any("the feature has no orchestrator" in p for p in rg.integration(root, base, [], domain, "loan"))
 
     _switch(root, "/internal/api/v1/loan/orchestrator/loans", prop_value="service")
-    assert any("defaults to monolith" in p for p in rg.integration(root, base, [], orch, "loan"))
+    assert any("defaults to legacy" in p for p in rg.integration(root, base, [], orch, "loan"))
     (root / ROUTER).unlink()
     (root / "web/src/main/resources/application.properties").write_text("app.name=web\n")
     out = "\n".join(rg.integration(root, base, [], orch, "loan"))
@@ -148,4 +157,4 @@ def test_a_stub_run_routes_a_feature_with_an_orchestrator_to_the_orchestrator_se
     text = client.get(f"/api/artifacts/{docs[cs.INTEGRATION_ROUTING_FILE]['id']}").json()["content"]
     declared = cs.parse_integration_routing(text)
     assert declared["target"] == "orchestrator-service" and declared["api"] == "orchestrator-openapi.yaml"
-    assert declared["toggle"]["default"] == "monolith"
+    assert declared["toggle"]["default"] == "legacy"

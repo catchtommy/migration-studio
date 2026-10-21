@@ -1,17 +1,24 @@
 """Guardrails of the Module in monolith step, checked from git rather than trusted from the agent's word.
 
-The step extracts one feature into a new Maven module (the domain module; the Orchestrator in monolith step adds the
-orchestrator, see orchestrator_guardrails.py) and re-points the callers. Compared with the commit the step started from, only these changes may exist:
+The step builds one feature's domain module **beside** the as-is code (a parallel run): the module is a copy of the
+feature's code, the as-is code stays the old flow, and a router behind the legacy service's bean chooses between them
+by the feature's toggle (`legacy`, the default, or `monolith`). Compared with the commit the step started from, only
+these changes may exist:
 
-- inside the new modules: anything, except what the checks below forbid (other domains' tables and packages, God
-  modules, dependencies beyond the allow-list, SQL that is not copied from the monolith);
-- in the legacy bridge package (cross-domain features only): temporary adapters and bindings;
-- elsewhere: call-site edits (imports, declarations and bean references of moved classes), the wiring lines that plug
-  the modules in, and tests moved with their code;
-- nowhere: UI files, DDL, build or version changes beyond the `<module>` and dependency lines for the new modules,
-  changed or removed assertions of existing tests.
+- inside the new module: anything, except what the checks below forbid (other domains' tables and packages, God
+  modules, dependencies beyond the allow-list, SQL that is not copied from the monolith, ambient inputs);
+- in the bridge package: the router and adapters (each class implements a port of the domain module or the legacy
+  interface the router takes over), and helpers (mappers) the router or an adapter uses, without database access;
+- elsewhere: only Spring wiring lines (the legacy bean's new id, the router's registration, aliases, imports) and POM
+  lines for the new module, in files listed in `outside_changes`; the toggle's default in a properties file;
+- in a legacy caller listed in `toggle_branches` (a controller, job or service with no bean seam for the router): the
+  toggle branch that asks the router, and whatever refactoring it needs (lines moved or rewritten), as long as a test
+  of that class in this change pins its behaviour; no new database access there, and never in a DAO;
+- new tests anywhere, and lines added to existing tests (neither changes behaviour);
+- nowhere: a changed, moved or deleted legacy file otherwise (Java, JSP, SQL map, existing test), UI files, DDL.
 
-`check()` returns one line per violation, empty when the step is within its limits.
+The module and bridge folders are new, or this domain's own from an earlier feature (`earlier`). The Orchestrator in
+monolith step reuses the same rules (see orchestrator_guardrails.py). `check()` returns one line per violation.
 """
 
 import os
@@ -40,12 +47,17 @@ MAX_REPORTED = 60
 
 AMBIENT = re.compile(r"\b(?:HttpSession|HttpServletRequest|HttpServletResponse|ServletContext|RequestContextHolder|"
                      r"ServletRequestAttributes|SecurityContextHolder|InheritableThreadLocal|ThreadLocal)\b|javax\.servlet")
-CALL = re.compile(r"[\w)\]]\s*\.\s*\w+\s*\(")
-CONTROL = re.compile(r"\b(?:return|if|else|for|while|switch|case|throw|try|catch|assert|synchronized)\b")
-IMPORT = re.compile(r"^\s*(?:import|package)\s+(?:static\s+)?[\w.]+(?:\.\*)?\s*;\s*$")
-INJECTION = re.compile(r"^\s*@(?:Autowired|Resource|Qualifier|Inject|Named)(?:\s*\([^)]*\))?\s*$")
 WIRING = re.compile(r"<\s*(?:import\s+resource|sqlMap\s+resource|alias\s+name)", re.IGNORECASE)
 BEAN_LINE = re.compile(r"<\s*/?\s*(?:bean|property|constructor-arg|ref|value)\b", re.IGNORECASE)
+CLOSING = re.compile(r"^\s*</\s*(?:bean|property|constructor-arg|value)\s*>\s*$", re.IGNORECASE)
+NEW_BEAN = re.compile(r"<\s*bean\b[^>]*\bid\s*=\s*\"([\w.-]+)\"[^>]*\bclass\s*=\s*\"[\w.$]*?(\w+)\"", re.IGNORECASE)
+DB_ACCESS = re.compile(r"\b(?:java\.sql|javax\.sql|DataSource|JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbc\w+|"
+                       r"SqlMapClient\w*|SqlMapSession|SqlSession\w*|com\.ibatis|org\.apache\.ibatis|org\.mybatis|"
+                       r"EntityManager\w*|javax\.persistence|org\.hibernate|\w*(?:Dao|DAO))\b")
+TRANSACTION = re.compile(r"@Transactional\b|\b(?:TransactionTemplate|PlatformTransactionManager|TransactionStatus|"
+                         r"TransactionSynchronization\w*)\b|org\.springframework\.transaction")
+COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
+DATA_LAYER = re.compile(r"\bclass\s+\w*(?:Dao|DAO)(?:Impl)?\b|\b(?:SqlMapClientDaoSupport|JdbcDaoSupport)\b")
 POM_LINE = re.compile(r"^\s*(?:<module>[^<]+</module>|</?dependency>|<groupId>[^<]+</groupId>|"
                       r"<artifactId>[^<]+</artifactId>|<version>[^<]+</version>|<scope>[^<]+</scope>|"
                       r"<type>[^<]+</type>|<classifier>[^<]+</classifier>|<!--.*-->)\s*$")
@@ -222,11 +234,14 @@ def base_pom_info(root: Path, base: str) -> tuple[set[tuple[str, str]], dict[tup
 
 def check(root: Path, base: str, declaration: dict | None, design: dict | None, ownership: dict[str, dict],
           domain: str, god_modules: list[str] | None = None, extra_artifacts: list[str] | None = None,
-          extra_names: list[str] | None = None) -> list[str]:
+          earlier: dict | None = None, wiring: set[str] | None = None) -> list[str]:
     """Violations of the step's limits since `base`. `declaration` is module-extraction.yaml (parsed) and `design` is
     domain-design.yaml (parsed); either may be None while the agent has not written it yet. `extra_artifacts` are
-    modules built by an earlier step (groupId:artifactId) that the new modules may depend on, and `extra_names` classes
-    whose imports, declarations and bean references callers may change as for a moved class."""
+    modules built by an earlier step (groupId:artifactId) that the new modules may depend on. `earlier` holds the
+    module folders and bridge packages earlier runs of the domain declared ({"modules": set, "bridges": set}): a
+    feature may extend those; any other folder must be new. `wiring` are more class names whose beans the Spring
+    wiring may name (the domain module's, for the Orchestrator in monolith step). A declaration without `routing` may
+    name the feature's `router` and its legacy `routes` (the Orchestrator in monolith step's view of the bridge)."""
     try:
         diff = changes(root, base)
     except (RuntimeError, OSError) as e:
@@ -244,13 +259,15 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
     in_bridge = [c for c in diff if _under(c.path, bridge)]
     outside = [c for c in diff if c not in inside and c not in in_bridge]
 
-    # Names the step moved: classes now in the modules and classes that no longer exist.
-    moved = {_simple(c.path) for c in inside if c.path.endswith(".java") and c.status in "AR"}
-    moved |= {_simple(c.path) for c in diff if c.path.endswith(".java") and c.status == "D"}
-    moved |= {_simple(c.old_path) for c in diff if c.status == "R" and (c.old_path or "").endswith(".java")}
-    moved |= set(extra_names or [])
-    moved.discard("package-info")
-    word = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(moved))) + r")\b") if moved else None
+    # What Spring wiring outside may name: this step's classes, and the beans the router takes over.
+    routing = (declaration or {}).get("routing") or {}
+    names = {_simple(c.path) for c in [*inside, *in_bridge] if c.path.endswith(".java") and c.status in "AMR"}
+    names |= {str(r.get(k)) for r in routing.get("routes") or [] for k in ("bean", "legacy_bean") if r.get(k)}
+    names |= set(wiring or ())
+    names.discard("package-info")
+    names |= {m.group(1) for c in outside if c.path.endswith(".xml") and c.status != "D"  # those classes' bean ids
+              for m in NEW_BEAN.finditer(_read(root, c.path) + "\n" + "\n".join(c.removed)) if m.group(2) in names}
+    word = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(names))) + r")\b") if names else None
 
     # 1. UI and DDL, anywhere.
     for c in diff:
@@ -310,41 +327,55 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
             elif v and not v.startswith("${") and v not in versions.get((g, a), set()):
                 problems.append(f"{c.path}: dependency {g}:{a} declares version {v}, which the monolith does not use")
 
-    # 4. Call sites and wiring: outside the modules only mechanical edits.
-    sources = [c for c in outside if Path(c.path).name not in BUILD_FILES]
+    # 4. The as-is code is unchanged: outside the module and the bridge, only wiring, build and the toggle's default,
+    # and the toggle branch in the controllers listed in toggle_branches.
+    router = str(routing.get("router") or (declaration or {}).get("router") or "").strip("/")
+    branched = {str(b.get("file") or b.get("controller") or "").strip("/")
+                for b in (declaration or {}).get("toggle_branches") or []}
+    sources = [c for c in outside if Path(c.path).name not in BUILD_FILES and c.path not in branched]
+    problems += _toggle_branches(root, base, diff, outside, branched, router)
+    prop = routing.get("property")
+    for c in [*inside, *in_bridge]:  # git sees a legacy file deleted beside its copy as moved into the module
+        if c.status == "R" and not _under(c.old_path or "", [*modules, *bridge]):
+            problems.append(f"Legacy {'test' if _is_test(c.old_path) else 'file'} moved: {c.old_path} → {c.path}. The "
+                            "as-is code stays where it is (the old flow): copy it into the module, don't move it")
     for c in sources:
+        what = "test" if _is_test(c.path) else "file"
         if c.status == "D":
-            if _is_test(c.path):
-                problems.append(f"Existing test deleted: {c.path}. Move it into the module with its code instead")
+            problems.append(f"Legacy {what} deleted: {c.path}. The as-is code stays as it is (the old flow): the new "
+                            "domain is a copy beside it")
             continue
+        if c.status == "R":
+            problems.append(f"Legacy {what} moved: {c.old_path} → {c.path}. The as-is code stays where it is; copy it "
+                            "into the module instead")
+            continue
+        if _is_test(c.path) and (c.status == "A" or (c.status == "M" and not any(x.strip() for x in c.removed))):
+            continue  # a new or extended test changes no behaviour: the legacy callers' tests live beside them
         if c.status == "A":
-            problems.append(f"New file outside the modules: {c.path}. New code belongs in a module or in the legacy "
-                            "bridge package")
+            problems.append(f"New file outside the module and the bridge: {c.path}. New code belongs in the module, or "
+                            "(the router and adapters) in the bridge package")
             continue
-        if c.path.endswith(".xml") and statements(_show(root, base, c.old_path or c.path)):
-            continue  # an SQL map: its statements are compared by text in step 5
-        bad = _non_mechanical(c, word)
+        if c.path.endswith(".xml") and statements(_show(root, base, c.path)):
+            if sorted(statements(_read(root, c.path))) != sorted(statements(_show(root, base, c.path))):
+                problems.append(f"Legacy SQL map changed: {c.path}. Its statements stay as they are; the module has its "
+                                "own copies")
+            continue
+        bad = _not_wiring(c, word, prop)
         if bad:
-            what = "Existing test changed" if _is_test(c.path) else "Edit outside the modules"
-            problems.append(f"{what}: {c.path}: `{bad.strip()[:90]}` is more than an import, declaration or bean "
-                            "reference of a moved class")
-    for c in inside:  # a test moved with its code may change only package and import lines
-        if _is_test(c.path) and c.status == "R":
-            bad = next((line for line in [*c.removed, *c.added] if line.strip() and not IMPORT.match(line)), None)
-            if bad:
-                problems.append(f"Moved test changed beyond package/imports: {c.path}: `{bad.strip()[:90]}`")
-    changed_outside = {c.path for c in sources if c.status == "M"}
+            problems.append(f"Legacy {what} changed: {c.path}: `{bad.strip()[:90]}`. Outside the module and the bridge "
+                            "only Spring wiring and POM lines change (and the toggle's default)")
+    changed_outside = {c.path for c in outside  # wiring and the POMs; branched callers and tests are listed elsewhere
+                       if c.status == "M" and c.path not in branched and not _is_test(c.path)}
     if declaration is not None:
         listed = set(declaration.get("outside_changes") or [])
         problems += [f"{p} changed outside the modules but is not in outside_changes of module-extraction.yaml"
                      for p in sorted(changed_outside - listed)]
         problems += [f"outside_changes lists {p}, which did not change" for p in sorted(listed - changed_outside)]
-    if len(changed_outside) > MAX_OUTSIDE_FILES:
-        problems.append(blocker(f"{len(changed_outside)} files outside the modules need changing (the limit is "
+    if len(changed_outside | branched) > MAX_OUTSIDE_FILES:
+        problems.append(blocker(f"{len(changed_outside | branched)} files outside the modules need changing (the limit is "
                         f"{MAX_OUTSIDE_FILES}). Stop and ask the user before going on"))
 
-    # 5. SQL: every statement in the modules exists, text for text, in the monolith; every statement taken out of a
-    # legacy SQL map is now in a module; no SQL map outside the modules gains or changes a statement.
+    # 5. SQL: every statement in the modules is a copy, text for text, of one in the monolith.
     module_stmts: list[str] = []
     for c in inside:
         if c.path.endswith(".xml") and c.status != "D":
@@ -356,24 +387,27 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
         else:
             problems.append(f"SQL in a module is new or differs from the monolith's: {s[:100]}…")
             break
-    in_modules = list(module_stmts)
-    for c in diff:
-        before = statements(_show(root, base, c.old_path or c.path)) if c.status != "A" else []
-        if not before or c in inside:
-            continue
-        after = statements(_read(root, c.path)) if c.status in "M" else []
-        for s in after:
-            if s in before:
-                before.remove(s)
-            else:
-                problems.append(f"SQL changed in {c.path}: `{s[:100]}…`. SQL text must stay identical")
-                break
-        for s in before:  # taken out of this file
-            if s in in_modules:
-                in_modules.remove(s)
-            else:
-                problems.append(f"A statement was removed from {c.path} without being copied into a module: {s[:90]}…")
-                break
+
+    # 5b. The parallel run (Module in monolith): own folders, the bridge holds the router and adapters, the toggle.
+    routes = routing.get("routes") or (declaration or {}).get("routes") or []
+    if bridge and router:
+        problems += _bridge_classes(root, bridge[0], inside, in_bridge, routes, router)
+    if routing:
+        problems += _own_folders(root, base, diff, modules, bridge, earlier or {})
+        if bridge and not _under(router, bridge):
+            problems.append(f"The router {router} is not in the bridge package {bridge[0]}")
+        if not any(c.path == router and c.status != "D" for c in diff) and not (root / router).is_file():
+            problems.append(f"The router {router} (routing in module-extraction.yaml) doesn't exist: it takes over the "
+                            "legacy service's bean and reads the toggle")
+        if not any(prop in line for c in diff if c.status != "D" for line in c.added):
+            problems.append(f"The toggle {prop} is not read or configured anywhere in this step's change")
+        default = re.compile(rf"^\s*{re.escape(prop)}\s*[:=]\s*[\"']?(\S+?)[\"']?\s*$")
+        for c in diff:
+            if c.path.endswith((".properties", ".yml", ".yaml")) and c.status != "D":
+                for line in c.added:
+                    m = default.match(line)
+                    if m and m.group(1) != "legacy":
+                        problems.append(f"{c.path} sets {prop} to {m.group(1)}. It defaults to legacy (the as-is code)")
 
     # 6. The modules touch only this domain's tables and packages, and no God module.
     for m in modules:
@@ -410,23 +444,125 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
     return problems[:MAX_REPORTED]
 
 
-def _non_mechanical(c: Change, word: re.Pattern | None) -> str | None:
-    """The first changed line that is not an import, a declaration, an injection annotation or a wiring line that
-    mentions a moved class (None when every line is mechanical)."""
-    xml = c.path.endswith(".xml")
+def _not_wiring(c: Change, word: re.Pattern | None, prop: str | None) -> str | None:
+    """The first changed line of a legacy file that is not Spring wiring for this step (an import, alias or SQL map
+    registration, or a bean line naming this step's classes or the beans the router takes over), nor the toggle's
+    default in a properties file. None when every changed line is one of those."""
+    config = c.path.endswith((".properties", ".yml", ".yaml"))
     for line in [*c.removed, *c.added]:
         if not line.strip():
             continue
-        if xml:
-            if WIRING.search(line) or (word is not None and word.search(line) and BEAN_LINE.search(line)):
-                continue
-        else:
-            if IMPORT.match(line) or INJECTION.match(line):
-                continue
-            if word is not None and word.search(line) and not CALL.search(line) and not CONTROL.search(line):
-                continue
+        if c.path.endswith(".xml") and (WIRING.search(line) or (word is not None and word.search(line)
+                                                               and BEAN_LINE.search(line))
+                                        or (line in c.added and CLOSING.match(line))):
+            continue
+        if config and prop and prop in line and line in c.added:
+            continue
         return line
     return None
+
+
+def _own_folders(root: Path, base: str, diff: list[Change], modules: list[str], bridge: list[str],
+                 earlier: dict) -> list[str]:
+    """The module folders and the bridge package are new in this step, or this domain's own from an earlier feature:
+    an existing folder can't be declared as one (everything in it would count as the step's)."""
+    def existed(folder: str) -> bool:
+        try:
+            return bool(_git(root, "ls-tree", "-r", "--name-only", base, "--", folder).strip())
+        except RuntimeError:
+            return False
+
+    problems = []
+    for m in modules:
+        if m not in (earlier.get("modules") or set()) and existed(m):
+            problems.append(f"The module folder {m} already existed. The domain module is a new folder (or this "
+                            "domain's own, from an earlier feature)")
+    for b in bridge:
+        if b not in (earlier.get("bridges") or set()) and existed(b):
+            problems.append(f"The bridge package {b} already existed. It is a new package for the router and adapters "
+                            "(or this domain's own, from an earlier feature)")
+    return problems
+
+
+def _bridge_classes(root: Path, bridge: str, inside: list[Change], in_bridge: list[Change], routes: list[dict],
+                    router: str) -> list[str]:
+    """Every class added to the bridge package is the router, an adapter (it implements the legacy interface the router
+    takes over, or a port of the domain module), or a helper such as a mapper that the router or an adapter uses and
+    that has no database access."""
+    ports = set()
+    for c in inside:
+        if c.path.endswith(".java") and c.status != "D":
+            ports |= set(re.findall(r"\binterface\s+(\w+)", _read(root, c.path)))
+    ports |= {str(r["interface"]).split(".")[-1] for r in routes if r.get("interface")}
+
+    def implemented(text: str) -> set[str]:
+        return {n.split(".")[-1] for m in re.findall(r"\bimplements\s+([\w.,\s<>]+?)\s*\{", text)
+                for n in re.split(r"[,\s<>]+", m) if n}
+
+    folder = root / bridge
+    classes = {f.relative_to(root).as_posix(): COMMENTS.sub("", f.read_text(encoding="utf-8", errors="replace"))
+               for f in folder.rglob("*.java")} if folder.is_dir() else {}
+    anchors = [text for path, text in classes.items()  # the router and the adapters: what helpers may serve
+               if path == router or (not _is_test(path) and implemented(text) & ports)]
+    problems = []
+    for c in in_bridge:
+        if c.status != "A" or not c.path.endswith(".java") or _is_test(c.path) or _simple(c.path) == "package-info":
+            continue
+        text = classes.get(c.path, "")
+        if c.path == router or implemented(text) & ports:
+            continue
+        name = re.compile(rf"\b{re.escape(_simple(c.path))}\b")
+        if not any(name.search(a) for a in anchors if a is not text):
+            problems.append(f"{c.path} in the bridge package is not the router, implements no port of the domain "
+                            "module nor the legacy interface the router takes over, and neither the router nor an "
+                            "adapter uses it. The bridge holds only the router, adapters and their helpers (mappers)")
+            continue
+        hit = DB_ACCESS.search(text) or TRANSACTION.search(text)
+        if hit:
+            problems.append(f"{c.path} uses {hit.group(0).strip()}. A helper in the bridge package only converts "
+                            "between the legacy and the module's types: no database access, no transactions")
+    return problems
+
+
+def _toggle_branches(root: Path, base: str, diff: list[Change], outside: list[Change], branched: set[str],
+                     router: str) -> list[str]:
+    """The legacy callers listed in toggle_branches (no bean seam for the router to sit behind) may change as much as
+    the toggle branch needs (lines added, moved or rewritten) because a test pins their behaviour, not their text. What
+    no test of the caller would show stays refused: no branch asking the router, new database access, a DAO."""
+    problems = []
+    by_path = {c.path: c for c in outside}
+    router_class = re.compile(rf"\b{re.escape(_simple(router))}\b") if router else None
+    tests = [_read(root, c.path) for c in diff if _is_test(c.path) and c.status in "AMR"]
+    for path in sorted(branched):
+        c = by_path.get(path)
+        if c is None:
+            problems.append(f"toggle_branches lists {path}, which did not change")
+            continue
+        if c.status != "M" or not path.endswith(".java") or _is_test(path):
+            problems.append(f"toggle_branches lists {path}: only an existing Java class (not a test) gets a toggle "
+                            "branch")
+            continue
+        before = _show(root, base, path) or ""
+        if DATA_LAYER.search(before):
+            problems.append(f"toggle_branches lists {path}, a DAO. The data access stays as it is: the module has its "
+                            "own copy, and the router switches the callers")
+            continue
+        added = COMMENTS.sub("", "\n".join(c.added))
+        if router_class is not None and not router_class.search(added):
+            problems.append(f"{path}: the toggle branch does not ask the router {_simple(router)}. The router reads "
+                            "the toggle and calls the new flow; the caller only asks it")
+        old = COMMENTS.sub("", before)
+        hit = next((m.group(0) for p in (DB_ACCESS, TRANSACTION) for m in p.finditer(added)
+                    if m.group(0) not in old), None)
+        if hit:
+            problems.append(f"{path}: the change adds {hit.strip()}. The branch only asks the router: no new "
+                            "database access or transactions in legacy code")
+        name = re.compile(rf"\b{re.escape(_simple(path))}\b")
+        if not any(name.search(t) for t in tests):
+            problems.append(f"{path}: no test in this change covers {_simple(path)}. Add or extend one that pins its "
+                            "behaviour with the toggle at legacy and at monolith (and service, once it exists); the "
+                            "refactoring around the branch is then free")
+    return problems
 
 
 def for_context(ctx) -> list[str]:
@@ -452,7 +588,42 @@ def for_context(ctx) -> list[str]:
         return [f"Write {cs.MODULE_EXTRACTION_FILE} (in {ctx.rel(out)}/) first: it declares the new modules, which the "
                 "check needs"]
     return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, declaration, design, ctx.ownership,
-                 ctx.domain, (finder or {}).get("god_modules"))
+                 ctx.domain, (finder or {}).get("god_modules"), earlier=earlier_folders(ctx.run_id, ctx.domain))
+
+
+def declarations(run_id: str, domain: str, name: str) -> list[str]:
+    """The texts of a declaration (`name`) the runs of the domain stored, this run's earlier attempts included."""
+    from sqlalchemy import select
+
+    from app.db.models import Artifact, Run
+    from app.db.session import session_scope
+
+    try:
+        with session_scope() as s:
+            run = s.get(Run, run_id)
+            if run is None:
+                return []
+            return [a.content for a in s.scalars(select(Artifact).join(Run, Run.id == Artifact.run_id).where(
+                Run.project == run.project, Run.domain == domain, Artifact.name == name))]
+    except Exception:  # noqa: BLE001 - without the database there is nothing earlier to know
+        return []
+
+
+def earlier_folders(run_id: str, domain: str) -> dict:
+    """The module folders and bridge packages declared by runs of the domain (this one's earlier attempts included):
+    a later feature, or a re-run, extends them instead of creating new ones."""
+    from app import contracts_store as cs
+
+    out = {"modules": set(), "bridges": set()}
+    for text in declarations(run_id, domain, cs.MODULE_EXTRACTION_FILE):
+        try:
+            data = cs.parse_module_extraction(text)
+        except cs.InvalidDocument:
+            continue
+        out["modules"] |= {str(m["path"]).strip("/") for m in data["modules"]}
+        if data.get("bridge_dir"):
+            out["bridges"].add(str(data["bridge_dir"]).strip("/"))
+    return out
 
 
 def report(problems: list[str]) -> str:

@@ -3,7 +3,7 @@ import json
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,8 +17,8 @@ from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import (auth, contracts_store, delivery, discovery_store, docs_publish, projects, repos, run_workflow,
-                 settings_store, workflow_store, workspace)
+from app import (auth, contracts_store, delivery, discovery_store, docs_publish, document_export, projects, repos,
+                 run_workflow, settings_store, workflow_store, workspace)
 from app.auth import CurrentUser, require
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
@@ -394,6 +394,15 @@ def answer_question(question_id: int, body: AnswerIn, db: Session = Depends(get_
 def list_artifacts(run_id: str, db: Session = Depends(get_db)):
     _run_or_404(db, run_id)
     return db.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
+
+
+@router.get("/runs/{run_id}/documents.zip")
+def run_documents_zip(run_id: str, db: Session = Depends(get_db)):
+    """Every document the run's agents generated (latest attempt of each stage), as one zip, a folder per stage."""
+    run = _run_or_404(db, run_id)
+    name = document_export.filename(run.domain, run.operation)
+    return Response(document_export.run_zip(db, run), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.get("/artifacts/{artifact_id}", response_model=ArtifactOut)

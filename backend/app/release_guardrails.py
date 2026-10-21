@@ -143,15 +143,15 @@ def _routing(monolith: Path, diff: list[mg.Change], routing: dict, domain: str) 
     prop = str(routing["toggle"]["property"])
     router = str(routing["router"]).strip("/")
     if not any(c.path == router for c in live):
-        problems.append(f"The router {router} (integration-routing.yaml) is not part of this step's change: one class "
-                        "reads the toggle and hands each call to the old flow or the new one")
+        problems.append(f"The router {router} (integration-routing.yaml) is not part of this step's change: the "
+                        "feature's router gets the service value")
     if not any(prop in line for _path, line in added):
         problems.append(f"The toggle {prop} is not read or configured anywhere in this step's change")
     default = re.compile(rf"^\s*{re.escape(prop)}\s*[:=]\s*[\"']?(\S+?)[\"']?\s*$")
     for path, line in added:
         m = default.match(line)
-        if m and path.endswith((".properties", ".yml", ".yaml")) and m.group(1) != "monolith":
-            problems.append(f"{path} sets {prop} to {m.group(1)}. It defaults to monolith (the old flow)")
+        if m and path.endswith((".properties", ".yml", ".yaml")) and m.group(1) != "legacy":
+            problems.append(f"{path} sets {prop} to {m.group(1)}. It defaults to legacy (the as-is code)")
     domain_api = re.compile(rf"/internal/api/v1/{re.escape(domain)}/(?!orchestrator\b)")
     orchestrator_api = re.compile(rf"/internal/api/v1/{re.escape(domain)}/orchestrator\b")
     for path, line in added:

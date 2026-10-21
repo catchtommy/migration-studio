@@ -187,6 +187,7 @@ class AgentIn(BaseModel):
     outputs: list[str]
     max_turns: int = Field(ge=1, le=500)
     checks: list[Literal[CHECKS]] = []  # verifications the agent must pass before finishing
+    guardrails: str = Field(default="", max_length=50_000)  # this agent's own, in plain words
 
     @field_validator("outputs")
     @classmethod

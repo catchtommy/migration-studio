@@ -283,6 +283,7 @@ export interface AgentInput {
   outputs: string[];
   max_turns: number;
   checks: string[]; // e.g. "boundary"
+  guardrails: string; // this agent's own, in plain words
 }
 
 export type Library = "shared" | "project"; // the library every project uses, or this project's own/copy
@@ -528,6 +529,10 @@ export interface Project {
 
 export type ProjectSettings = Record<string, string | number | boolean>;
 
+/** A built-in guardrail check and what it enforces (read-only: it lives in code). */
+export type BuiltinGuardrail = { key: string; title: string; description: string; checks: string[] }; // checks: the agent checks it serves
+export type Guardrails = { text: string; builtin: BuiltinGuardrail[] };
+
 export interface ProjectDetail extends Project {
   settings: ProjectSettings;
   languages: Record<string, string>;
@@ -643,6 +648,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const json = (method: string, body: unknown): RequestInit => ({ method, body: JSON.stringify(body) });
 
+/** Save a blob as a file in the browser's downloads. */
+export function saveFile(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Download a file the API serves (with the project header, so a plain link won't do), under the name it gives. */
+async function download(path: string, fallbackName: string): Promise<void> {
+  const res = await fetch(`/api${path}`, { headers: currentProject ? { "X-Project": currentProject } : {} });
+  if (!res.ok) {
+    if (res.status === 401) window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
+    throw new ApiError(res.status, res.statusText);
+  }
+  const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? fallbackName;
+  saveFile(await res.blob(), name);
+}
+
 export const api = {
   runs: () => request<Run[]>("/runs"),
   run: (id: string) => request<RunDetail>(`/runs/${id}`),
@@ -677,6 +705,8 @@ export const api = {
   restart: (id: string, stage: string, notes?: string, fresh = false) => request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh })),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
+  downloadRunDocuments: (runId: string) => download(`/runs/${runId}/documents.zip`, "documents.zip"),
+  downloadDomainDocuments: (key: string) => download(`/domains/${key}/documents.zip`, `${key}-documents.zip`),
   updateArtifact: (id: number, content: string) => request<Artifact>(`/artifacts/${id}`, json("PUT", { content })),
   diff: (runId: string, executionId: number) => request<{ diff: string }>(`/runs/${runId}/stages/${executionId}/diff`),
   questions: (runId: string) => request<Question[]>(`/runs/${runId}/questions`),
@@ -738,6 +768,8 @@ export const api = {
   updateProject: (key: string, body: { name?: string; description?: string }) => request<ProjectDetail>(`/projects/${key}`, json("PUT", body)),
   deleteProject: (key: string) => request<void>(`/projects/${key}`, { method: "DELETE" }),
   updateProjectSettings: (key: string, values: ProjectSettings) => request<ProjectSettings>(`/projects/${key}/settings`, json("PUT", values)),
+  guardrails: () => request<Guardrails>("/guardrails"),
+  updateGuardrails: (text: string) => request<Guardrails>("/guardrails", json("PUT", { text })),
   repository: (key: string) => request<RepositoryStatus>(`/projects/${key}/repository`),
   fetchRepository: (key: string) => request<RepositoryStatus>(`/projects/${key}/repository/fetch`, { method: "POST" }),
   members: (key: string) => request<Member[]>(`/projects/${key}/members`),

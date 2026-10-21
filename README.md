@@ -53,53 +53,81 @@ owned or read directly if another domain owns it, and `other_domain_dependencies
 
 ### Module in monolith
 
-The *Module in monolith* agent is a careful legacy refactorer: it implements one feature exactly as the designs say, in
-small mechanical steps, and proves that behaviour is unchanged. It creates the feature's **domain** module (a new Maven
-module), deletes the moved code from the monolith and re-points the callers. The orchestrator of a cross-domain feature
-is the next step's (*Orchestrator in monolith*); until then the callers use the domain's public API.
+The *Module in monolith* agent is a careful legacy refactorer: it builds one feature's **domain** module (a new Maven
+module) exactly as the designs say, in small mechanical steps, and proves that behaviour is unchanged. It is a
+**parallel run**: the as-is code is never changed. It stays the old flow, and the new module is built **beside** it as
+a copy. One toggle per feature (`migration.<domain>.<feature>.route`) chooses the flow on every call:
+
+| Value | Flow | Added by |
+|---|---|---|
+| `legacy` (default) | the as-is code, unchanged | Module in monolith |
+| `monolith` | the new domain module (or, with an orchestrator, controller → orchestrator → domain module) | Module in monolith, then Orchestrator in monolith |
+| `service` | the orchestrator service when the feature has an orchestrator, else the domain service | Monolith integration |
+
+The switch is a **router** behind the legacy service's bean: the legacy bean gets a new id (`brokerService` →
+`brokerServiceLegacy`), and the router, registered under the old id (`primary`), implements the same interface and
+hands each call on as the toggle says; an unknown value means `legacy`. Controllers and every other legacy file stay
+as they are; only Spring wiring and POM lines change. Mappers between the legacy types and the module's sit in the
+bridge package beside the router, which uses them (the module never knows the legacy types).
+
+The one exception is a legacy caller (controller, job or service) with no bean seam: one that uses the concrete
+class, `new` or a static call, or one that sequences the domains' calls itself (so a router behind one bean would
+leave the other calls in place). It gets a **toggle branch** asking the router
+(`if (brokerServiceRouter.routed()) { return brokerServiceRouter.create(name); }`), and it may be refactored as the
+branch needs: lines moved into a method of their own, wrapped in an `else`, rewritten. The rule is about behaviour,
+not text: a characterization test of that caller, written and committed before it changes, passes unchanged at
+`legacy` and at `monolith` (and `service`, once it exists). The router stays the one place that reads the toggle; each
+such caller is listed with its reason in `toggle_branches`, and the pull request lists, per caller, the lines added,
+moved and rewritten, so a reviewer knows exactly where to look. Deploying changes nothing until someone switches, and
+setting the toggle back to `legacy` is the rollback. The as-is code is removed later, outside these steps, once the
+feature runs on the new flow.
 
 1. **Baseline** build of the affected modules (stop and ask if it is red), then **characterization tests** first: new
-   Mockito tests for every public method of the feature, green on the old code before anything moves.
-2. **One step at a time**: module skeleton, move the classes (`git mv`, package line only), move the SQL statements
-   (text identical; a statement other features of the domain still use is copied and listed in `shared_copies`), Spring
-   context with `<alias>`es for the old bean ids, delete the old code, then fix the callers the compiler lists. Each
-   step is compiled, tested, checked and committed locally; a failed step is reverted, not "fixed".
-3. **Callers** (the controller, God modules, anything else) change only in their import, injected type and bean
-   reference lines; the module's API keeps the legacy method names and signatures. Controllers are never moved.
-4. **Events** are only those the approved designs name, published with Spring's own event publishing after commit.
+   Mockito tests for every public method of the feature, green on the as-is code; they run again at `monolith`.
+2. **One step at a time**: module skeleton, copy the classes (package line only), context ports in the copy, copy the
+   SQL statements into the module's own SQL map (text identical), local adapters, events, then the Spring wiring and the
+   router. Each step is compiled, tested, checked and committed locally; a failed step is reverted, not "fixed".
+3. **Events** are only those the approved designs name, published with Spring's own event publishing after commit.
    There is no outbox (that would need a table), so delivery is not guaranteed; the pull request description says so.
-5. **Cross-domain**: every call the moved code makes to another domain goes through a port of the domain module; its
-   `local` adapter sits in a temporary bridge package in the monolith (`bridge_dir`), one class per contract binding,
-   resolving the legacy bean lazily.
+4. **Cross-domain**: every call the copy makes to another domain goes through a port of the domain module; its `local`
+   adapter sits in the bridge package (`bridge_dir`, beside the router), one class per contract binding, resolving the
+   legacy bean lazily.
 
-The step writes `module-extraction.yaml` (the new modules, `bridge_dir`, every file changed outside the modules,
-`shared_copies`, `events`) and `modular-monolith.md`, which is the pull request description (what moved, how behaviour
-was proven unchanged, guardrails, known limitations, rollback = revert).
+The step writes `module-extraction.yaml` (the domain module, `bridge_dir`, `routing`: the toggle, its `legacy`
+default, the router and the beans it takes over; `toggle_branches`; every file changed outside the module and the
+bridge; `events`) and
+`modular-monolith.md`, which is the pull request description (what was copied, how to switch, how behaviour was proven
+the same at both values, guardrails, known limitations, rollback = set the toggle to `legacy`).
 
 **`check_module_guardrails`** compares the code with the commit the step started from, and runs again when the agent
-tries to finish; the step cannot finish while it fails. It refuses: any UI file (JSP, HTML, JS, CSS, images); DDL or
-new SQL scripts; changed SQL (every statement in a module must exist, text for text, in the monolith, and a statement
-taken out of a legacy SQL map must now be in a module); build changes beyond a `<module>` line and a dependency on the
-new module; a new module that declares plugins, a Java level, a dependency on a module of the monolith itself, a
-library the monolith does not already use, or a version it does not use (the exceptions are the utility jars listed in
-`domain-design.yaml`); edits outside the modules other than imports, declarations, injection annotations and bean or
-wiring lines of moved classes; existing tests that are deleted, ignored or changed beyond package and import lines; any
-use of another domain's tables or packages or of a God module in the modules; and more than 10 changed files outside
-the modules (stop and ask). The built-in agent always runs it; tick the *Module guardrails* check on the Agents page
-to give it to a custom agent.
+tries to finish; the step cannot finish while it fails. It refuses: a legacy file (Java, JSP, SQL map, test) that is
+changed, moved or deleted, or a new file outside the module and the bridge (new tests, and lines added to existing
+ones, are fine anywhere); edits outside them other than Spring wiring lines for this step's beans (the legacy bean's
+new id, the router, aliases, imports) and POM lines; for a caller listed in `toggle_branches`, no test of it in the
+change, a branch that doesn't ask the router, new database access or transactions, or a DAO listed; any UI file; DDL or
+new SQL scripts; SQL in the module that is not a copy, text for text, of the monolith's; build changes beyond a
+`<module>` line and a dependency on the new module; a new module that declares plugins, a Java level, a dependency on a
+module of the monolith itself, a library the monolith does not already use, or a version it does not use (the
+exceptions are the utility jars listed in `domain-design.yaml`); a module or bridge folder that already existed (unless
+an earlier feature of the domain declared it); a class in the bridge that is neither the router, an adapter of a
+port, nor a helper (mapper) the router or an adapter uses, or a helper with database access; a missing router, or a toggle configured to anything but `legacy`; ignored tests; any use of another domain's
+tables or packages or of a God module; and more than 10 changed files outside the module (stop and ask). The built-in
+agent always runs it; tick the *Module guardrails* check on the Agents page to give it to a custom agent.
 
 ### Orchestrator in monolith
 
 Only a cross-domain feature has an orchestrator (a domain-only feature skips the step). The *Orchestrator in monolith*
-agent builds it as its own Maven module beside the domain module, from `orchestrator-design.md`, so that a request flows
-**controller → orchestrator → domain module**. The orchestrator sequences the calls to the domain's public API and to
-the other domains (through ports, each with a `local`/`contract` mode switch, `local` by default), and holds **no
-database access and no transaction**: data and transactions stay in the domain module, which this step doesn't change.
-Controllers change only in their import, injected type and bean reference lines: the orchestrator offers the same
-method names and signatures as the domain API methods they called. It writes `orchestrator-extraction.yaml` (or
-`orchestrator: none` with the reason) and `orchestrator-module.md`. **`check_orchestrator_guardrails`** refuses DAO,
-iBatis, JDBC, JPA, SQL maps or transactions in the orchestrator, changes to the domain module, and everything the module
-check refuses outside the module.
+agent builds it as its own Maven module beside the domain module, from `orchestrator-design.md`, and points the
+router's `monolith` value at it, so that a request flows **controller → router → orchestrator → domain module**
+(`legacy` still runs the as-is code). The orchestrator sequences the calls to the domain's public API and to the other
+domains (through ports, each with a `local`/`contract` mode switch, `local` by default), and holds **no database access
+and no transaction**: data and transactions stay in the domain module, which this step doesn't change. Controllers
+don't change, except for a toggle branch in a caller that sequences the domains' calls itself (listed in
+`toggle_branches`, same rules as above): the router gets a method that calls the orchestrator operation making the
+whole sequence. It writes `orchestrator-extraction.yaml` (or `orchestrator: none` with the reason) and
+`orchestrator-module.md`. **`check_orchestrator_guardrails`** refuses DAO, iBatis, JDBC, JPA, SQL maps or transactions
+in the orchestrator, changes to the domain module, an orchestrator folder that already existed, and everything the
+module check refuses outside the module and the bridge.
 
 ### Microservice
 
@@ -160,8 +188,9 @@ orchestrator service's own repository.
 Modernisation leaves `acceptance-tests/` unchanged; Service tests changes only `src/test/` and adds only test-scoped
 dependencies. **`check_release_guardrails`** keeps Modernisation on the same schema (no DDL, schema scripts, Flyway or
 Liquibase; `ddl-auto` `none` or `validate`), on Java 25 / Spring Boot 4, without secrets; and Monolith integration to
-the switch only (no UI, DDL or SQL change; only an HTTP client and the Azure Service Bus SDK added; the domain and
-orchestrator modules unchanged).
+the switch only: the `service` value added to the feature's own toggle and router (still defaulting to `legacy`),
+calling the orchestrator service when the feature has one and the domain service otherwise; no UI, DDL or SQL change;
+only an HTTP client and the Azure Service Bus SDK added; the domain and orchestrator modules unchanged.
 
 ### What keeps agents within their step
 

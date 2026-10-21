@@ -13,9 +13,18 @@ from sqlalchemy import select
 from app import agent_store, projects
 from app.db.models import GLOBAL, SHARED, Domain, Setting, WorkflowDef
 from app.db.session import session_scope
-from app.orchestrator.stages import BOUNDED_CONTEXTS, DOMAIN_FEATURES, STANDARD, StageDef, Workflow
+from app.orchestrator.stages import BOUNDED_CONTEXTS, DOMAIN_FEATURES, LEAN, STANDARD, StageDef, Workflow
 
 STANDARD_KEY = "standard"
+LEAN_KEY = "lean"
+LEAN_NAME = "Lean migration"
+LEAN_DESCRIPTION = ("The standard migration with fewer agents: analysis → Modulith design (domain, linked-domain "
+                    "contracts, orchestrator, integration) → module → orchestrator (cross-domain features) → "
+                    "microservice → orchestrator service (when there is an orchestrator) → acceptance tests → "
+                    "modernisation with service tests → integration, with four approval gates. Make it a domain's "
+                    "default workflow to use it.")
+# A lean step that does a standard step's work in the same repository gets that step's code settings when seeded.
+_LEAN_CODE_FROM = {"modernise_and_test": "modernise"}
 # Built-in discovery workflows: (key, name, description, workflow), by scope.
 DISCOVERY = {
     "monolith": ("discover_bounded_contexts", "Discover bounded contexts",
@@ -158,6 +167,26 @@ def seed() -> None:
                     s.add(WorkflowDef(project=SHARED, key=key, name=name, description=description,
                                       steps=steps_of(workflow), scope=scope))
             s.add(Setting(key="_added_discovery_workflows", value=True))
+        if s.get(Setting, (GLOBAL, "_added_lean_workflow")) is None:
+            if s.get(WorkflowDef, (SHARED, LEAN_KEY)) is None:
+                standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
+                s.add(WorkflowDef(project=SHARED, key=LEAN_KEY, name=LEAN_NAME, description=LEAN_DESCRIPTION,
+                                  steps=_lean_steps(standard.steps if standard is not None else [])))
+            s.add(Setting(key="_added_lean_workflow", value=True))
+
+
+def _lean_steps(standard: list[dict]) -> list[dict]:
+    """The lean workflow's steps, with the code settings (repositories) of the stored standard workflow's steps, so a
+    step that changes code works in the same repository either way."""
+    code = {st["key"]: st["code"] for st in standard if st.get("kind") == "agent" and st.get("code")}
+    out = []
+    for st in steps_of(LEAN):
+        if st["kind"] == "agent":
+            source = code.get(st["key"]) or code.get(_LEAN_CODE_FROM.get(st["key"], ""))
+            if source:
+                st = {**st, "code": source}
+        out.append(st)
+    return out
 
 
 def _slug(text: str) -> str:

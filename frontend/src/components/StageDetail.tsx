@@ -7,6 +7,7 @@ import { ArtifactViewer } from "./ArtifactViewer";
 import { RestartPanel } from "./RestartPanel";
 import { chosen, DocumentPicker, type DocumentChoice } from "./DocumentPicker";
 import { DiffView } from "./DiffView";
+import { DownloadButton } from "./DownloadButton";
 import { StatusBadge } from "./StatusBadge";
 import { useCan } from "../lib/hooks";
 
@@ -144,7 +145,14 @@ export function StageDetail({ stage, stages, run, events, questions }: {
               <p className="text-sm text-subtle">{loadingArtifacts ? "Loading documents…" : "No artifacts for this attempt."}</p>
             ) : (
               <>
-                {shown.length > 1 && <DocumentPicker docs={shown} value={doc} onChange={setDoc} />}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  {shown.length > 1 ? <DocumentPicker docs={shown} value={doc} onChange={setDoc} /> : <span />}
+                  <DownloadButton
+                    label="Download all documents (.zip)"
+                    title="Every document of this run, from all its agents (latest attempt of each step)"
+                    onDownload={() => api.downloadRunDocuments(run.id)}
+                  />
+                </div>
                 {chosen(shown, doc).map((a) => (
                   <ArtifactViewer key={a.id} artifactId={a.id} editable={editable} />
                 ))}

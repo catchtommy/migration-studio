@@ -267,12 +267,18 @@ def parse_module_extraction(text: str) -> dict:
                               f"{ORCHESTRATOR_EXTRACTION_FILE}")
     if kinds.count("domain") != 1:
         raise InvalidDocument(f"{where}: exactly one domain module")
-    if data["scope"] == "cross-domain" and not data.get("bridge_dir"):
-        raise InvalidDocument(f"{where}: the feature is cross-domain, so add the bridge_dir (the temporary legacy "
-                              "bridge package in the monolith, with the local adapters)")
+    if not data.get("bridge_dir"):
+        raise InvalidDocument(f"{where}: add the bridge_dir: the new package in the monolith with the router (and the "
+                              "adapters: context ports, and the local adapters of a cross-domain feature)")
     for field in ("outside_changes", "events"):
         if data.get(field) is not None and not isinstance(data[field], list):
             raise InvalidDocument(f"{where}: {field} must be a list")
+    data["toggle_branches"] = _toggle_branches(data.get("toggle_branches"), where)
+    data["routing"] = _routing_section(data.get("routing"), where, bool(data["toggle_branches"]))
+    bridge = str(data["bridge_dir"]).strip("/")
+    if not str(data["routing"]["router"]).strip("/").startswith(bridge + "/"):
+        raise InvalidDocument(f"{where} routing: the router {data['routing']['router']} belongs in the bridge package "
+                              f"{bridge}")
     for i, c in enumerate(data.get("shared_copies") or [], 1):
         if not isinstance(c, dict):
             raise InvalidDocument(f"{where} shared copy {i} must be a mapping")
@@ -314,6 +320,50 @@ def parse_microservice_extraction(text: str) -> dict:
     return data
 
 
+def _toggle_branches(branches, where: str) -> list[dict]:
+    """The legacy callers (controllers, jobs, services) that get a toggle branch asking the router, because no bean
+    seam fits: each with the reason. `controller:` is the older name of `file:`."""
+    if branches is None:
+        return []
+    if not isinstance(branches, list):
+        raise InvalidDocument(f"{where}: toggle_branches must be a list")
+    for i, b in enumerate(branches, 1):
+        if not isinstance(b, dict):
+            raise InvalidDocument(f"{where} toggle branch {i} must be a mapping")
+        if "file" not in b and "controller" in b:
+            b["file"] = b.pop("controller")
+        _require(b, ("file", "reason"), f"{where} toggle branch {i}")
+        path = str(b["file"])
+        if path.startswith("/") or ".." in Path(path).parts or not path.endswith(".java"):
+            raise InvalidDocument(f"{where} toggle branch {i}: file must be a Java file inside the repository")
+        if not str(b["reason"]).strip():
+            raise InvalidDocument(f"{where} toggle branch {i}: give the reason no bean seam fits")
+    return branches
+
+
+def _routing_section(routing, where: str, branches: bool = False) -> dict:
+    """The parallel run of module-extraction.yaml: the toggle (default legacy), the router, the beans it takes over
+    (none when every caller is a controller with a toggle branch)."""
+    if not isinstance(routing, dict):
+        raise InvalidDocument(f"{where}: add routing: the toggle property, its default (legacy), the router, and the "
+                              "legacy beans it takes over (the as-is code stays the old flow)")
+    _require(routing, ("property", "default", "router", "routes"), f"{where} routing")
+    if str(routing["default"]) != "legacy":
+        raise InvalidDocument(f"{where} routing: the toggle defaults to legacy (the as-is code), so deploying changes "
+                              "nothing until someone switches")
+    if not isinstance(routing["routes"], list) or not (routing["routes"] or branches):
+        raise InvalidDocument(f"{where} routing: list each legacy bean the router takes over (or, where no bean seam "
+                              "fits, the callers in toggle_branches)")
+    for i, r in enumerate(routing["routes"], 1):
+        if not isinstance(r, dict):
+            raise InvalidDocument(f"{where} routing route {i} must be a mapping")
+        _require(r, ("bean", "legacy_bean", "interface", "module"), f"{where} routing route {i}")
+        if r["bean"] == r["legacy_bean"]:
+            raise InvalidDocument(f"{where} routing route {i}: the legacy bean gets a new id; the router takes over "
+                                  f"{r['bean']}")
+    return routing
+
+
 def parse_orchestrator_extraction(text: str) -> dict:
     """What the Orchestrator in monolith step declares it created and changed (or `orchestrator: none` and why)."""
     data = _load(text, ORCHESTRATOR_EXTRACTION_FILE)
@@ -323,8 +373,9 @@ def parse_orchestrator_extraction(text: str) -> dict:
     if data["orchestrator"] == "none":
         if not str(data.get("reason") or "").strip():
             raise InvalidDocument(f"{where}: give the reason there is no orchestrator")
-        if data.get("module") or data.get("operations") or data.get("ports"):
-            raise InvalidDocument(f"{where}: orchestrator is none, so list no module, operations or ports")
+        if data.get("module") or data.get("operations") or data.get("ports") or data.get("toggle_branches"):
+            raise InvalidDocument(f"{where}: orchestrator is none, so list no module, operations, ports or toggle "
+                                  "branches")
         return data
     module = data.get("module")
     if not isinstance(module, dict):
@@ -349,6 +400,7 @@ def parse_orchestrator_extraction(text: str) -> dict:
             raise InvalidDocument(f"{where} port {i}: the mode defaults to local, which keeps today's behaviour")
     if data.get("outside_changes") is not None and not isinstance(data["outside_changes"], list):
         raise InvalidDocument(f"{where}: outside_changes must be a list")
+    data["toggle_branches"] = _toggle_branches(data.get("toggle_branches"), where)
     return data
 
 
@@ -481,8 +533,8 @@ def parse_integration_routing(text: str) -> dict:
     if not isinstance(toggle, dict):
         raise InvalidDocument(f"{where}: toggle must be a mapping with property and default")
     _require(toggle, ("property", "default"), f"{where} toggle")
-    if str(toggle["default"]) != "monolith":
-        raise InvalidDocument(f"{where}: the toggle defaults to monolith (the old flow), so deploying changes nothing "
+    if str(toggle["default"]) != "legacy":
+        raise InvalidDocument(f"{where}: the toggle defaults to legacy (the as-is code), so deploying changes nothing "
                               "until someone switches")
     if not isinstance(data["operations"], list) or not data["operations"]:
         raise InvalidDocument(f"{where}: list every operation of the target's API")
@@ -522,6 +574,16 @@ def _integration_routing_problems(output_dir: Path, declaration: dict) -> list[s
     if target is None:  # the earlier steps decide this, not the integration agent
         return [blocker(f"{where}: {why}")]
     problems = []
+    module = output_dir / MODULE_EXTRACTION_FILE
+    if module.is_file():  # one toggle per feature: the one the Module in monolith step built
+        try:
+            routing = parse_module_extraction(module.read_text(encoding="utf-8"))["routing"]
+        except InvalidDocument:
+            routing = None
+        if routing and (declaration["toggle"]["property"] != routing["property"] or
+                        str(declaration["router"]).strip("/") != str(routing["router"]).strip("/")):
+            problems.append(f"{where}: use the feature's toggle {routing['property']} and its router "
+                            f"{routing['router']} (routing in {MODULE_EXTRACTION_FILE}); add the service value there")
     if declaration["target"] != target:
         problems.append(f"{where}: target is {declaration['target']}, but the monolith must call the {target} "
                         + ("(the feature has an orchestrator: the monolith reaches the domain only through it)"
@@ -552,19 +614,6 @@ def _module_extraction_problems(output_dir: Path, declaration: dict) -> list[str
         if scope != declaration["scope"]:
             problems.append(f"{MODULE_EXTRACTION_FILE}: scope is {declaration['scope']}, but {DOMAIN_DEPENDENCIES_FILE} "
                             f"decides {scope}")
-    design = output_dir / DOMAIN_DESIGN_FILE
-    if design.is_file():
-        try:
-            ports = parse_domain_design(design.read_text(encoding="utf-8"))["context_ports"]
-        except InvalidDocument:
-            return problems
-        if ports and not declaration.get("bridge_dir"):
-            problems.append(f"{MODULE_EXTRACTION_FILE}: {DOMAIN_DESIGN_FILE} lists context ports "
-                            f"({', '.join(map(str, ports))}), so add bridge_dir: the package in the monolith with "
-                            "their adapters")
-        if not ports and declaration["scope"] == "domain-only" and declaration.get("bridge_dir"):
-            problems.append(f"{MODULE_EXTRACTION_FILE}: bridge_dir is set, but this domain-only feature has no "
-                            "context ports and so nothing to bridge")
     return problems
 
 

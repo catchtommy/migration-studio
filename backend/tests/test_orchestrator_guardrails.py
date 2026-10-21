@@ -5,8 +5,8 @@ import pytest
 
 from app import contracts_store
 from app import orchestrator_guardrails as og
-from tests.test_module_guardrails import (CONTEXT, CONTEXT_PATH, CONTROLLER, CONTROLLER_PATH, DECLARATION, MOD,
-                                          OWNERSHIP, ROOT_POM, WEB_POM, extract, git, put, repo)  # noqa: F401
+from tests.test_module_guardrails import (CONTEXT_PATH, CONTROLLER, CONTROLLER_PATH, DECLARATION, MOD, OWNERSHIP,
+                                          ROUTER, ROUTER_JAVA, extract, git, put, repo)  # noqa: F401
 
 ORCH = "broker-domain/broker-profile/orchestrator"
 ORCH_POM = """<project>
@@ -39,7 +39,7 @@ ORCH_CLASS = f"{ORCH}/src/main/java/com/acme/broker/orchestrator/BrokerOrchestra
 DECL = {"feature": "create-broker", "domain": "broker", "orchestrator": "module",
         "module": {"path": ORCH, "artifact": "com.acme:broker-profile-orchestrator"},
         "operations": [{"method": "BrokerOrchestrator#create", "replaces": "BrokerService#create"}],
-        "outside_changes": [CONTROLLER_PATH, CONTEXT_PATH]}
+        "router": ROUTER, "outside_changes": [CONTEXT_PATH, "pom.xml", "web/pom.xml"]}
 
 
 @pytest.fixture
@@ -53,16 +53,16 @@ def extracted(repo):
 
 
 def orchestrate(root):
-    """The correct orchestrator: its own module on the domain module, controllers re-pointed by type only."""
+    """The correct orchestrator: its own module on the domain module; the controllers unchanged, and the router's
+    monolith value now calls the orchestrator."""
     put(root, f"{ORCH}/pom.xml", ORCH_POM)
     put(root, ORCH_CLASS, ORCHESTRATOR)
     put(root, f"{ORCH}/src/main/java/com/acme/broker/orchestrator/CustomerDirectory.java",
         "package com.acme.broker.orchestrator;\npublic interface CustomerDirectory { void check(String name); }\n")
-    controller = CONTROLLER.replace("com.acme.broker.BrokerService", "com.acme.broker.orchestrator.BrokerOrchestrator")
-    put(root, CONTROLLER_PATH, controller.replace("private BrokerService brokerService;",
-                                                  "private BrokerOrchestrator brokerService;"))
+    put(root, ROUTER, ROUTER_JAVA.replace("private com.acme.broker.domain.BrokerService domain;",
+                                          "private com.acme.broker.orchestrator.BrokerOrchestrator domain;"))
     context = (root / CONTEXT_PATH).read_text()
-    put(root, CONTEXT_PATH, context.replace(
+    put(root, CONTEXT_PATH, context.replace('ref="brokerDomainService"', 'ref="brokerOrchestrator"').replace(
         "</beans>", '  <bean id="brokerOrchestrator" class="com.acme.broker.orchestrator.BrokerOrchestrator"/>\n</beans>'))
     pom = (root / "pom.xml").read_text()
     put(root, "pom.xml", pom.replace(f"<module>{MOD}</module>", f"<module>{MOD}</module>\n    <module>{ORCH}</module>"))
@@ -124,7 +124,7 @@ def test_the_orchestrator_holds_no_sql_map(extracted):
 def test_the_domain_module_does_not_change(extracted):
     root, base = extracted
     orchestrate(root)
-    service = root / MOD / "src/main/java/com/acme/broker/domain/BrokerService.java"
+    service = root / MOD / "src/main/java/com/acme/broker/domain/BrokerServiceImpl.java"
     service.write_text(service.read_text().replace("return dao.insert(name);", "return dao.insert(name.trim());"))
     assert any("The domain module changed" in p for p in run(root, base))
 
@@ -140,13 +140,43 @@ def test_the_orchestrator_depends_on_the_domain_module(extracted):
     assert any("does not depend on the domain module" in p for p in run(root, base))
 
 
-def test_controllers_change_only_by_type_and_import(extracted):
+def test_controllers_are_not_re_pointed(extracted):
     root, base = extracted
     orchestrate(root)
-    controller = (root / CONTROLLER_PATH).read_text()
-    put(root, CONTROLLER_PATH, controller.replace("return brokerService.create(name);",
-                                                  "return brokerService.create(name.trim());"))
-    assert any("Edit outside the modules" in p and "BrokerController" in p for p in run(root, base))
+    controller = CONTROLLER.replace("com.acme.broker.BrokerService", "com.acme.broker.orchestrator.BrokerOrchestrator")
+    put(root, CONTROLLER_PATH, controller.replace("private BrokerService brokerService;",
+                                                  "private BrokerOrchestrator brokerService;"))
+    declaration = {**DECL, "outside_changes": [*DECL["outside_changes"], CONTROLLER_PATH]}
+    assert any("Legacy file changed: " + CONTROLLER_PATH in p for p in run(root, base, declaration))
+
+
+def test_a_controller_that_sequences_the_calls_gets_a_toggle_branch(extracted):
+    root, base = extracted
+    orchestrate(root)
+    put(root, CONTROLLER_PATH, CONTROLLER.replace("""    public String create(String name) {
+""", """    @Autowired
+    private BrokerServiceRouter brokerServiceRouter;
+
+    public String create(String name) {
+        if (brokerServiceRouter.routed()) {
+            return brokerServiceRouter.createWithCustomer(name);
+        }
+"""))
+    put(root, "web/src/test/java/com/acme/web/BrokerControllerTest.java", "class T { BrokerController c; }\n")
+    branch = {"file": CONTROLLER_PATH, "reason": "calls BrokerService and CustomerService itself"}
+    assert run(root, base, {**DECL, "toggle_branches": [branch]}) == []
+    put(root, f"{ROUTER.rsplit('/', 1)[0]}/BrokerFormMapper.java",
+        "package com.acme.broker.legacybridge;\nfinal class BrokerFormMapper { }\n")
+    assert any("BrokerFormMapper.java in the bridge package is not the router" in p
+               for p in run(root, base, {**DECL, "toggle_branches": [branch]}))
+
+
+def test_the_orchestrator_module_is_a_folder_of_its_own(extracted):
+    root, base = extracted
+    orchestrate(root)
+    existing = "web/src/main/java/com/acme/broker"
+    declaration = {**DECL, "module": {"path": existing, "artifact": "com.acme:broker-profile-orchestrator"}}
+    assert any(f"The module folder {existing} already existed" in p for p in run(root, base, declaration))
 
 
 def test_a_feature_without_an_orchestrator_changes_no_code(extracted):
@@ -167,7 +197,9 @@ def test_the_declaration_is_checked_against_the_other_documents(tmp_path):
 
     (tmp_path / "domain-dependencies.yaml").write_text("decision: {scope: domain-only, reason: r}\ndependencies: []\n")
     (tmp_path / "module-extraction.yaml").write_text(
-        f"feature: f\ndomain: broker\nscope: domain-only\nmodules: [{{path: {MOD}, kind: domain, artifact: 'com.acme:d'}}]\n")
+        f"feature: f\ndomain: broker\nscope: domain-only\nmodules: [{{path: {MOD}, kind: domain, artifact: 'com.acme:d'}}]\n"
+        f"bridge_dir: {ROUTER.rsplit('/', 1)[0]}\nrouting: {{property: p, default: legacy, router: {ROUTER}, routes: [{{bean: a, legacy_bean: b, interface: I, "
+        "module: J}]}\n")
     (tmp_path / "orchestrator-extraction.yaml").write_text(
         f"feature: f\ndomain: broker\norchestrator: module\nmodule: {{path: {MOD}/orchestrator, artifact: 'com.acme:o'}}\n"
         "operations: [{method: A#b, replaces: C#b}]\n")

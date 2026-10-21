@@ -22,7 +22,8 @@ def test_builtin_agents_are_editable_and_resettable(client):
     assert [a["key"] for a in agents if a["builtin"]] == [
         "bounded_contexts", "domain_features", "as_is_doc", "deep_dive", "domain_dependencies",
         "linked_domain_contracts", "domain_design", "orchestrator_design", "integration_design", "modular_monolith",
-        "monolith_orchestrator", "microservice_scaffold", "orchestrator_service", "independent_tests", "modernise", "service_tests", "monolith_integration"]  # superseded built-ins are hidden
+        "monolith_orchestrator", "microservice_scaffold", "orchestrator_service", "independent_tests", "modernise", "service_tests", "monolith_integration",
+        "analysis", "modulith_design", "modernise_and_test"]  # superseded built-ins are hidden; then the lean workflow's
 
     body = {**builtin_default("deep_dive"), "instructions": "Focus on the batch jobs.", "outputs": ["notes.md"]}
     r = client.put("/api/agents/deep_dive", json=body)

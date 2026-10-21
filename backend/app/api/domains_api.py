@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import agent_store, contracts_store, discovery_store, domain_store, workflow_store
+from app import agent_store, contracts_store, discovery_store, document_export, domain_store, workflow_store
 from app.api.discovery_api import start_features
 from app.api.schemas import (
     DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, FeatureCreate, FeatureIn,
@@ -10,7 +10,7 @@ from app.api.schemas import (
 )
 from app import projects
 from app.auth import require
-from app.db.models import Artifact, Dependency, Domain, Feature, Run
+from app.db.models import Dependency, Domain, Feature, Run
 from app.db.session import get_db
 from app.domain_store import normalize_inputs
 
@@ -108,15 +108,18 @@ def delete_domain(key: str, with_runs: bool = False, db: Session = Depends(get_d
 def domain_docs(key: str, db: Session = Depends(get_db)):
     """Every operation in the domain with the documents from the latest attempt of each stage."""
     _domain_or_404(db, key)
-    out = []
-    for run in db.scalars(select(Run).where(Run.project == projects.current(), Run.domain == key)
-                          .order_by(Run.operation, Run.created_at)):
-        artifacts = db.scalars(select(Artifact).where(Artifact.run_id == run.id).order_by(Artifact.id)).all()
-        latest = {}
-        for a in artifacts:
-            latest[a.stage] = max(latest.get(a.stage, 0), a.attempt)
-        out.append({"run": run, "artifacts": [a for a in artifacts if a.attempt == latest[a.stage]]})
-    return out
+    return [{"run": run, "artifacts": document_export.latest_artifacts(db, run.id)}
+            for run in db.scalars(select(Run).where(Run.project == projects.current(), Run.domain == key)
+                                  .order_by(Run.operation, Run.created_at))]
+
+
+@router.get("/{key}/documents.zip")
+def domain_documents_zip(key: str, db: Session = Depends(get_db)):
+    """Every document the agents generated for the domain's features, as one zip (one folder per feature)."""
+    _domain_or_404(db, key)
+    runs = db.scalars(select(Run).where(Run.project == projects.current(), Run.domain == key)).all()
+    return Response(document_export.domain_zip(db, runs), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{document_export.filename(key)}"'})
 
 
 @router.get("/{key}/dependencies", response_model=list[DependencyOut])

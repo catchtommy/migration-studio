@@ -1,12 +1,16 @@
 """Guardrails of the Orchestrator in monolith step, checked from git rather than trusted from the agent's word.
 
 The step builds the orchestrator of one cross-domain feature as its own Maven module beside the domain module that
-the Module in monolith step built, so that a request flows controller → orchestrator → domain module. Compared with
-the commit the step started from, the limits of the module extraction apply (see module_guardrails.py: no UI, DDL or
-version changes, only mechanical call-site and wiring edits outside the module, no other domain's code or tables, no
-God module, no ambient inputs), and in addition:
+the Module in monolith step built; the feature's router (in the bridge package) then sends its `monolith` value to the
+orchestrator, so a request flows controller → router → orchestrator → domain module, while `legacy` still runs the
+as-is code. Compared with the commit the step started from, the limits of the module extraction apply (see
+module_guardrails.py: the as-is code unchanged, controllers too but for the toggle branch of one listed in
+`toggle_branches` (a controller that sequences the domains' calls itself, so no bean seam fits); only Spring wiring
+and POM lines outside the module and the bridge; in the bridge, the router, adapters and their helpers (mappers); no
+UI, DDL or version changes, no other domain's code or tables, no God module, no ambient inputs), and in addition:
 
 - the orchestrator holds no database access (DAO, iBatis, JDBC, JPA, SQL maps) and no transaction of its own;
+- the orchestrator module is a new folder (or this domain's own, from an earlier feature);
 - the domain module does not change;
 - the orchestrator module depends on the domain module;
 - a feature declared without an orchestrator (`orchestrator: none`) changes no code at all.
@@ -14,22 +18,17 @@ God module, no ambient inputs), and in addition:
 `check()` returns one line per violation, empty when the step is within its limits.
 """
 
-import re
 from pathlib import Path
 
 from app import module_guardrails as mg
 from app.guardrail_problems import Blocker, blocker
 
-DB_ACCESS = re.compile(r"\b(?:java\.sql|javax\.sql|DataSource|JdbcTemplate|NamedParameterJdbcTemplate|SimpleJdbc\w+|"
-                       r"SqlMapClient\w*|SqlMapSession|SqlSession\w*|com\.ibatis|org\.apache\.ibatis|org\.mybatis|"
-                       r"EntityManager\w*|javax\.persistence|org\.hibernate|\w*(?:Dao|DAO))\b")
-TRANSACTION = re.compile(r"@Transactional\b|\b(?:TransactionTemplate|PlatformTransactionManager|TransactionStatus|"
-                         r"TransactionSynchronization\w*)\b|org\.springframework\.transaction")
-COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
+DB_ACCESS, TRANSACTION, COMMENTS = mg.DB_ACCESS, mg.TRANSACTION, mg.COMMENTS
 
 
 def check(root: Path, base: str, declaration: dict, module_decl: dict | None, design: dict | None,
-          ownership: dict[str, dict], domain: str, god_modules: list[str] | None = None) -> list[str]:
+          ownership: dict[str, dict], domain: str, god_modules: list[str] | None = None,
+          earlier: set[str] | None = None) -> list[str]:
     """Violations of the step's limits since `base`. `declaration` is orchestrator-extraction.yaml (parsed),
     `module_decl` module-extraction.yaml of the Module in monolith step and `design` domain-design.yaml."""
     try:
@@ -45,16 +44,19 @@ def check(root: Path, base: str, declaration: dict, module_decl: dict | None, de
     domain_modules = [m for m in (module_decl or {}).get("modules", []) if m.get("kind") == "domain"]
     domain_paths = [str(m["path"]).strip("/") for m in domain_modules]
 
-    # The module extraction's limits, with the orchestrator as the new module and the domain module as the one it uses.
-    # Callers may swap the domain API classes the orchestrator takes over (`replaces`) for the orchestrator's.
+    # The module extraction's limits, with the orchestrator as the new module and the domain module as the one it uses:
+    # the as-is code unchanged (controllers too, but for a toggle branch); the router in the bridge now calls the orchestrator.
+    routing = (module_decl or {}).get("routing") or {}
     as_module = {"modules": [{"path": orchestrator, "kind": "orchestrator", "artifact": declaration["module"]["artifact"]}],
                  "bridge_dir": (module_decl or {}).get("bridge_dir") or "",
+                 "router": routing.get("router") or declaration.get("router") or "", "routes": routing.get("routes") or [],
+                 "toggle_branches": declaration.get("toggle_branches") or [],
                  "outside_changes": declaration.get("outside_changes") or []}
     problems = [(blocker if isinstance(p, Blocker) else str)(p.replace("module-extraction.yaml", "orchestrator-extraction.yaml"))
                 for p in mg.check(root, base, as_module, design, ownership, domain, god_modules,
                                   extra_artifacts=[m["artifact"] for m in domain_modules],
-                                  extra_names=[str(op["replaces"]).split("#")[0].split(".")[-1]
-                                               for op in declaration.get("operations") or []])]
+                                  wiring=_classes(root, domain_paths) | _route_beans(module_decl))]
+    problems += mg._own_folders(root, base, diff, [orchestrator], [], {"modules": set(earlier or ())})
 
     # The domain module stays as the Module in monolith step left it.
     for c in diff:
@@ -90,6 +92,15 @@ def check(root: Path, base: str, declaration: dict, module_decl: dict | None, de
     return problems[:mg.MAX_REPORTED]
 
 
+def _classes(root: Path, folders: list[str]) -> set[str]:
+    return {f.stem for d in folders if (root / d).is_dir() for f in (root / d).rglob("*.java")}
+
+
+def _route_beans(module_decl: dict | None) -> set[str]:
+    routes = ((module_decl or {}).get("routing") or {}).get("routes") or []
+    return {str(r[k]) for r in routes for k in ("bean", "legacy_bean") if r.get(k)}
+
+
 def for_context(ctx) -> list[str]:
     """Run the check for the agent's run, using the declaration and the designs in the step's documents."""
     from app import contracts_store as cs
@@ -116,7 +127,22 @@ def for_context(ctx) -> list[str]:
         return [blocker(f"{cs.MODULE_EXTRACTION_FILE} of the Module in monolith step is missing: it says where the domain "
                 "module is")]
     return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, declaration, module_decl, design,
-                 ctx.ownership, ctx.domain, (finder or {}).get("god_modules"))
+                 ctx.ownership, ctx.domain, (finder or {}).get("god_modules"), earlier=_earlier(ctx.run_id, ctx.domain))
+
+
+def _earlier(run_id: str, domain: str) -> set[str]:
+    """The orchestrator module folders runs of the domain declared: extended, not created again."""
+    from app import contracts_store as cs
+
+    out = set()
+    for text in mg.declarations(run_id, domain, cs.ORCHESTRATOR_EXTRACTION_FILE):
+        try:
+            data = cs.parse_orchestrator_extraction(text)
+        except cs.InvalidDocument:
+            continue
+        if data["orchestrator"] == "module":
+            out.add(str(data["module"]["path"]).strip("/"))
+    return out
 
 
 def report(problems: list[str]) -> str:

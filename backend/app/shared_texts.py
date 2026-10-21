@@ -24,10 +24,14 @@ _TEMPLATED_MARKER = "_agents_use_shared_texts"  # existing agents' instructions 
 # SHA-256 of default texts from earlier releases. A shared text still holding one of these was never edited, so it is
 # safe to bring it up to the current default.
 PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
-    "modulith_guardrails": {"cd47ed977ecce9c1a15de5b4984f282c89332c4f04a203af06941579dbf4bea5"},
+    "modulith_guardrails": {"cd47ed977ecce9c1a15de5b4984f282c89332c4f04a203af06941579dbf4bea5",
+        "4dac012e5480a51b232adb345911da8b44362a2253ceb6110722cefcf2c0d8db"},
     "rest_rules": {"b54eabfb50dbc3fa6638c9e39678892b4304ff9da150d634520049bb3444ba98"},
     "integration_rules": {"4b3eb1458b581abd4d48dbc3c1c691ffce3bcba4268a97f844490928070abbd7"},
-    "module_extraction_format": {"d13a3bd1c9a23f1d750dcbe2d06559ee7358edf7e185752934bc9ef41b6b0373"},
+    "module_extraction_format": {"d13a3bd1c9a23f1d750dcbe2d06559ee7358edf7e185752934bc9ef41b6b0373",
+        "96f46e906618b6ede29b8905653b0c6e33310d3c7e81e0a801c24101d4494e53"},
+    "orchestrator_extraction_format": {"ca56b228ce6695a9c1f552788aaea064cee99cc2d457722f887e18fbf2e9f9ea"},
+    "integration_routing_format": {"2b149e1029b57ace3b1ed643fb9094d21f34192aa65539015931b27c9342e7d5"},
 }
 
 
