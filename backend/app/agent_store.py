@@ -12,7 +12,7 @@ from sqlalchemy import inspect, select, text
 
 from app.agents.defaults import AUTO, CLAUDE_MODELS, DOCS, default_config
 from app import projects
-from app.db.models import GLOBAL, SHARED, Agent, Setting, WorkflowDef
+from app.db.models import GLOBAL, SHARED, Agent, Run, Setting, WorkflowDef
 from app.db.session import get_engine, session_scope
 from app.orchestrator.stages import BUILTIN_STAGES, SUPERSEDED
 
@@ -390,6 +390,48 @@ def update(key: str, values: dict[str, Any], scope: str = "shared") -> dict[str,
             if field in values:
                 setattr(row, field, values[field])
     return get(key)
+
+
+def usage(key: str, scope: str = "shared") -> dict[str, Any]:
+    """What deleting the agent would affect, and why it can't be deleted when it can't:
+    {"title", "workflows": [{"name", "library"}] with a step for it, "runs": [...] unfinished runs whose steps include
+    it, "copies": projects with their own copy (deleted with the shared agent), "blocked": the reason, or None}.
+    A shared agent is used by every project, so every project's workflows and runs count; a project's own agent, only
+    the project's."""
+    project = projects.current_or_none()
+    with session_scope() as s:
+        row = s.get(Agent, (_target(scope), key))
+        if row is None:
+            raise KeyError(key)
+        if scope == "shared":
+            workflows = [w for w in s.scalars(select(WorkflowDef))]
+        else:  # the project's own workflows and copies, and the shared ones it hasn't copied
+            mine = {w.key: w for w in s.scalars(select(WorkflowDef).where(WorkflowDef.project == project))}
+            workflows = [*mine.values(), *(w for w in s.scalars(select(WorkflowDef).where(WorkflowDef.project == SHARED))
+                                          if w.key not in mine)]
+        using = [{"name": w.name, "library": "shared" if w.project == SHARED else w.project} for w in workflows
+                 if any(st.get("kind") == "agent" and st.get("key") == key for st in w.steps)]
+        runs_query = select(Run).where(Run.status != "completed")
+        if scope != "shared":
+            runs_query = runs_query.where(Run.project == project)
+        runs = [{"id": r.id, "project": r.project, "domain": r.domain, "operation": r.operation, "status": r.status}
+                for r in s.scalars(runs_query.order_by(Run.created_at))
+                if any(st.get("key") == key for st in r.stage_defs)]
+        copies = sorted(a.project for a in s.scalars(select(Agent).where(Agent.key == key, Agent.project != SHARED))) \
+            if scope == "shared" else []
+        reasons = []
+        if using:
+            where = ", ".join(w["name"] + (" (shared)" if w["library"] == "shared" else f" (project {w['library']})")
+                              for w in using)
+            reasons.append(f"it is a step of {len(using)} workflow(s): {where}. Remove its step from each on the "
+                           "Workflows page first")
+        if runs:
+            listed = ", ".join(f"{r['domain']}/{r['operation']} ({r['status'].replace('_', ' ')})" for r in runs[:8])
+            more = f" and {len(runs) - 8} more" if len(runs) > 8 else ""
+            reasons.append(f"{len(runs)} unfinished run(s) still use it: {listed}{more}. Let them finish, or reset "
+                           "their features on the domain's Features tab")
+        return {"title": row.title, "workflows": using, "runs": runs, "copies": copies,
+                "blocked": "; and ".join(reasons) or None}
 
 
 def set_mode_all(mode: str, project: str | None = None) -> int:

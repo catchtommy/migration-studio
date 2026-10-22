@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app import projects, workflow_store
 from app.api.schemas import WorkflowCreate, WorkflowIn, WorkflowOut
-from app.auth import ProjectAccess, project_context, require
+from app.auth import ProjectAccess, project_context, require, sees_all_projects
 from app.db.models import Run
 from app.db.session import get_db
 from app.workflow_store import WorkflowInvalid
@@ -28,6 +28,17 @@ def _check_library(library: Library, access: ProjectAccess) -> None:
     if library == "shared" and not access.user.can("workflows.manage"):
         raise HTTPException(403, "Changing the shared workflow affects every project. You can customise it for this "
                                  "project instead.")
+
+
+@router.get("/browse", response_model=list[WorkflowOut])
+def browse_workflows(of: str, access: ProjectAccess = Depends(project_context)):
+    """The workflows a project uses (`of` = its key), or every workflow of the projects the user can open
+    (`of` = "all"), each with the project it belongs to: to look through them from any project. Editing one still
+    happens in its own project."""
+    visible = [p["key"] for p in projects.visible(access.user.id, sees_all_projects(access.user))]
+    if of != "all" and of not in visible:
+        raise HTTPException(404, f"There is no project {of} you can open")
+    return workflow_store.browse(of, visible)
 
 
 @router.get("", response_model=list[WorkflowOut])
@@ -90,6 +101,15 @@ def revert_workflow(key: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Workflow not found")
     except WorkflowInvalid as e:
         raise HTTPException(409, str(e))
+
+
+@router.get("/{key}/usage")
+def workflow_usage(key: str, library: Library = "project", access: ProjectAccess = Depends(project_context)) -> dict:
+    """What deleting the workflow would affect, and why it can't be deleted yet when it can't (workflow_store.usage)."""
+    try:
+        return workflow_store.usage(key, library)
+    except KeyError:
+        raise HTTPException(404, "Workflow not found")
 
 
 @router.delete("/{key}", status_code=204, dependencies=[Depends(require("workflows.manage"))])

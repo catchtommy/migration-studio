@@ -8,10 +8,10 @@ import re
 from urllib.parse import urlsplit
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import agent_store, projects
-from app.db.models import GLOBAL, SHARED, Domain, Setting, WorkflowDef
+from app.db.models import GLOBAL, SHARED, Domain, Run, Setting, WorkflowDef
 from app.db.session import session_scope
 from app.orchestrator.stages import BOUNDED_CONTEXTS, DOMAIN_FEATURES, LEAN, STANDARD, StageDef, Workflow
 
@@ -317,6 +317,33 @@ def _effective(s, key: str, project: str | None) -> WorkflowDef | None:
     return (s.get(WorkflowDef, (project, key)) if project else None) or s.get(WorkflowDef, (SHARED, key))
 
 
+def browse(of: str, visible: list[str]) -> list[dict[str, Any]]:
+    """Workflows to look through, beyond the current project: those a project uses (`of` = its key: the shared ones,
+    replaced by its copies, plus its own), or every workflow (`of` = "all": the shared ones and each project's own and
+    copies). `visible`: the projects the user may see. Each has `owner` (the project it belongs to, None for a shared
+    one) and `runs` (how many runs use it there)."""
+    with session_scope() as s:
+        if of == "all":
+            rows = [(r, r.project != SHARED and s.get(WorkflowDef, (SHARED, r.key)) is not None)
+                    for r in s.scalars(select(WorkflowDef).where(WorkflowDef.project.in_([SHARED, *visible]))
+                                       .order_by(WorkflowDef.project != SHARED, WorkflowDef.project,
+                                                 WorkflowDef.created_at))]
+        else:
+            rows = _effective_rows(s, of)
+        out = []
+        for row, customised in rows:
+            runs = select(func.count()).select_from(Run).where(Run.workflow == row.key)
+            if row.project != SHARED:
+                runs = runs.where(Run.project == row.project)
+            elif of != "all":
+                runs = runs.where(Run.project == of)
+            else:
+                runs = runs.where(Run.project.in_(visible))
+            out.append({**_as_dict(row, customised), "owner": None if row.project == SHARED else row.project,
+                        "runs": s.scalar(runs)})
+        return out
+
+
 def list_all() -> list[dict[str, Any]]:
     with session_scope() as s:
         return [_as_dict(r, c) for r, c in _effective_rows(s, projects.current_or_none())]
@@ -384,19 +411,57 @@ def revert(key: str) -> dict[str, Any]:
     return get(key)
 
 
-def delete(key: str, library: str = "shared") -> None:
-    """Runs keep their own snapshot, so deleting only affects new runs. Domains defaulting to it lose the default."""
+def usage(key: str, library: str = "shared") -> dict[str, Any]:
+    """What deleting the workflow would affect, and why it can't be deleted when it can't:
+    {"name", "steps": agent steps, "runs": [{"id", "project", "domain", "operation", "status"}] still using it,
+    "copies": projects with their own copy (deleted with the shared one), "defaults": domains defaulting to it,
+    "blocked": the reason, or None}. A run uses the workflow it started with (Run.workflow) until the run is deleted
+    (or its feature reset); a project's copy of a shared workflow can go, its runs then use the shared one."""
     target = _target(library)
     with session_scope() as s:
         row = s.get(WorkflowDef, (target, key))
         if row is None:
             raise KeyError(key)
+        shared_remains = library != "shared" and s.get(WorkflowDef, (SHARED, key)) is not None
+        query = select(Run).where(Run.workflow == key)
+        if library != "shared":
+            query = query.where(Run.project == target)
+        runs = [] if shared_remains else [
+            {"id": r.id, "project": r.project, "domain": r.domain, "operation": r.operation, "status": r.status}
+            for r in s.scalars(query.order_by(Run.created_at))]
+        copies = sorted({w.project for w in s.scalars(select(WorkflowDef).where(WorkflowDef.key == key,
+                                                                               WorkflowDef.project != SHARED))}) \
+            if library == "shared" else []
+        domains = select(Domain).where(Domain.default_workflow == key)
+        if library != "shared":
+            domains = domains.where(Domain.project == target)
+        defaults = [] if shared_remains else [d.name for d in s.scalars(domains)]
         scope = row.scope or "operation"
+        blocked = None
+        if library == "shared" and sum(1 for w in s.scalars(select(WorkflowDef).where(WorkflowDef.project == SHARED))
+                                       if (w.scope or "operation") == scope) == 1:
+            blocked = ("It is the last migration workflow, and new migrations need one" if scope == "operation" else
+                       "It is the last discovery workflow of its kind")
+        elif runs:
+            listed = ", ".join(f"{r['domain']}/{r['operation']} ({r['status'].replace('_', ' ')})" for r in runs[:8])
+            more = f" and {len(runs) - 8} more" if len(runs) > 8 else ""
+            blocked = (f"{len(runs)} run(s) still use it: {listed}{more}. Delete those runs first: reset their features "
+                       "on the domain's Features tab (or delete their domain), then delete the workflow")
+        return {"name": row.name, "steps": sum(1 for st in row.steps if st.get("kind") == "agent"), "runs": runs,
+                "copies": copies, "defaults": defaults, "blocked": blocked}
+
+
+def delete(key: str, library: str = "shared") -> None:
+    """Delete a workflow no run uses (see usage). Domains defaulting to it lose the default."""
+    target = _target(library)
+    found = usage(key, library)
+    if found["blocked"]:
+        raise WorkflowInvalid(f"The {found['name']} workflow can't be deleted: {found['blocked']}.")
+    with session_scope() as s:
+        row = s.get(WorkflowDef, (target, key))
+        if row is None:
+            raise KeyError(key)
         if library == "shared":
-            if sum(1 for w in s.scalars(select(WorkflowDef).where(WorkflowDef.project == SHARED))
-                   if (w.scope or "operation") == scope) == 1:
-                raise WorkflowInvalid("The last migration workflow cannot be deleted" if scope == "operation" else
-                                      "The last discovery workflow of its kind cannot be deleted")
             s.query(Domain).filter(Domain.default_workflow == key).update({Domain.default_workflow: None})
             s.query(WorkflowDef).filter(WorkflowDef.key == key).delete(synchronize_session=False)
         else:

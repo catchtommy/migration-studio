@@ -3,16 +3,12 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from app import agent_files, agent_store, settings_store, shared_texts, workflow_store
 from app.agents.defaults import AUTO, CLAUDE_MODELS, EFFORTS, TOOLS
 from app.copilot_service import get_service
 from app.api.schemas import AgentCatalog, AgentCreate, AgentIn, AgentOut
 from app.auth import ProjectAccess, project_context, require
-from app.db.models import Run
-from app.db.session import get_db
 
 router = APIRouter(prefix="/api/agents")
 
@@ -182,18 +178,25 @@ def reset_agent(key: str, access: ProjectAccess = Depends(project_context)):
         raise HTTPException(409, str(e))
 
 
+@router.get("/{key}/usage")
+def agent_usage(key: str, scope: Scope = "shared", access: ProjectAccess = Depends(project_context)) -> dict:
+    """What deleting the agent would affect, and why it can't be deleted yet when it can't (agent_store.usage)."""
+    try:
+        return agent_store.usage(key, scope)
+    except KeyError:
+        raise HTTPException(404, "Agent not found")
+
+
 @router.delete("/{key}", status_code=204, dependencies=[Depends(require("agents.manage"))])
-def delete_agent(key: str, scope: Scope = "shared", db: Session = Depends(get_db),
-                 access: ProjectAccess = Depends(project_context)):
+def delete_agent(key: str, scope: Scope = "shared", access: ProjectAccess = Depends(project_context)):
+    """Delete an agent no workflow has as a step and no unfinished run uses (agent_store.usage says why not)."""
     _check_scope(scope, access)
-    if workflows := workflow_store.using_agent(key):
-        raise HTTPException(409, f"Remove this agent from these workflows first: {', '.join(workflows)}")
-    runs = select(Run).where(Run.status != "completed")
-    if scope == "project":
-        runs = runs.where(Run.project == access.project)
-    unfinished = [r for r in db.scalars(runs) if any(st["key"] == key for st in r.stage_defs)]
-    if unfinished:
-        raise HTTPException(409, f"{len(unfinished)} unfinished run(s) still use this agent")
+    try:
+        found = agent_store.usage(key, scope)
+    except KeyError:
+        raise HTTPException(404, "Agent not found")
+    if found["blocked"]:
+        raise HTTPException(409, f"The {found['title']} agent can't be deleted: {found['blocked']}.")
     try:
         agent_store.delete(key, scope)
     except KeyError:

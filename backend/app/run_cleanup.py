@@ -72,6 +72,13 @@ def delete(project: str, run_ids: list[str]) -> int:
     return len(ids)
 
 
+def feature_runs(project: str, domain: str, operation: str) -> list[str]:
+    """The ids of a feature's migration runs: what makes it started, in progress or migrated."""
+    with session_scope() as s:
+        return list(s.scalars(select(Run.id).where(Run.project == project, Run.domain == domain,
+                                                   Run.operation == operation, Run.scope == "operation")))
+
+
 def stop_and_delete(project: str, run_ids: list[str]) -> int:
     stop(run_ids)
     return delete(project, run_ids)

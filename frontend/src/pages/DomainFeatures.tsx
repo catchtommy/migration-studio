@@ -5,6 +5,7 @@ import { api, type Domain, type Feature, type FeatureInput } from "../lib/api";
 import { useDomains, useCan } from "../lib/hooks";
 import { Field, inputClass } from "../components/Field";
 import { StatusBadge } from "../components/StatusBadge";
+import { ResetFeature } from "../components/ResetFeature";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { AgentModeNote } from "../components/AgentModeNote";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
@@ -195,6 +196,7 @@ function FeatureRow({ domain, feature, names }: { domain: Domain; feature: Featu
         )}
       </td>
       <td className="whitespace-nowrap px-4 py-3 text-right">
+        {run && <ResetFeature domain={domain.key} feature={feature.key} name={feature.name} status={run.status} />}
         {canEdit && (
           <>
             <Link to={`/domains/${domain.key}/features/${encodeURIComponent(feature.key)}`} className="rounded-md px-2 py-1 text-xs text-subtle hover:bg-muted hover:text-fg">

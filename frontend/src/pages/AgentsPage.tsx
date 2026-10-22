@@ -15,6 +15,7 @@ import {
 } from "../lib/api";
 import { useAgents, useCanGlobally, useWorkflows } from "../lib/hooks";
 import { LibraryBadge, SaveTarget } from "../components/LibraryBadge";
+import { DangerDialog } from "../components/DangerDialog";
 import { slug } from "../lib/slug";
 import { Field, inputClass } from "../components/Field";
 import { PageTitle } from "../components/PageTitle";
@@ -243,6 +244,61 @@ function AgentGuardrails({ agent, form, onChange }: { agent: Agent; form: AgentI
   );
 }
 
+/** Deleting an agent: what it affects, or why it can't be deleted yet (a workflow has it as a step, or an
+ * unfinished run uses it). */
+function DeleteAgentDialog({ agent, remove, onClose }: {
+  agent: Agent;
+  remove: { isPending: boolean; error: unknown; mutate: () => void };
+  onClose: () => void;
+}) {
+  const { data: usage, error } = useQuery({
+    queryKey: ["agentUsage", agent.key, agent.scope],
+    queryFn: () => api.agentUsage(agent.key, agent.scope),
+  });
+  const shared = agent.scope === "shared";
+  return (
+    <DangerDialog
+      title={`Delete the ${agent.title} agent`}
+      checking={!usage && !error}
+      blocked={(error as Error | null)?.message ?? usage?.blocked ?? undefined}
+      sections={
+        usage
+          ? [
+              {
+                tone: "bad",
+                title: "Deleted for good",
+                items: [
+                  <>
+                    The <strong>{agent.title}</strong> agent: its instructions, guardrails and settings{shared ? ", in every project" : ""}
+                  </>,
+                  ...(usage.copies.length ? [`Projects' own copies of it: ${usage.copies.join(", ")}`] : []),
+                  ...(agent.builtin ? ["It is a built-in agent: Reset can't bring it back; it comes back only if the studio adds it again"] : []),
+                ],
+              },
+              {
+                tone: "ok",
+                title: "Kept",
+                items: ["Completed runs that used it keep their documents and history", "Every other agent and every workflow"],
+              },
+              {
+                tone: "neutral",
+                title: "Not in use",
+                text: "No workflow has it as a step and no unfinished run uses it.",
+              },
+            ]
+          : []
+      }
+      confirmText={agent.key}
+      actionLabel="Delete the agent"
+      pendingLabel="Deleting…"
+      pending={remove.isPending}
+      error={remove.error}
+      onConfirm={() => remove.mutate()}
+      onClose={onClose}
+    />
+  );
+}
+
 function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -272,6 +328,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
   });
   const reset = useMutation({ mutationFn: () => api.resetAgent(config.key), onSuccess: onSaved });
   const revert = useMutation({ mutationFn: () => api.revertAgent(config.key), onSuccess: (a) => (onSaved(a), setTarget(null)) });
+  const [deleting, setDeleting] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteAgent(config.key, config.scope),
     onSuccess: () => {
@@ -621,13 +678,12 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
             type="button"
             className="ml-auto rounded-md px-3 py-1.5 text-sm text-bad hover:bg-bad/10 disabled:opacity-50"
             disabled={remove.isPending}
-            onClick={() =>
-              window.confirm(config.scope === "shared" ? `Delete the ${config.title} agent from every project?` : `Delete the ${config.title} agent?`) && remove.mutate()
-            }
+            onClick={() => setDeleting(true)}
           >
             Delete agent
           </button>
         )}
+        {deleting && <DeleteAgentDialog agent={config} remove={remove} onClose={() => setDeleting(false)} />}
         {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
         {(save.isSuccess || saveMd.isSuccess) && !dirty && <span className="text-sm text-ok">Saved. Applies from the next stage run.</span>}
         {(save.error || reset.error || remove.error || revert.error) && (

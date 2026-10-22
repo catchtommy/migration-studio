@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, useNavigate, useParams } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, SCOPE_LABELS, type Agent, type Scope, type StepCode, type Workflow, type WorkflowGit, type WorkflowStep } from "../lib/api";
-import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
+import { Link, NavLink, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, getCurrentProject, SCOPE_LABELS, type Agent, type Scope, type StepCode, type Workflow, type WorkflowGit, type WorkflowStep } from "../lib/api";
+import { useAgents, useDomains, useIsAdmin, useProjects, useWorkflows } from "../lib/hooks";
+import { useSwitchProject } from "../lib/projectContext";
+import { DangerDialog } from "../components/DangerDialog";
 import { LibraryBadge } from "../components/LibraryBadge";
 import { slug } from "../lib/slug";
 import { normalizeSteps, type EditableStep } from "../lib/workflowSteps";
@@ -364,6 +366,61 @@ function GitSettings({ value, onChange }: { value: WorkflowGit; onChange: (git: 
   );
 }
 
+/** Deleting a workflow: what it affects, or why it can't be deleted yet (a run uses it, or it is the last one). */
+function DeleteWorkflowDialog({ workflow, remove, onClose }: {
+  workflow: Workflow;
+  remove: { isPending: boolean; error: unknown; mutate: () => void };
+  onClose: () => void;
+}) {
+  const { data: usage, error } = useQuery({
+    queryKey: ["workflowUsage", workflow.key, workflow.library],
+    queryFn: () => api.workflowUsage(workflow.key, workflow.library),
+  });
+  const shared = workflow.library === "shared";
+  return (
+    <DangerDialog
+      title={`Delete the ${workflow.name} workflow`}
+      checking={!usage && !error}
+      blocked={(error as Error | null)?.message ?? usage?.blocked ?? undefined}
+      sections={
+        usage
+          ? [
+              {
+                tone: "bad",
+                title: "Deleted for good",
+                items: [
+                  <>
+                    The <strong>{workflow.name}</strong> workflow and its {usage.steps} step{usage.steps === 1 ? "" : "s"}
+                    {shared ? ", from every project" : ""}
+                  </>,
+                  ...(usage.copies.length ? [`Projects' own copies of it: ${usage.copies.join(", ")}`] : []),
+                  ...(usage.defaults.length ? [`The default workflow of ${usage.defaults.join(", ")} (they fall back to the standard one)`] : []),
+                ],
+              },
+              {
+                tone: "ok",
+                title: "Kept",
+                items: ["The agents its steps use stay in the agent library", "Every other workflow"],
+              },
+              {
+                tone: "neutral",
+                title: "No run uses it",
+                text: "Runs started with it have been deleted (or their features reset), so nothing in progress depends on it.",
+              },
+            ]
+          : []
+      }
+      confirmText={workflow.key}
+      actionLabel="Delete the workflow"
+      pendingLabel="Deleting…"
+      pending={remove.isPending}
+      error={remove.error}
+      onConfirm={() => remove.mutate()}
+      onClose={onClose}
+    />
+  );
+}
+
 function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agent[] }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -392,6 +449,8 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
     onSuccess: onSaved,
   });
   const revert = useMutation({ mutationFn: () => api.revertWorkflow(workflow.key), onSuccess: onSaved });
+  const isAdmin = useIsAdmin();
+  const [deleting, setDeleting] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteWorkflow(workflow.key, workflow.library),
     onSuccess: () => {
@@ -525,20 +584,17 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         )}
         {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
         {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
-        {workflow.library === "project" && !workflow.customised && (
+        {((workflow.library === "project" && !workflow.customised) || (workflow.library === "shared" && isAdmin)) && (
           <button
             type="button"
             className="ml-auto rounded-md px-3 py-1.5 text-sm text-bad hover:bg-bad/10 disabled:opacity-50"
             disabled={remove.isPending}
-            onClick={() =>
-              window.confirm(
-                `Delete the ${workflow.name} workflow from this project?${defaultFor.length ? ` It is the default for ${defaultFor.map((d) => d.name).join(", ")}.` : ""} Runs that used it are not affected.`,
-              ) && remove.mutate()
-            }
+            onClick={() => setDeleting(true)}
           >
             Delete workflow
           </button>
         )}
+        {deleting && <DeleteWorkflowDialog workflow={workflow} remove={remove} onClose={() => setDeleting(false)} />}
         {(save.error || remove.error || revert.error) && (
           <p className="w-full text-sm text-bad">{((save.error || remove.error || revert.error) as Error).message}</p>
         )}
@@ -547,53 +603,173 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
   );
 }
 
+/** A workflow of another project (or every project's, together): read-only here, since a workflow is edited in its own
+ * project; one button switches to that project to edit it. */
+function WorkflowPreview({ workflow, projectName }: { workflow: Workflow; projectName: (key: string) => string }) {
+  const navigate = useNavigate();
+  const switchTo = useSwitchProject();
+  const current = getCurrentProject();
+  const home = workflow.owner ?? null;
+  const editHere = home === null || home === current;
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="text-lg font-semibold">{workflow.name}</h2>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-subtle">{home ? `Project ${projectName(home)}` : "Shared by every project"}</span>
+        {workflow.customised && <span className="rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn">That project's copy of a shared workflow</span>}
+      </div>
+      {workflow.description && <p className="text-sm text-subtle">{workflow.description}</p>}
+      <p className="text-sm text-subtle">
+        {SCOPE_LABELS[workflow.scope]} · used by {workflow.runs} run{workflow.runs === 1 ? "" : "s"}
+        {home ? ` in ${projectName(home)}` : ""}
+      </p>
+      <ol className="space-y-1">
+        {workflow.stages.map((s, i) => (
+          <li key={s.key} className={`flex items-start gap-2 rounded-md border px-3 py-2 text-sm ${s.kind === "gate" ? "border-warn/40 bg-warn/5" : "border-border bg-surface"}`}>
+            <span className="w-6 shrink-0 text-xs text-subtle">{i + 1}.</span>
+            <span className="flex-1">
+              <span className="font-medium">{s.title}</span>
+              {s.kind === "gate" && <span className="ml-2 text-xs text-warn">approval gate</span>}
+              {s.description && <span className="block text-xs text-subtle">{s.description}</span>}
+            </span>
+          </li>
+        ))}
+      </ol>
+      <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
+        {editHere ? (
+          <button type="button" onClick={() => navigate(`/workflows/${workflow.key}`)} className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white">
+            Open in this project's editor
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              switchTo(home!);
+              navigate(`/workflows/${workflow.key}`);
+            }}
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white"
+          >
+            Switch to {projectName(home!)} to edit it
+          </button>
+        )}
+        <span className="text-xs text-subtle">Workflows are edited in the project they belong to.</span>
+      </div>
+    </div>
+  );
+}
+
+const ALL = "all";
+
 export function WorkflowsPage() {
   const { workflowKey: selected } = useParams();
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const current = getCurrentProject() ?? "";
+  const of = params.get("of") ?? current; // the project whose workflows are listed, or every project's
+  const browsing = of !== current;
   const { data: workflows } = useWorkflows();
   const { data: agents } = useAgents();
+  const { data: projectList = [] } = useProjects();
+  const { data: browsed } = useQuery({ queryKey: ["workflowsBrowse", of], queryFn: () => api.browseWorkflows(of), enabled: browsing });
   const [adding, setAdding] = useState(false);
+  const [previewing, setPreviewing] = useState<string | null>(null); // `${owner ?? "shared"}/${key}` while browsing
+  const projectName = (key: string) => projectList.find((p) => p.key === key)?.name ?? key;
+  const choose = (value: string) => {
+    setPreviewing(null);
+    setParams(value === current ? {} : { of: value }, { replace: true });
+  };
 
   useEffect(() => {
-    if (!selected && workflows?.length) navigate(`/workflows/${workflows[0].key}`, { replace: true });
-  }, [selected, workflows, navigate]);
+    if (!browsing && !selected && workflows?.length) navigate(`/workflows/${workflows[0].key}`, { replace: true });
+  }, [browsing, selected, workflows, navigate]);
 
   if (!workflows || !agents) return <p className="text-subtle">Loading…</p>;
   const workflow = workflows.find((w) => w.key === selected);
+  const list = browsing ? browsed ?? [] : workflows;
+  const id = (w: Workflow) => `${w.owner ?? "shared"}/${w.key}`;
+  const preview = browsing ? list.find((w) => id(w) === previewing) ?? list[0] : undefined;
+  // Every project's together: grouped under the shared ones and each project's own.
+  const groups = !browsing || of !== ALL
+    ? [{ label: null as string | null, items: list }]
+    : [null, ...[...new Set(list.map((w) => w.owner).filter(Boolean) as string[])]].map((owner) => ({
+        label: owner === null ? "Shared by every project" : projectName(owner),
+        items: list.filter((w) => (w.owner ?? null) === owner),
+      }));
 
   return (
     <div className="space-y-6">
       <PageTitle icon={<FlowIcon />} title="Workflows" subtitle="Agent steps and human approval gates, in order. Pick a workflow when starting a run, or set a default per domain." tone="from-amber-500 to-rose-500">
-        {!adding && (
+        {!adding && !browsing && (
           <button onClick={() => setAdding(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
             New workflow
           </button>
         )}
       </PageTitle>
-      {adding && <NewWorkflowForm workflows={workflows} agents={agents} onCancel={() => setAdding(false)} />}
+      {adding && !browsing && <NewWorkflowForm workflows={workflows} agents={agents} onCancel={() => setAdding(false)} />}
       <div className="grid gap-6 lg:grid-cols-[16rem_1fr]">
         <nav className="space-y-0.5 lg:sticky lg:top-4 lg:self-start">
-          {workflows.map((w) => {
-            const gates = w.stages.filter((s) => s.kind === "gate").length;
-            return (
-              <NavLink
-                key={w.key}
-                to={`/workflows/${w.key}`}
-                className={({ isActive }) => `block rounded-md px-2 py-1.5 text-sm hover:bg-muted ${isActive ? "bg-muted font-medium" : ""}`}
-              >
-                <span className="flex items-center gap-2">
-                  <span className="flex-1">{w.name}</span>
-                  <LibraryBadge library={w.library} customised={w.customised} compact />
-                </span>
-                <span className="block text-xs font-normal text-subtle">
-                  {w.scope !== "operation" && <span className="text-accent">{w.scope === "monolith" ? "Discovery" : "Features"} · </span>}
-                  {w.stages.length - gates} agent{w.stages.length - gates === 1 ? "" : "s"} · {gates} approval{gates === 1 ? "" : "s"}
-                </span>
-              </NavLink>
-            );
-          })}
+          <select aria-label="Show the workflows of" className={`${inputClass} mb-2`} value={of} onChange={(e) => choose(e.target.value)}>
+            {projectList.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.name}
+                {p.key === current ? " (this project)" : ""}
+              </option>
+            ))}
+            <option value={ALL}>All workflows (every project)</option>
+          </select>
+          {browsing && !browsed && <p className="px-2 py-1.5 text-sm text-subtle">Loading…</p>}
+          {browsing && browsed?.length === 0 && <p className="px-2 py-1.5 text-sm text-subtle">No workflows.</p>}
+          {groups.map((g) => (
+            <div key={g.label ?? "list"} className="space-y-0.5">
+              {g.label && <p className="px-2 pt-3 text-xs font-semibold uppercase tracking-wide text-subtle">{g.label}</p>}
+              {g.items.map((w) => {
+                const gates = w.stages.filter((s) => s.kind === "gate").length;
+                const body = (
+                  <>
+                    <span className="flex items-center gap-2">
+                      <span className="flex-1">{w.name}</span>
+                      <LibraryBadge library={w.library} customised={w.customised} compact />
+                    </span>
+                    <span className="block text-xs font-normal text-subtle">
+                      {w.scope !== "operation" && <span className="text-accent">{w.scope === "monolith" ? "Discovery" : "Features"} · </span>}
+                      {w.stages.length - gates} agent{w.stages.length - gates === 1 ? "" : "s"} · {gates} approval{gates === 1 ? "" : "s"}
+                      {browsing && ` · ${w.runs} run${w.runs === 1 ? "" : "s"}`}
+                    </span>
+                  </>
+                );
+                return browsing ? (
+                  <button
+                    key={id(w)}
+                    type="button"
+                    onClick={() => setPreviewing(id(w))}
+                    className={`block w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted ${preview && id(preview) === id(w) ? "bg-muted font-medium" : ""}`}
+                  >
+                    {body}
+                  </button>
+                ) : (
+                  <NavLink
+                    key={w.key}
+                    to={`/workflows/${w.key}`}
+                    className={({ isActive }) => `block rounded-md px-2 py-1.5 text-sm hover:bg-muted ${isActive ? "bg-muted font-medium" : ""}`}
+                  >
+                    {body}
+                  </NavLink>
+                );
+              })}
+            </div>
+          ))}
         </nav>
-        <main className="min-w-0">{workflow ? <WorkflowEditor key={workflow.key} workflow={workflow} agents={agents} /> : selected && <p className="text-sm text-subtle">Workflow not found.</p>}</main>
+        <main className="min-w-0">
+          {browsing ? (
+            preview ? (
+              <WorkflowPreview key={id(preview)} workflow={preview} projectName={projectName} />
+            ) : null
+          ) : workflow ? (
+            <WorkflowEditor key={workflow.key} workflow={workflow} agents={agents} />
+          ) : (
+            selected && <p className="text-sm text-subtle">Workflow not found.</p>
+          )}
+        </main>
       </div>
     </div>
   );

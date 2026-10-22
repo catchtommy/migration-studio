@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api, getCurrentProject, type ProjectSettings } from "../lib/api";
-import { useCan, useIsAdmin } from "../lib/hooks";
+import { useCan, useDomains, useIsAdmin } from "../lib/hooks";
+import { DangerDialog } from "../components/DangerDialog";
 import { LANGUAGES, useSwitchProject } from "../lib/projectContext";
 import { Field, inputClass as input } from "../components/Field";
 import { Guarded } from "../components/Guarded";
@@ -345,32 +346,75 @@ function General({ project }: { project: string }) {
   );
 }
 
-/** An admin deletes the project with everything in it, after typing its key to confirm. */
+/** An admin deletes the project with everything in it: a sharp, colour-coded warning with what it holds, and its
+ * key to type before the red button unlocks. */
 function DeleteProject({ name, projectKey, remove }: { name: string; projectKey: string; remove: { isPending: boolean; error: unknown; mutate: () => void } }) {
-  const [typed, setTyped] = useState("");
+  const [open, setOpen] = useState(false);
+  const { data: runs = [] } = useQuery({ queryKey: ["runs"], queryFn: api.runs, enabled: open });
+  const { data: domains = [] } = useDomains();
+  const migrations = runs.filter((r) => r.scope === "operation").length;
+  const working = runs.filter((r) => r.status === "running" || r.status === "awaiting_input").length;
+  const features = domains.reduce((n, d) => n + (d.features ?? 0), 0);
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
   return (
-    <section className="mt-10 max-w-3xl space-y-3 rounded-lg border border-bad/30 p-4">
+    <section className="mt-10 max-w-3xl space-y-2 rounded-lg border border-bad/40 bg-bad/5 p-4">
       <h2 className="font-semibold text-bad">Delete project</h2>
-      <p className="text-sm text-subtle">
-        Deletes {name} with everything in it: every migration and discovery run (one that is working is stopped first) with its documents, approvals,
-        logs and workspace, and the project's domains, features, contracts, agents, workflows, settings and members. Code pushed and documents
-        published to its repositories stay in git. This can't be undone. Only an admin can do this.
-      </p>
-      <label className="block text-sm">
-        <span className="mb-1 block text-xs text-subtle">
-          Type <code className="font-mono">{projectKey}</code> to confirm
-        </span>
-        <input value={typed} onChange={(e) => setTyped(e.target.value)} className="w-full max-w-xs rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-sm" />
-      </label>
+      <p className="text-sm text-subtle">Deletes {name} with every run and everything recorded in it. Only an admin can do this, and it can't be undone.</p>
       <button
         type="button"
-        disabled={remove.isPending || typed !== projectKey}
-        onClick={() => remove.mutate()}
-        className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
+        onClick={() => setOpen(true)}
+        className="rounded-md border border-bad/60 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10"
       >
-        {remove.isPending ? "Deleting…" : `Delete ${name} and all its data`}
+        Delete project…
       </button>
-      {!!remove.error && <p className="text-sm text-bad">{(remove.error as Error).message}</p>}
+      {open && (
+        <DangerDialog
+          title={`Delete the project ${name}`}
+          sections={[
+            {
+              tone: "bad",
+              title: "Deleted for good",
+              items: [
+                <>
+                  <strong>{plural(runs.length, "run")}</strong> ({plural(migrations, "feature migration")}, {plural(runs.length - migrations, "discovery run")}), with all
+                  their steps, documents, approvals, questions, activity logs, saved progress and workspaces
+                </>,
+                <>
+                  <strong>{plural(domains.length, "domain")}</strong> and their <strong>{plural(features, "feature")}</strong>, with the inputs and ownership given to them
+                </>,
+                "The project's contracts catalogue and the cross-domain dependencies recorded in it",
+                "This project's own agents and workflows, and its copies of shared ones",
+                "The project's settings, its members and their access, and the server's copy of its monolith repository",
+              ],
+            },
+            ...(working
+              ? [{ tone: "warn" as const, title: "Stopped first", text: `${plural(working, "run")} ${working === 1 ? "is" : "are"} working right now: stopped at the next step before anything is deleted.` }]
+              : []),
+            {
+              tone: "ok",
+              title: "Kept",
+              items: [
+                "Every other project, with its runs and data",
+                "The shared agent library, shared workflows and shared texts, which other projects use",
+                "User accounts (people lose access to this project only)",
+              ],
+            },
+            {
+              tone: "neutral",
+              title: "Not undone in git",
+              text: "The monolith and service repositories themselves, code already pushed to feature branches and AS-IS documents published to the monolith stay there.",
+            },
+          ]}
+          confirmText={projectKey}
+          actionLabel={`Delete ${name} and all its data`}
+          pendingLabel={working ? "Stopping and deleting…" : "Deleting…"}
+          pending={remove.isPending}
+          error={remove.error}
+          onConfirm={() => remove.mutate()}
+          onClose={() => setOpen(false)}
+        />
+      )}
     </section>
   );
 }

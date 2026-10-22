@@ -331,6 +331,7 @@ class WorkflowOut(BaseModel):
     runs: int = 0
     library: str = "shared"  # shared (every project) | project (this project's own or copy)
     customised: bool = False  # a project copy of a shared workflow
+    owner: str | None = None  # browsing: the project it belongs to (None: shared)
     git: WorkflowGit
     created_at: datetime
     updated_at: datetime

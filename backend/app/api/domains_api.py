@@ -2,14 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import agent_store, contracts_store, discovery_store, document_export, domain_store, workflow_store
+from app import (agent_store, contracts_store, discovery_store, document_export, domain_store, run_cleanup,
+                 workflow_store)
 from app.api.discovery_api import start_features
 from app.api.schemas import (
     DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, FeatureCreate, FeatureIn,
     DiscoveryStart, FeatureOut, OperationDocs, RunOut,
 )
 from app import projects
-from app.auth import require
+from app.auth import CurrentUser, require, require_admin
 from app.db.models import Dependency, Domain, Feature, Run
 from app.db.session import get_db
 from app.domain_store import normalize_inputs
@@ -167,6 +168,24 @@ def delete_feature(key: str, feature: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Feature not found")
     except discovery_store.DiscoveryError as e:
         raise HTTPException(409, str(e))
+
+
+@router.post("/{key}/features/{feature}/reset")
+def reset_feature(key: str, feature: str, db: Session = Depends(get_db),
+                  user: CurrentUser = Depends(require_admin("reset a feature"))) -> dict:
+    """Set a feature back to not started, for clean-ups: every migration run of it (one that is working is stopped
+    first) is deleted with everything recorded for it (app/run_cleanup.py). The feature stays in the list, ready to be
+    migrated again. Code pushed and documents published to git stay there."""
+    _domain_or_404(db, key)
+    if discovery_store.feature(key, feature) is None:
+        raise HTTPException(404, "Feature not found")
+    project = projects.current()
+    db.close()
+    try:
+        deleted = run_cleanup.stop_and_delete(project, run_cleanup.feature_runs(project, key, feature))
+    except run_cleanup.StillWorking as e:
+        raise HTTPException(409, str(e))
+    return {"deleted": deleted}
 
 
 @router.post("/{key}/discover-features", response_model=RunOut, status_code=201, dependencies=[Depends(require("domains.manage"))])

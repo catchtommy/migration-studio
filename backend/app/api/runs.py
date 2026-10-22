@@ -137,8 +137,7 @@ def start_over(run_id: str, body: StartOverIn, db: Session = Depends(get_db),
     if workflow_store.scope_of(body.workflow) != "operation":
         raise HTTPException(422, f"{body.workflow} is not a migration workflow")
     domain, operation, old_workflow = run.domain, run.operation, run.workflow
-    runs = list(db.scalars(select(Run.id).where(Run.project == run.project, Run.domain == domain,
-                                                Run.operation == operation, Run.scope == "operation")))
+    runs = run_cleanup.feature_runs(run.project, domain, operation)
     db.close()
     try:
         deleted = run_cleanup.stop_and_delete(access.project, runs)

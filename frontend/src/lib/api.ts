@@ -275,6 +275,34 @@ export function expandPlaceholders(instructions: string, texts: Record<string, s
   return instructions.replace(PLACEHOLDER, (whole, key: string) => texts[key] ?? whole);
 }
 
+/** A run that keeps a workflow or agent from being deleted. */
+export interface UsingRun {
+  id: string;
+  project: string;
+  domain: string;
+  operation: string;
+  status: string;
+}
+
+/** What deleting a workflow would affect; `blocked` says why it can't be deleted yet. */
+export interface WorkflowUsage {
+  name: string;
+  steps: number;
+  runs: UsingRun[];
+  copies: string[]; // projects with their own copy (deleted with a shared workflow)
+  defaults: string[]; // domains defaulting to it
+  blocked: string | null;
+}
+
+/** What deleting an agent would affect; `blocked` says why it can't be deleted yet. */
+export interface AgentUsage {
+  title: string;
+  workflows: { name: string; library: string }[]; // library: "shared" or the project's key
+  runs: UsingRun[];
+  copies: string[];
+  blocked: string | null;
+}
+
 export interface Artifact extends ArtifactSummary {
   content: string;
 }
@@ -361,6 +389,7 @@ export interface Workflow {
   runs: number;
   library: Library;
   customised: boolean; // this project's copy of a shared workflow
+  owner?: string | null; // browsing workflows beyond this project: the project it belongs to (null: shared)
   git: WorkflowGit;
   created_at: string;
   updated_at: string;
@@ -737,6 +766,8 @@ export const api = {
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
   setAllAgentsMode: (mode: "stub" | "llm") => request<{ changed: number; mode: string }>("/agents/mode", json("POST", { mode })),
+  resetFeature: (domain: string, feature: string) =>
+    request<{ deleted: number }>(`/domains/${domain}/features/${encodeURIComponent(feature)}/reset`, { method: "POST" }),
   sharedTexts: () => request<SharedText[]>("/shared-texts"),
   updateSharedText: (key: string, text: string) => request<SharedText>(`/shared-texts/${key}`, json("PUT", { text })),
   resetSharedText: (key: string) => request<SharedText>(`/shared-texts/${key}/reset`, { method: "POST" }),
@@ -761,6 +792,7 @@ export const api = {
   updateAgent: (key: string, config: AgentInput, scope: Library = "shared") => request<Agent>(`/agents/${key}?scope=${scope}`, json("PUT", config)),
   resetAgent: (key: string) => request<Agent>(`/agents/${key}/reset`, { method: "POST" }),
   revertAgent: (key: string) => request<Agent>(`/agents/${key}/revert`, { method: "POST" }),
+  agentUsage: (key: string, scope: Library = "shared") => request<AgentUsage>(`/agents/${key}/usage?scope=${scope}`),
   deleteAgent: (key: string, scope: Library = "shared") => request<void>(`/agents/${key}?scope=${scope}`, { method: "DELETE" }),
   parseAgentMd: (content: string) => request<ParsedAgentFile>("/agents/parse-agent-md", json("POST", { content })),
   agentMdUrl: (key: string) => withProject(`/api/agents/${key}/agent.md`),
@@ -773,6 +805,8 @@ export const api = {
   updateWorkflow: (key: string, body: { name?: string; description?: string; steps?: WorkflowStep[]; git?: WorkflowGit }, library: Library = "project") =>
     request<Workflow>(`/workflows/${key}?library=${library}`, json("PUT", body)),
   revertWorkflow: (key: string) => request<Workflow>(`/workflows/${key}/revert`, { method: "POST" }),
+  browseWorkflows: (of: string) => request<Workflow[]>(`/workflows/browse?of=${encodeURIComponent(of)}`),
+  workflowUsage: (key: string, library: Library = "project") => request<WorkflowUsage>(`/workflows/${key}/usage?library=${library}`),
   deleteWorkflow: (key: string, library: Library = "project") => request<void>(`/workflows/${key}?library=${library}`, { method: "DELETE" }),
   domains: () => request<DomainSummary[]>("/domains"),
   domain: (key: string) => request<Domain>(`/domains/${key}`),

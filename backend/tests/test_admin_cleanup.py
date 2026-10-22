@@ -95,3 +95,50 @@ def test_a_running_feature_is_stopped_before_it_starts_over(client, monkeypatch)
     assert client.get(f"/api/runs/{run_id}").status_code == 404
     assert not common.stop_requested(run_id)
     wait_for(client, r.json()["id"], {"awaiting_approval"})
+
+
+def _migration(client, domain: str, feature: str):
+    return next(f for f in client.get(f"/api/domains/{domain}/features").json() if f["key"] == feature)["migration"]
+
+
+def test_an_admin_resets_a_started_feature_to_not_started(client):
+    operation = f"reset{next(_ids)}"
+    run_id = start_run(client, {"domain": "customer", "operation": operation}).json()["id"]
+    wait_for(client, run_id, {"awaiting_approval"})
+    assert _migration(client, "customer", operation)["id"] == run_id
+    before = len(client.get("/api/runs").json())
+
+    developer = signed_in(make_user(client, ["developer"])["username"])
+    r = developer.post(f"/api/domains/customer/features/{operation}/reset")
+    assert r.status_code == 403 and "Only an admin" in r.json()["detail"]
+    assert client.post("/api/domains/customer/features/nope/reset").status_code == 404
+
+    r = client.post(f"/api/domains/customer/features/{operation}/reset")
+    assert r.status_code == 200 and r.json() == {"deleted": 1}
+    assert _migration(client, "customer", operation) is None  # not started: offered to migrate again
+    assert client.get(f"/api/runs/{run_id}").status_code == 404
+    assert _rows(Artifact, run_id) == 0 and _rows(StageExecution, run_id) == 0
+    assert len(client.get("/api/runs").json()) == before - 1  # what the dashboard counts
+    assert client.post(f"/api/domains/customer/features/{operation}/reset").json() == {"deleted": 0}
+
+
+def test_a_running_feature_is_stopped_before_it_is_reset(client, monkeypatch):
+    original = stub.StubAgent.run
+
+    def slow(self, ctx):
+        if self.stage == "as_is_doc" and ctx.operation.startswith("busyreset"):
+            while True:
+                common.raise_if_stopped(ctx)
+                time.sleep(0.05)
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", slow)
+    operation = f"busyreset{next(_ids)}"
+    run_id = start_run(client, {"domain": "customer", "operation": operation}).json()["id"]
+    deadline = time.time() + 10
+    while client.get(f"/api/runs/{run_id}").json()["current_stage"] != "as_is_doc" and time.time() < deadline:
+        time.sleep(0.05)
+    assert client.get(f"/api/runs/{run_id}").json()["status"] == "running"
+
+    assert client.post(f"/api/domains/customer/features/{operation}/reset").json() == {"deleted": 1}
+    assert _migration(client, "customer", operation) is None

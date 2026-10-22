@@ -52,7 +52,9 @@ def test_running_runs_keep_the_workflow_they_started_with(client):
     # Remove the gate and the second agent, then delete the workflow altogether.
     r = client.put(f"/api/workflows/{key}", json={"steps": [{"kind": "agent", "key": "as_is_doc"}]})
     assert r.status_code == 200
-    assert client.delete(f"/api/workflows/{key}").status_code == 204
+    # While a run uses the workflow it can't be deleted, and the refusal says why.
+    r = client.delete(f"/api/workflows/{key}")
+    assert r.status_code == 409 and "1 run(s) still use it" in r.json()["detail"]
 
     client.post(f"/api/runs/{run['id']}/decision", json={"reviewer": "t", "decision": "approve"})
     done = wait_for(client, run["id"], {"completed"})
@@ -110,7 +112,9 @@ def test_domain_default_workflow_is_used_and_cleared_on_delete(client):
     assert run["workflow"] == wf
     wait_for(client, run["id"], {"completed"})
 
-    client.delete(f"/api/workflows/{wf}")
+    assert client.delete(f"/api/workflows/{wf}").status_code == 409  # the run still uses it
+    assert client.post(f"/api/domains/reports/features/{run['operation']}/reset").status_code == 200
+    assert client.delete(f"/api/workflows/{wf}").status_code == 204
     assert client.get("/api/domains/reports").json()["default_workflow"] is None
     assert start_run(client, {"domain": "reports", "operation": _key("op")}).json()["workflow"] == "standard"
 
@@ -146,3 +150,63 @@ def test_a_step_can_only_use_earlier_outputs(client):
     steps = [{"kind": "agent", "key": "as_is_doc", "uses": ["deep_dive"]}, {"kind": "agent", "key": "deep_dive"}]
     r = client.post("/api/workflows", json={"key": _key("bad"), "name": "Bad", "steps": steps})
     assert r.status_code == 422 and "before it" in r.json()["detail"]
+
+
+def test_a_workflow_a_run_uses_cannot_be_deleted_and_says_which_runs(client):
+    wf = _key("wf")
+    client.post("/api/workflows", json={"key": wf, "name": "In use", "steps": [{"kind": "agent", "key": "as_is_doc"}]})
+    assert client.get(f"/api/workflows/{wf}/usage").json()["blocked"] is None  # nothing uses it yet
+    op = _key("op")
+    run = start_run(client, {"domain": "broker", "operation": op, "workflow": wf}).json()
+    wait_for(client, run["id"], {"completed"})
+
+    usage = client.get(f"/api/workflows/{wf}/usage").json()
+    assert [r["id"] for r in usage["runs"]] == [run["id"]] and usage["steps"] == 1
+    assert f"broker/{op} (completed)" in usage["blocked"] and "reset their features" in usage["blocked"]
+    r = client.delete(f"/api/workflows/{wf}")
+    assert r.status_code == 409 and "In use workflow can't be deleted" in r.json()["detail"]
+
+    assert client.post(f"/api/domains/broker/features/{op}/reset").status_code == 200  # the run is deleted
+    assert client.get(f"/api/workflows/{wf}/usage").json() == {
+        "name": "In use", "steps": 1, "runs": [], "copies": [], "defaults": [], "blocked": None}
+    assert client.delete(f"/api/workflows/{wf}").status_code == 204
+
+
+def test_an_agent_in_a_workflow_cannot_be_deleted_until_its_step_is_removed(client):
+    agent = _key("helper")
+    assert client.post("/api/agents", json={"key": agent, "title": "Helper", "description": ""}).status_code == 201
+    wf = _key("wf")
+    client.post("/api/workflows", json={"key": wf, "name": "Has helper", "steps": [{"kind": "agent", "key": agent}]})
+
+    usage = client.get(f"/api/agents/{agent}/usage").json()
+    assert usage["workflows"] == [{"name": "Has helper", "library": "default"}]  # the project's own workflow
+    assert "Has helper (project default)" in usage["blocked"] and "Remove its step" in usage["blocked"]
+    r = client.delete(f"/api/agents/{agent}")
+    assert r.status_code == 409 and "Helper agent can't be deleted" in r.json()["detail"]
+
+    assert client.delete(f"/api/workflows/{wf}").status_code == 204  # no run used it
+    assert client.get(f"/api/agents/{agent}/usage").json()["blocked"] is None
+    assert client.delete(f"/api/agents/{agent}").status_code == 204
+    assert client.get(f"/api/agents/{agent}/usage").status_code == 404
+
+
+def test_workflows_can_be_browsed_by_project_or_all_together(client):
+    from tests.test_projects import as_project, new_project
+
+    other = new_project(client)
+    proj = as_project(client, other)
+    own = _key("wf")
+    r = proj.post("/api/workflows", json={"key": own, "name": "Theirs", "steps": [{"kind": "agent", "key": "as_is_doc"}]})
+    assert r.status_code == 201, r.text
+
+    here = {w["key"]: w for w in client.get("/api/workflows/browse", params={"of": "default"}).json()}
+    assert "standard" in here and own not in here and here["standard"]["owner"] is None  # shared, used here too
+    theirs = {w["key"]: w for w in client.get("/api/workflows/browse", params={"of": other}).json()}
+    assert theirs[own]["owner"] == other and theirs[own]["library"] == "project" and "standard" in theirs
+    everything = client.get("/api/workflows/browse", params={"of": "all"}).json()
+    assert {(w["key"], w["owner"]) for w in everything} >= {("standard", None), (own, other)}
+    assert client.get("/api/workflows/browse", params={"of": "nope"}).status_code == 404
+    from tests.test_auth import make_user, signed_in
+    outsider = signed_in(make_user(client, ["viewer"])["username"])  # a member of the default project only
+    assert outsider.get("/api/workflows/browse", params={"of": other}).status_code == 404
+    assert own not in {w["key"] for w in outsider.get("/api/workflows/browse", params={"of": "all"}).json()}

@@ -444,3 +444,39 @@ def test_every_agent_switches_to_ai_and_back_in_one_go(client):
                 agent = client.get(f"/api/agents/{key}").json()
                 client.put(f"/api/agents/{key}", json={**agent, "mode": mode})
     assert {a["mode"] for a in client.get("/api/agents").json()} == set(before.values())
+
+
+def test_the_domains_shared_context_and_agent_notes_reach_the_ai_agents_brief(client, monkeypatch):
+    """What an AI agent is sent (common.brief, the same for Claude and Copilot) has the domain's shared context, the
+    stage's own notes and paths, and the run's; a stage gets only its own notes (and, for a lean agent, those of the
+    agents it replaces)."""
+    from app.agents import common, stub
+
+    key = f"dom{next(_ids)}"
+    client.post("/api/domains", json={"key": key, "name": "Lending", "description": "Loans and repayments"})
+    r = client.put(f"/api/domains/{key}", json={"context": "Oracle schema LND; DAOs end in Dao", "agent_inputs": {
+        "as_is_doc": {"paths": ["src/main/java/com/acme/loan/**"], "notes": "Start at LoanController"},
+        "deep_dive": {"paths": [], "notes": "Interest rules live in RateCalculator"}}})
+    assert r.status_code == 200, r.text
+    briefs = {}
+    original = stub.StubAgent.run
+
+    def capture(self, ctx):
+        briefs[self.stage] = common.brief(ctx)
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", capture)
+    for workflow, operation in (("standard", "approveLoan"), ("lean", "repayLoan")):
+        run = start_run(client, {"domain": key, "operation": operation, "workflow": workflow,
+                                 "inputs": {"paths": ["LoanController.approve"], "notes": "Batch jobs too"}})
+        assert run.status_code == 201, run.text
+        wait_for(client, run.json()["id"], {"awaiting_approval"})
+
+    as_is, deep, analysis = briefs["as_is_doc"], briefs["deep_dive"], briefs["analysis"]
+    for brief in (as_is, deep, analysis):  # the shared context and the run's own inputs reach every stage
+        assert "## Domain: Lending" in brief and "Oracle schema LND; DAOs end in Dao" in brief
+        assert "Batch jobs too" in brief and "LoanController.approve" in brief
+    assert "## Notes for this stage (domain)\nStart at LoanController" in as_is
+    assert "src/main/java/com/acme/loan/**" in as_is
+    assert "Start at LoanController" not in deep and "Interest rules live in RateCalculator" in deep  # its own only
+    assert "Start at LoanController" in analysis and "Interest rules live in RateCalculator" in analysis
