@@ -41,6 +41,21 @@ def _set_run(run_id: str, **fields) -> None:
             setattr(run, k, v)
 
 
+def _domain_guidance(agent_inputs: dict, stage: str) -> dict:
+    """The domain's guidance for a stage's agent (where to look, notes): its own, and for an agent that does the work
+    of several (the lean workflow's), the guidance given to those agents too."""
+    from app.agents.defaults import MERGED_FROM
+
+    paths: list[str] = []
+    notes: list[str] = []
+    for key in (stage, *MERGED_FROM.get(stage, ())):
+        given = normalize_inputs(agent_inputs.get(key))
+        paths += [p for p in given["paths"] if p not in paths]
+        if given["notes"] and given["notes"] not in notes:
+            notes.append(given["notes"])
+    return {"paths": paths, "notes": "\n\n".join(notes)}
+
+
 def _inputs(run_id: str, stage: str) -> AgentInputs:
     with session_scope() as s:
         run = s.get(Run, run_id)
@@ -51,7 +66,7 @@ def _inputs(run_id: str, stage: str) -> AgentInputs:
             name = "Whole monolith" if run.domain == discovery_store.MONOLITH else run.domain
             return AgentInputs(domain_name=name, run_paths=run_inputs["paths"], run_notes=run_inputs["notes"],
                                run_label=label)
-        stage_inputs = normalize_inputs((domain.agent_inputs or {}).get(stage))
+        stage_inputs = _domain_guidance(domain.agent_inputs or {}, stage)
         feature, others = None, []
         if (run.scope or "operation") == "operation":  # a migration covers one feature of the domain: say which
             rows = s.scalars(select(Feature).where(Feature.project == run.project, Feature.domain == run.domain)

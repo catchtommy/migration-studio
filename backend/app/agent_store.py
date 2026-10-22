@@ -392,6 +392,18 @@ def update(key: str, values: dict[str, Any], scope: str = "shared") -> dict[str,
     return get(key)
 
 
+def set_mode_all(mode: str, project: str | None = None) -> int:
+    """Run every agent the project uses as a stub or with AI (`mode`): the shared library and the project's own agents
+    and copies. Returns how many changed."""
+    project = _project(project)
+    with session_scope() as s:
+        rows = s.scalars(select(Agent).where(Agent.project.in_([SHARED, *([project] if project else [])]),
+                                             Agent.mode != mode)).all()
+        for row in rows:
+            row.mode = mode
+        return len(rows)
+
+
 def customise(key: str) -> dict[str, Any]:
     """Give the current project its own copy of a shared agent."""
     return update(key, {}, scope="project")

@@ -797,6 +797,42 @@ function SharedTextsPanel({ onClose, focus }: { onClose: () => void; focus: stri
   );
 }
 
+/** One click: every agent (the shared library and this project's own) runs with AI, or as a stub again. */
+function AllAgentsMode({ agents }: { agents: Agent[] }) {
+  const queryClient = useQueryClient();
+  const canShared = useCanGlobally("agents.manage");
+  const stubs = agents.filter((a) => a.mode !== "llm").length;
+  const target = stubs > 0 ? "llm" : "stub";
+  const change = useMutation({
+    mutationFn: () => api.setAllAgentsMode(target),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+      queryClient.invalidateQueries({ queryKey: ["workflows"] });
+    },
+  });
+  if (!canShared || agents.length === 0) return null;
+  const label = target === "llm" ? `Switch all agents to AI (${stubs} in stub)` : "Switch all agents to stub";
+  const message =
+    target === "llm"
+      ? `Run every agent with AI? ${stubs} agent(s) in stub mode will call the AI provider set in Settings from their next step, in every project.`
+      : "Run every agent as a stub again? No agent calls an AI model then, in any project; steps write placeholder documents.";
+  return (
+    <span className="inline-flex items-center gap-2">
+      <button
+        type="button"
+        disabled={change.isPending}
+        onClick={() => window.confirm(message) && change.mutate()}
+        className={`rounded-md border px-4 py-1.5 text-sm font-medium disabled:opacity-50 ${
+          target === "llm" ? "border-accent/60 text-accent hover:bg-accent/10" : "border-border hover:bg-muted"
+        }`}
+      >
+        {change.isPending ? "Switching…" : label}
+      </button>
+      {change.error && <span className="text-sm text-bad">{(change.error as Error).message}</span>}
+    </span>
+  );
+}
+
 export function AgentsPage() {
   const { agentKey: selected } = useParams();
   const navigate = useNavigate();
@@ -839,6 +875,7 @@ export function AgentsPage() {
   return (
     <div className="space-y-6">
       <PageTitle icon={<ChipIcon />} title="Agents" subtitle="The agent library. Workflows use these agents as steps; changes apply to stages that start after saving." tone="from-emerald-500 to-teal-500">
+        <AllAgentsMode agents={agents} />
         <button onClick={() => setShowShared(!showShared)} className="rounded-md border border-border px-4 py-1.5 text-sm font-medium hover:bg-muted">
           Shared texts
         </button>

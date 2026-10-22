@@ -736,6 +736,7 @@ export const api = {
   restart: (id: string, stage: string, notes?: string, fresh = false) => request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh })),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
+  setAllAgentsMode: (mode: "stub" | "llm") => request<{ changed: number; mode: string }>("/agents/mode", json("POST", { mode })),
   sharedTexts: () => request<SharedText[]>("/shared-texts"),
   updateSharedText: (key: string, text: string) => request<SharedText>(`/shared-texts/${key}`, json("PUT", { text })),
   resetSharedText: (key: string) => request<SharedText>(`/shared-texts/${key}/reset`, { method: "POST" }),

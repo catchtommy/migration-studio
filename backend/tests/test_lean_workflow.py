@@ -113,3 +113,33 @@ def test_an_existing_database_gets_the_lean_workflow_with_the_standard_repositor
     finally:
         with session_scope() as s:
             s.get(WorkflowDef, (SHARED, workflow_store.STANDARD_KEY)).steps = before
+
+
+def test_lean_agents_get_the_domain_guidance_given_to_the_agents_they_replace(client, monkeypatch):
+    """A domain set up for the standard workflow (where to look and notes for AS-IS and the deep dive) needs nothing
+    new: the Analysis agent gets that guidance, with any given to itself."""
+    from app.agents import stub
+
+    domain = client.get("/api/domains/payments").json()
+    guidance = {"as_is_doc": {"paths": ["src/main/java/com/acme/payments/**"], "notes": "Start at PaymentController."},
+                "deep_dive": {"paths": ["src/main/resources/sqlmap/Payment.xml"], "notes": "Refunds are a separate feature."},
+                "analysis": {"paths": ["src/main/java/com/acme/payments/**"], "notes": ""}}
+    r = client.put("/api/domains/payments", json={"agent_inputs": guidance})
+    assert r.status_code == 200, r.text
+    seen = {}
+    original = stub.StubAgent.run
+
+    def record(self, ctx):
+        seen.setdefault(self.stage, ctx.inputs)
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", record)
+    try:
+        run_id = start_run(client, {"domain": "payments", "operation": f"guided{next(_ids)}", "workflow": "lean"})
+        wait_for(client, run_id.json()["id"], {"awaiting_approval"})
+        given = seen["analysis"]
+        assert given.stage_paths == ["src/main/java/com/acme/payments/**", "src/main/resources/sqlmap/Payment.xml"]
+        assert "Start at PaymentController." in given.stage_notes and "Refunds are a separate" in given.stage_notes
+        assert "Where to look (domain)" in given.as_markdown()
+    finally:
+        client.put("/api/domains/payments", json={"agent_inputs": domain["agent_inputs"]})

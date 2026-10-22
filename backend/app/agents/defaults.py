@@ -1588,6 +1588,12 @@ _MODERN_JDK = {"modernise", "monolith_integration", "orchestrator_service", "ser
 _ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "linked_domain_contracts", "domain_design",
              "wrapper_design", "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts",
              "domain_features", "analysis", "modulith_design"}
+# The lean workflow's agents and the agents whose work each does: guidance a domain gives those (where to look, notes)
+# reaches it too (orchestrator/graph.py _inputs), so a domain set up for the standard workflow needs nothing new.
+MERGED_FROM = {"analysis": ("as_is_doc", "deep_dive", "domain_dependencies"),
+               "modulith_design": ("linked_domain_contracts", "domain_design", "orchestrator_design",
+                                   "integration_design"),
+               "modernise_and_test": ("modernise", "service_tests")}
 # Documents-only agents that do the work of several (the lean workflow's): more turns than one of those.
 _MORE_TURNS = {"analysis": 150, "modulith_design": 150}
 _GUARDRAIL_TOOLS = {"modular_monolith": ["check_module_guardrails"],

@@ -423,3 +423,24 @@ def test_shared_texts_are_edited_reset_and_follow_new_defaults_until_edited(clie
         shared_texts.seed()
         assert shared_texts.text("rest_rules") == expected
     client.post("/api/shared-texts/rest_rules/reset")
+
+
+def test_every_agent_switches_to_ai_and_back_in_one_go(client):
+    from tests.test_auth import make_user, signed_in
+
+    before = {a["key"]: a["mode"] for a in client.get("/api/agents").json()}
+    try:
+        r = client.post("/api/agents/mode", json={"mode": "llm"})
+        assert r.status_code == 200 and r.json()["mode"] == "llm"
+        assert {a["mode"] for a in client.get("/api/agents").json()} == {"llm"}
+        assert client.post("/api/agents/mode", json={"mode": "llm"}).json()["changed"] == 0  # nothing left to change
+        assert client.post("/api/agents/mode", json={"mode": "chatgpt"}).status_code == 422
+        developer = signed_in(make_user(client, ["developer"])["username"])
+        assert developer.post("/api/agents/mode", json={"mode": "stub"}).status_code == 403
+    finally:
+        client.post("/api/agents/mode", json={"mode": "stub"})
+        for key, mode in before.items():
+            if mode != "stub":
+                agent = client.get(f"/api/agents/{key}").json()
+                client.put(f"/api/agents/{key}", json={**agent, "mode": mode})
+    assert {a["mode"] for a in client.get("/api/agents").json()} == set(before.values())

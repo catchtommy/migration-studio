@@ -40,6 +40,18 @@ def _check_scope(scope: Scope, access: ProjectAccess) -> None:
                                  "project instead.")
 
 
+class ModeAll(BaseModel):
+    mode: Literal["stub", "llm"]
+
+
+@router.post("/mode", dependencies=[Depends(require("agents.manage"))])
+def set_mode_all(body: ModeAll, access: ProjectAccess = Depends(project_context)) -> dict:
+    """Switch every agent to AI (`llm`) or back to the stub in one go: the shared library, which every project uses
+    (so it needs Manage agents from the user's own roles), and this project's own agents and copies."""
+    _check_scope("shared", access)
+    return {"changed": agent_store.set_mode_all(body.mode), "mode": body.mode}
+
+
 @router.get("", response_model=list[AgentOut])
 def list_agents(access: ProjectAccess = Depends(project_context)):
     return [_visible(a, access) for a in agent_store.list_all()]
