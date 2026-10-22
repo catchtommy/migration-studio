@@ -117,7 +117,9 @@ class Runner:
         self.graph_for(run_id).update_state(self._config(run_id), values, as_node=previous)
         self._submit(run_id, None, prepare=(lambda: start_fresh(run_id, stage)) if fresh else None)
 
-    def retry(self, run_id: str) -> None:
+    def retry(self, run_id: str, notes: str | None = None) -> None:
+        """Run the failed step again. `notes` reach its agent with the step (what to do differently), as a reviewer's
+        comments do."""
         if not self.graph_for(run_id).get_state(self._config(run_id)).values:
             # It failed before the first step started (e.g. preparing its workspace), so nothing was saved to resume
             # from: start it again, without what a failed checkout may have left behind.
@@ -126,6 +128,18 @@ class Runner:
             git_ops.remove_tree(ws)
             self._submit(run_id, None, initial=True)
             return
+        if notes:
+            with session_scope() as s:
+                run = s.get(Run, run_id)
+                stages, stage = run.stage_defs, run.current_stage
+            keys = [d["key"] for d in stages]
+            if stage in keys and stages[keys.index(stage)]["kind"] == "agent":
+                graph = self.graph_for(run_id)
+                feedback = {**(graph.get_state(self._config(run_id)).values.get("feedback") or {}), stage: notes}
+                at = keys.index(stage)
+                # As a restart does: continue as if the step before had just finished, so the failed step runs next.
+                graph.update_state(self._config(run_id), {"feedback": feedback, "route": stage},
+                                   as_node=keys[at - 1] if at else START)
         # Invoking with None continues from the last checkpoint, re-running the node that failed.
         self._submit(run_id, None)
 
@@ -193,6 +207,8 @@ class Runner:
             # shows must not be refused as "already executing".
             with self._lock:
                 self._active.discard(run_id)
+            from app.agents.common import request_stop
+            request_stop(run_id, on=False)  # a stop asked for ends with this execution; a retry runs normally
 
         if gate and gate.get("kind") == "branches" and not gate["repository"].get("checked_out"):
             _fetch_for_question(run_id, gate["repository"]["url"])

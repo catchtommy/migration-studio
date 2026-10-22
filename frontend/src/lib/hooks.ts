@@ -44,6 +44,13 @@ export function useCan(permission: Permission): boolean {
   return !!project?.permissions.includes(permission);
 }
 
+/** Whether the signed-in user has the Admin role itself: what can't be undone (deleting a project with its runs,
+ * starting a feature over with another workflow) is the admin's alone. */
+export function useIsAdmin(): boolean {
+  const { data } = useMe();
+  return !!data?.user?.roles.includes("admin");
+}
+
 /** A global permission from the user's own roles, e.g. to change the shared agent library. */
 export function useCanGlobally(permission: Permission): boolean {
   const { data } = useMe();

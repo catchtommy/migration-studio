@@ -11,15 +11,16 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.api.schemas import (
     AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, Decision, EventOut, QuestionOut,
-    RetryIn, RunCreate, RunDetail, RunOut, Rerun, Restart, WorkflowUpdateIn,
+    RetryIn, RunCreate, RunDetail, RunOut, Rerun, Restart, StartOverIn, WorkflowUpdateIn,
 )
+from app.agents import common
 from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
 from app import (auth, contracts_store, delivery, discovery_store, docs_publish, document_export, projects, repos,
-                 run_workflow, settings_store, workflow_store, workspace)
-from app.auth import CurrentUser, require
+                 run_cleanup, run_workflow, settings_store, workflow_store, workspace)
+from app.auth import CurrentUser, ProjectAccess, project_context, require, require_admin
 from app.domain_store import normalize_inputs
 from app.orchestrator import graph, questions
 from app.orchestrator.runner import RunBusyError, get_runner
@@ -123,6 +124,32 @@ def create_run(body: RunCreate, db: Session = Depends(get_db)):
                      body.feature_branch)
 
 
+@router.post("/runs/{run_id}/start-over", response_model=RunOut, status_code=201)
+def start_over(run_id: str, body: StartOverIn, db: Session = Depends(get_db),
+               access: ProjectAccess = Depends(project_context),
+               user: CurrentUser = Depends(require_admin("start a feature over with another workflow"))):
+    """Start the run's feature over with another workflow: every run of the feature, in progress or not (one that is
+    working is stopped first), is deleted with everything recorded for it (app/run_cleanup.py), and a new run starts
+    with `workflow`."""
+    run = _run_or_404(db, run_id)
+    if (run.scope or "operation") != "operation":
+        raise HTTPException(422, "Only a feature's migration can be started over with another workflow")
+    if workflow_store.scope_of(body.workflow) != "operation":
+        raise HTTPException(422, f"{body.workflow} is not a migration workflow")
+    domain, operation, old_workflow = run.domain, run.operation, run.workflow
+    runs = list(db.scalars(select(Run.id).where(Run.project == run.project, Run.domain == domain,
+                                                Run.operation == operation, Run.scope == "operation")))
+    db.close()
+    try:
+        deleted = run_cleanup.stop_and_delete(access.project, runs)
+    except run_cleanup.StillWorking as e:
+        raise HTTPException(409, str(e))
+    new = create_run(RunCreate(domain=domain, operation=operation, workflow=body.workflow), db)
+    emit(new.id, "status", f"{user.display_name} started {operation} over with the {body.workflow} workflow "
+                           f"(it was on {old_workflow}); its {deleted} earlier run(s) and their data were deleted")
+    return new
+
+
 @router.get("/runs-git-plan")
 def git_plan(domain: str, feature: str, workflow: str | None = None, db: Session = Depends(get_db)):
     """Where a new migration would work (repository, base and feature branch), for the New migration form."""
@@ -155,6 +182,7 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
         detail.pending_publish = get_runner().pending_gate(run_id)
     update = None if get_runner().is_active(run_id) else run_workflow.plan(run)
     detail.workflow_update = update and {k: v for k, v in update.items() if k not in ("stages", "rerun_stages")}
+    detail.stopping = common.stop_requested(run_id)
     return detail
 
 
@@ -384,16 +412,34 @@ def retry(run_id: str, body: RetryIn | None = None, db: Session = Depends(get_db
     if run.status != "failed":
         raise HTTPException(409, "Only failed runs can be retried")
     fresh = body is not None and body.fresh
+    notes = ((body.notes if body else None) or "").strip() or None
     if fresh and graph.discard_stopped_work(run_id):
         emit(run_id, "status", "Retrying from scratch: what the failed attempt kept was undone")
     else:
         emit(run_id, "status", "Retrying" + ("" if fresh else ", continuing from what the failed attempt kept"))
+    if notes:
+        emit(run_id, "log", f"Notes for the retry: {notes}", run.current_stage)
     delivery.refresh_code_settings(run_id)
     try:
-        get_runner().retry(run_id)
+        get_runner().retry(run_id, notes)
     except RunBusyError as e:
         raise HTTPException(409, str(e))
     return run
+
+
+@router.post("/runs/{run_id}/stop", status_code=202)
+def stop_run(run_id: str, db: Session = Depends(get_db), access: ProjectAccess = Depends(project_context),
+             user: CurrentUser = Depends(require_admin("stop a run"))) -> dict:
+    """Stop a run whose agent is working (e.g. going round in circles): it ends at its next turn or tool call, and a
+    question it waits on is cancelled. The step fails, keeping what it did; retry it, with notes or changed inputs,
+    or from scratch."""
+    run = _run_or_404(db, run_id)
+    if not get_runner().is_active(run_id):
+        raise HTTPException(409, "The run isn't working right now, so there is nothing to stop")
+    common.request_stop(run_id)
+    questions.cancel_open(run_id)
+    emit(run_id, "status", f"{user.display_name} stopped the run: the agent ends at its next step", run.current_stage)
+    return {"stopping": True}
 
 
 @router.get("/runs/{run_id}/questions", response_model=list[QuestionOut])

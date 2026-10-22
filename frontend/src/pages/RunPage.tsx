@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api, MONOLITH, runSubject } from "../lib/api";
 import { useRunEvents, useWorkflows, useCan } from "../lib/hooks";
 import { ActivityLog } from "../components/ActivityLog";
@@ -15,11 +15,12 @@ import { PublishDocsPanel } from "../components/PublishDocsPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { WorkflowUpdate } from "../components/WorkflowUpdate";
+import { StartOver } from "../components/StartOver";
+import { FailedRun, StopRun } from "../components/RunControls";
 
 export function RunPage() {
   const canRetry = useCan("runs.start");
   const { runId = "" } = useParams();
-  const queryClient = useQueryClient();
   const { data: workflows = [] } = useWorkflows();
   const { data: run, error } = useQuery({ queryKey: ["run", runId], queryFn: () => api.run(runId) });
   const events = useRunEvents(runId);
@@ -32,11 +33,6 @@ export function RunPage() {
   useEffect(() => {
     if (!pinned && run?.current_stage) setSelected(run.current_stage);
   }, [run?.current_stage, pinned]);
-
-  const retry = useMutation({
-    mutationFn: (fresh: boolean) => api.retry(runId, fresh),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["run", runId] }),
-  });
 
   if (error) return <p className="text-bad">{(error as Error).message}</p>;
   if (!run) return <p className="text-subtle">Loading…</p>;
@@ -64,6 +60,7 @@ export function RunPage() {
             )}
           </h1>
           <StatusBadge status={run.status} />
+          <StopRun run={run} />
         </div>
         <p className="mt-1 text-xs text-subtle">
           <span className="font-mono">{run.branch}</span>
@@ -90,6 +87,9 @@ export function RunPage() {
           </p>
         )}
         <WorkflowUpdate run={run} workflowName={workflowName ?? null} canUpdate={canRetry} />
+        <div className="mt-2">
+          <StartOver run={run} />
+        </div>
         {run.inputs && (run.inputs.paths.length > 0 || run.inputs.notes) && (
           <details className="mt-2 text-sm">
             <summary className="cursor-pointer text-subtle hover:text-fg">{run.scope === "operation" ? "Operation inputs" : "Paths and notes"} given to the agents</summary>
@@ -126,42 +126,7 @@ export function RunPage() {
 
       {run.status === "changes_requested" && run.pending_rerun && <AmendPanel key={run.pending_rerun.gate + run.stages.length} run={run} />}
 
-      {run.status === "failed" && (
-        <section className="space-y-3 rounded-lg border border-bad/40 bg-bad/5 p-4">
-          <p className="text-sm text-bad">{run.error}</p>
-          {(() => {
-            // The failed attempt kept what it did (documents, and commits in its repository): a retry continues from it.
-            const last = run.stages[run.stages.length - 1];
-            const kept = !!last && last.status === "failed" && !!last.end_sha;
-            return (
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  className="rounded-md bg-fg px-3 py-1.5 text-sm font-medium text-bg disabled:opacity-50"
-                  disabled={!canRetry || retry.isPending}
-                  title={canRetry ? undefined : "Needs the “Run migrations” permission"}
-                  onClick={() => retry.mutate(false)}
-                >
-                  {kept ? "Retry, continuing where it stopped" : "Retry from failed stage"}
-                </button>
-                {kept && (
-                  <button
-                    className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg disabled:opacity-50"
-                    disabled={!canRetry || retry.isPending}
-                    onClick={() => window.confirm("Undo what the failed attempt did and start the step over?") && retry.mutate(true)}
-                  >
-                    Retry from scratch
-                  </button>
-                )}
-                {kept && (
-                  <span className="text-xs text-subtle">
-                    The failed attempt's documents and code are kept, so the retry carries on from them instead of redoing that work.
-                  </span>
-                )}
-              </div>
-            );
-          })()}
-        </section>
-      )}
+      {run.status === "failed" && <FailedRun key={run.stages.length} run={run} />}
 
       <div className="grid gap-6 lg:grid-cols-[18rem_1fr]">
         <aside className="card p-2 lg:sticky lg:top-4 lg:self-start">

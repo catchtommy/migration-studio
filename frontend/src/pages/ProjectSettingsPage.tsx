@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api, getCurrentProject, type ProjectSettings } from "../lib/api";
-import { useCan } from "../lib/hooks";
+import { useCan, useIsAdmin } from "../lib/hooks";
 import { LANGUAGES, useSwitchProject } from "../lib/projectContext";
 import { Field, inputClass as input } from "../components/Field";
 import { Guarded } from "../components/Guarded";
@@ -178,7 +178,7 @@ function General({ project }: { project: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const switchTo = useSwitchProject();
-  const canDelete = useCan("projects.manage");
+  const canDelete = useIsAdmin();
   const { data } = useQuery({ queryKey: ["project", project], queryFn: () => api.project(project) });
   const [details, setDetails] = useState({ name: "", description: "" });
   const [form, setForm] = useState<ProjectSettings | null>(null);
@@ -340,22 +340,38 @@ function General({ project }: { project: string }) {
           {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
         </div>
       </form>
-      {canDelete && (
-        <section className="mt-10 max-w-3xl space-y-2 rounded-lg border border-bad/30 p-4">
-          <h2 className="font-semibold text-bad">Delete project</h2>
-          <p className="text-sm text-subtle">Only a project without migration runs can be deleted (delete its domains with their runs first).</p>
-          <button
-            type="button"
-            disabled={remove.isPending}
-            onClick={() => confirm(`Delete ${data.name}? This can't be undone.`) && remove.mutate()}
-            className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
-          >
-            Delete {data.name}
-          </button>
-          {remove.error && <p className="text-sm text-bad">{(remove.error as Error).message}</p>}
-        </section>
-      )}
+      {canDelete && <DeleteProject name={data.name} projectKey={project} remove={remove} />}
     </Guarded>
+  );
+}
+
+/** An admin deletes the project with everything in it, after typing its key to confirm. */
+function DeleteProject({ name, projectKey, remove }: { name: string; projectKey: string; remove: { isPending: boolean; error: unknown; mutate: () => void } }) {
+  const [typed, setTyped] = useState("");
+  return (
+    <section className="mt-10 max-w-3xl space-y-3 rounded-lg border border-bad/30 p-4">
+      <h2 className="font-semibold text-bad">Delete project</h2>
+      <p className="text-sm text-subtle">
+        Deletes {name} with everything in it: every migration and discovery run (one that is working is stopped first) with its documents, approvals,
+        logs and workspace, and the project's domains, features, contracts, agents, workflows, settings and members. Code pushed and documents
+        published to its repositories stay in git. This can't be undone. Only an admin can do this.
+      </p>
+      <label className="block text-sm">
+        <span className="mb-1 block text-xs text-subtle">
+          Type <code className="font-mono">{projectKey}</code> to confirm
+        </span>
+        <input value={typed} onChange={(e) => setTyped(e.target.value)} className="w-full max-w-xs rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-sm" />
+      </label>
+      <button
+        type="button"
+        disabled={remove.isPending || typed !== projectKey}
+        onClick={() => remove.mutate()}
+        className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
+      >
+        {remove.isPending ? "Deleting…" : `Delete ${name} and all its data`}
+      </button>
+      {!!remove.error && <p className="text-sm text-bad">{(remove.error as Error).message}</p>}
+    </section>
   );
 }
 

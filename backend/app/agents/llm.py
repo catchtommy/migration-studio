@@ -39,6 +39,7 @@ class ClaudeAgent(StageAgent):
         ctx.log(f"Claude agent started ({model}, effort {config['effort']})")
 
         for _ in range(config["max_turns"]):
+            common.raise_if_stopped(ctx)
             with client.beta.messages.stream(
                 model=model,
                 max_tokens=MAX_TOKENS,

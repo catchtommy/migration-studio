@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from app import auth, projects, repos, settings_store
-from app.auth import CurrentUser, current_user, require_global
+from app.auth import CurrentUser, current_user, require_admin, require_global
 from app.db.models import Project, ProjectMember, Role, Run, User
 from app.db.session import session_scope
 
@@ -107,13 +107,24 @@ def update_project(key: str, body: ProjectUpdate, user: CurrentUser = Depends(cu
 
 
 @router.delete("/{key}", status_code=204)
-def delete_project(key: str, user: CurrentUser = Depends(require_global("projects.manage"))) -> None:
+def delete_project(key: str, user: CurrentUser = Depends(require_admin("delete a project"))) -> None:
+    """Delete a project with everything in it: its runs (stopped first if working) with their documents, approvals,
+    logs and workspaces, and its domains, features, contracts, agents, workflows, settings and members. Code pushed
+    and documents published to its repositories stay in git."""
+    from app import run_cleanup
+
     _access(key, user)
     with session_scope() as s:
-        if s.scalar(select(func.count()).where(Run.project == key)):
-            raise HTTPException(409, "This project has migration runs. Delete its domains with their runs first.")
+        if s.get(Project, key) is None:
+            raise HTTPException(404, f"There is no project {key}")
         if s.scalar(select(func.count()).select_from(Project)) == 1:
             raise HTTPException(409, "The last project can't be deleted")
+        run_ids = list(s.scalars(select(Run.id).where(Run.project == key)))
+    try:
+        run_cleanup.stop_and_delete(key, run_ids)
+    except run_cleanup.StillWorking as e:
+        raise HTTPException(409, str(e))
+    with session_scope() as s:
         from app.db.models import Agent, Contract, Dependency, Domain, Feature, Setting, WorkflowDef
         for model in (Feature, Dependency, Contract, Domain, Agent, WorkflowDef, Setting, ProjectMember):
             s.query(model).filter(model.project == key).delete(synchronize_session=False)

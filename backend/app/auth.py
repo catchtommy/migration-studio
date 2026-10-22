@@ -269,6 +269,18 @@ def require(permission: str):
     return dependency
 
 
+def require_admin(what: str):
+    """The Admin role itself (not a permission another role could be given): for what can't be undone, such as
+    deleting a project with its runs. `what` completes "Only an admin can ..."."""
+
+    def dependency(user: CurrentUser = Depends(current_user)) -> CurrentUser:
+        if ADMIN not in user.roles:
+            raise HTTPException(403, f"Only an admin can {what}.")
+        return user
+
+    return dependency
+
+
 def require_global(permission: str):
     """A permission from the user's own roles, for things outside any project (users, global settings)."""
 

@@ -19,6 +19,8 @@ class StubAgent(StageAgent):
         stage = ctx.stage_def or StageDef(self.stage, self.stage, "agent", ctx.config.get("description", ""))
         ctx.log(f"[stub] {stage.title}: analysing {ctx.domain}/{ctx.operation}")
         time.sleep(STUB_DELAY)
+        from app.agents.common import raise_if_stopped
+        raise_if_stopped(ctx)  # as an AI agent does between turns
         if ctx.feedback:
             ctx.log(f"[stub] applying reviewer feedback: {ctx.feedback}")
         answer = None

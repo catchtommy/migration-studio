@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from app.agents.base_agent import AgentContext
 from app.agents.common import project_brief
 from app.agents.tools import toolchain_env
+from app.db.models import Run
+from app.db.session import session_scope
 from app.main import app
 from tests.conftest import wait_for
 from tests.test_auth import make_user
@@ -159,7 +161,10 @@ def test_deleting_projects(client):
     proj.post("/api/domains/d/features", json={"key": "f", "name": "f"})
     run = proj.post("/api/runs", json={"domain": "d", "operation": "f"}).json()
     wait_for(proj, run["id"], {"awaiting_approval"})
-    assert client.delete(f"/api/projects/{busy}").status_code == 409
+    assert client.delete(f"/api/projects/{busy}").status_code == 204  # an admin deletes it with its runs
+    assert client.get(f"/api/projects/{busy}").status_code == 404
+    with session_scope() as s:
+        assert s.get(Run, run["id"]) is None
 
 
 def test_requests_without_a_project_are_refused(client):

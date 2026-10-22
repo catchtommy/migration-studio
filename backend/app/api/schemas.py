@@ -107,6 +107,7 @@ class RunDetail(RunOut):
     monolith_behind: int | None = None  # commits the project's base branch has gained since (as last fetched)
     # The run's workflow has changed since it started: what updating its upcoming steps would do (run_workflow.plan)
     workflow_update: dict | None = None
+    stopping: bool = False  # an admin asked the working run to stop: its agent ends at its next turn
 
 
 class ArtifactSummary(ORM):
@@ -144,8 +145,13 @@ class Restart(BaseModel):
     fresh: bool = False  # regenerate from scratch instead of updating the existing documents
 
 
+class StartOverIn(BaseModel):
+    workflow: str = Field(min_length=1, max_length=64)  # the migration workflow the feature starts over with
+
+
 class RetryIn(BaseModel):
     fresh: bool = False  # start the failed step over instead of continuing from what its attempt kept
+    notes: str | None = Field(default=None, max_length=20_000)  # for the failed step's agent: what to do differently
 
 
 class WorkflowUpdateIn(BaseModel):

@@ -98,6 +98,7 @@ class CopilotAgent(StageAgent):
             while True:
                 errors.clear()
                 await session.send_and_wait(prompt, timeout=SESSION_TIMEOUT)
+                common.raise_if_stopped(ctx)
                 problems = common.finish_check(ctx, toolbox.written, previous)
                 if not problems:
                     break
