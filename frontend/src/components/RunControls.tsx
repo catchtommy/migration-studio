@@ -53,7 +53,8 @@ export function FailedRun({ run }: { run: RunDetail }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["run", run.id] }),
   });
   // The failed attempt kept what it did (documents, and commits in its repository): a retry continues from it.
-  const last = run.stages[run.stages.length - 1];
+  // The run's latest execution by when it started (database ids need not grow in that order).
+  const last = [...run.stages].sort((a, b) => (a.started_at ?? "").localeCompare(b.started_at ?? "") || a.id - b.id).at(-1);
   const kept = !!last && last.status === "failed" && !!last.end_sha;
   const step = run.workflow_stages.find((s) => s.key === run.current_stage);
 

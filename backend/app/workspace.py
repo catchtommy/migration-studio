@@ -29,7 +29,7 @@ def _effective(executions: list[StageExecution], stage_defs: list[dict],
     position = {d["key"]: i for i, d in enumerate(stage_defs)}
     agents = {d["key"] for d in stage_defs if d["kind"] == "agent"}
     chain: list[StageExecution] = []
-    for ex in sorted(executions, key=lambda e: e.id):
+    for ex in sorted(executions, key=lambda e: (e.started_at, e.id)):  # as they happened (not ids alone: Oracle)
         if ex.stage not in agents:
             continue
         if ex.rerun:  # a restart updates the stage in place: later stages' changes stay until they re-run
@@ -305,7 +305,7 @@ def _start_of(run_id: str, stage: str) -> StageExecution | None:
     with session_scope() as s:
         ex = s.scalar(select(StageExecution).where(StageExecution.run_id == run_id, StageExecution.stage == stage,
                                                    _not_true(StageExecution.rerun))
-                      .order_by(StageExecution.id.desc()).limit(1))
+                      .order_by(StageExecution.started_at.desc(), StageExecution.id.desc()).limit(1))
         if ex is not None:
             s.expunge(ex)
         return ex
@@ -328,11 +328,12 @@ def start_fresh(run_id: str, stage: str) -> None:
         ws = Path(run.workspace)
         order = [d["key"] for d in run.stage_defs]
         executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run_id)
-                               .order_by(StageExecution.id)).all()
+                               .order_by(StageExecution.started_at, StageExecution.id)).all()
         start = next((ex for ex in reversed(executions) if ex.stage == stage and not ex.rerun), None)
+        later = executions[executions.index(start) + 1:] if start is not None else []
         earlier_since = start is None or any(
-            ex.id > start.id and ex.status == "completed" and ex.stage in order
-            and order.index(ex.stage) < order.index(stage) for ex in executions)
+            ex.status == "completed" and ex.stage in order
+            and order.index(ex.stage) < order.index(stage) for ex in later)
         sha, starts = (start.start_sha, start.repos) if start else (None, None)
     if not earlier_since and sha and _reset_all(run_id, ws, sha, starts):
         emit(run_id, "log", "Workspace rolled back to where this step last started fresh", stage)

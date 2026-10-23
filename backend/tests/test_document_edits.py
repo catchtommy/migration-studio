@@ -42,3 +42,20 @@ def test_a_re_run_keeps_the_documents_it_did_not_change_and_they_stay_editable(c
     r = client.put(f"/api/artifacts/{latest['rules-notes.md']['id']}", json={"content": "# Edited\n"})
     assert r.status_code == 200, r.text
     assert effective_documents(run_id)[path] == "# Edited\n"  # the edit is what the run uses
+
+
+def test_a_runs_history_is_replayed_in_the_order_it_happened_not_by_id():
+    """On Oracle (identities with NOORDER, e.g. RAC) a later row can get a lower id: the documents in effect are those
+    of the attempt that ran last, by its start time."""
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from app.workspace import _effective
+
+    t0 = datetime(2026, 10, 23, 9, tzinfo=timezone.utc)
+    ex = lambda id_, stage, attempt, minutes: SimpleNamespace(  # noqa: E731
+        id=id_, stage=stage, attempt=attempt, status="completed", rerun=None, started_at=t0 + timedelta(minutes=minutes))
+    stages = [{"key": "as_is_doc", "kind": "agent"}, {"key": "deep_dive", "kind": "agent"}]
+    # Attempt 2 of the deep dive ran after attempt 1, yet got the lower id.
+    chain = _effective([ex(50, "as_is_doc", 1, 0), ex(90, "deep_dive", 1, 5), ex(20, "deep_dive", 2, 30)], stages, None)
+    assert [(c.stage, c.attempt) for c in chain] == [("as_is_doc", 1), ("deep_dive", 2)]

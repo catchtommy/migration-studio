@@ -14,16 +14,25 @@ export function stageStatuses(stages: StageDef[], run: RunDetail): Map<string, {
   const result = new Map<string, { status: DisplayStatus; latest?: StageExecution; attempts: StageExecution[] }>();
   const current = stages.findIndex((s) => s.key === run.current_stage);
   const onStep = current >= 0 && stages[current].kind === "agent" && (run.status === "running" || run.status === "awaiting_branches");
-  let newestEarlierId = -1;
+  // When each execution happened: its start time, then its id. Not the id alone, nor the order the run lists them in:
+  // database ids need not grow in the order rows are added (Oracle identities with NOORDER, e.g. on RAC).
+  const when = (e: StageExecution): [string, number] => [e.started_at ?? "", e.id];
+  const after = (a: StageExecution, b: StageExecution) => {
+    const [ta, ia] = when(a);
+    const [tb, ib] = when(b);
+    return ta && tb && ta !== tb ? ta > tb : ia > ib;
+  };
+  let newestEarlier: StageExecution | undefined;
   stages.forEach((stage, i) => {
-    const attempts = run.stages.filter((e) => e.stage === stage.key);
+    // A step's attempts in their own order (attempt 1, 2, ...): the latest is the highest, whatever the ids.
+    const attempts = run.stages.filter((e) => e.stage === stage.key).sort((a, b) => a.attempt - b.attempt || (after(a, b) ? 1 : -1));
     const latest = attempts[attempts.length - 1];
-    const superseded = latest !== undefined && latest.id < newestEarlierId;
+    const superseded = latest !== undefined && newestEarlier !== undefined && after(newestEarlier, latest);
     let status: DisplayStatus = !latest || superseded ? "pending" : latest.status;
     if (onStep && i > current) status = "pending";
     else if (onStep && i === current) status = run.status === "running" ? "running" : "awaiting_approval";
     result.set(stage.key, { status, latest, attempts });
-    for (const e of attempts) newestEarlierId = Math.max(newestEarlierId, e.id);
+    for (const e of attempts) if (!newestEarlier || after(e, newestEarlier)) newestEarlier = e;
   });
   return result;
 }

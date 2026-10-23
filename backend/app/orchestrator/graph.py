@@ -159,7 +159,7 @@ def _stopped_attempt(run_id: str, stage: str) -> dict | None:
     a retry to continue from: its documents and where its repositories were."""
     with session_scope() as s:
         ex = s.scalar(select(StageExecution).where(StageExecution.run_id == run_id, StageExecution.stage == stage)
-                      .order_by(StageExecution.id.desc()).limit(1))
+                      .order_by(StageExecution.attempt.desc(), StageExecution.id.desc()).limit(1))
         if ex is None or ex.status != "failed" or not ex.end_sha:
             return None
         documents = {a.path: a.content for a in s.scalars(select(Artifact).where(
@@ -224,7 +224,7 @@ def discard_stopped_work(run_id: str) -> bool:
         kept = [ex for ex in run.stages if ex.status == "failed" and ex.end_sha]
         if not kept:
             return False
-        latest = max(kept, key=lambda ex: ex.id)
+        latest = max(kept, key=lambda ex: (ex.started_at, ex.id))
         ws, branch = Path(run.workspace), run.branch
         paths = {r["key"]: ws / r["path"] for r in run.repositories or []}
         if ws.exists() and git_ops.head(ws) == latest.end_sha:  # still where it stopped (not rebuilt since)

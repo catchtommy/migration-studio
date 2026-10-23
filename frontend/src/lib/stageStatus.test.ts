@@ -54,3 +54,13 @@ test("an approved gate stays approved while the run moves on", () => {
   const s = stageStatuses(stages, { ...run([ex("a", "completed"), ex("b", "completed"), ex("g", "approved")]), status: "running", current_stage: "g" } as RunDetail);
   expect(s.get("g")!.status).toBe("approved");
 });
+
+test("attempts are ordered by their number, whatever order the ids come in (Oracle identities need not grow)", () => {
+  const second = { ...ex("a", "completed", 2), id: 3, started_at: "2026-10-23T10:05:00Z" };
+  const first = { ...ex("a", "completed", 1), id: 90, started_at: "2026-10-23T09:00:00Z" };
+  const gate = { ...ex("g", "awaiting_approval"), id: 5, started_at: "2026-10-23T10:06:00Z" };
+  const s = stageStatuses(stages, run([first, second, gate])).get("a")!;
+  expect(s.attempts.map((e) => e.attempt)).toEqual([1, 2]);
+  expect(s.latest?.attempt).toBe(2); // the one that can be edited at the gate
+  expect(s.status).toBe("completed"); // not superseded: nothing earlier ran after it
+});

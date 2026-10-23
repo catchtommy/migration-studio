@@ -66,7 +66,10 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
-    stages: Mapped[list["StageExecution"]] = relationship(back_populates="run", order_by="StageExecution.id")
+    # In the order they happened: start time, then id (ids alone need not grow in insertion order on Oracle, e.g.
+    # identities with NOORDER on RAC).
+    stages: Mapped[list["StageExecution"]] = relationship(
+        back_populates="run", order_by="[StageExecution.started_at, StageExecution.id]")
     approvals: Mapped[list["Approval"]] = relationship(back_populates="run", order_by="Approval.id")
 
     @property
