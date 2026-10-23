@@ -464,6 +464,13 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             nested_changes[r["key"]] = {"start": start, **({"end": end, "diff": git_ops.diff(path, start, end, binary=True)}
                                                           if end != start else {})}
         outputs = _documents(ws, outputs, docs_dir(domain, state["operation"]), before_docs)
+        # The step's documents from its last completed attempt that are still there stay its documents, changed or
+        # not: a re-run that updates them in place (or a retry continuing them) is stored with all of them, so they
+        # show and can be edited with its latest attempt, and later steps keep getting them. One it deleted is gone;
+        # after a rejection the step started from scratch, so none of them were put back.
+        stored = {out.path for out in outputs}
+        outputs += [ArtifactOut(name=Path(p).name, path=p, kind=kind(p)) for p in _previous_outputs(run_id, stage.key)
+                    if p not in stored and (ws / p).is_file()]
         kept_back = sorted(out.path for out in outputs if out.path in ctx.locked_documents)
         if kept_back:  # changed some other way than the file tools: the approved version stays
             outputs = [out for out in outputs if out.path not in ctx.locked_documents]

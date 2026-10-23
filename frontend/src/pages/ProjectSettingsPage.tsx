@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api, getCurrentProject, type ProjectSettings } from "../lib/api";
-import { useCan, useDomains, useIsAdmin } from "../lib/hooks";
+import { useCan, useDomains, useIsAdmin, useWorkflows } from "../lib/hooks";
 import { DangerDialog } from "../components/DangerDialog";
 import { LANGUAGES, useSwitchProject } from "../lib/projectContext";
 import { Field, inputClass as input } from "../components/Field";
@@ -181,6 +181,8 @@ function General({ project }: { project: string }) {
   const switchTo = useSwitchProject();
   const canDelete = useIsAdmin();
   const { data } = useQuery({ queryKey: ["project", project], queryFn: () => api.project(project) });
+  const { data: workflows = [] } = useWorkflows();
+  const migrationWorkflows = workflows.filter((w) => w.scope === "operation");
   const [details, setDetails] = useState({ name: "", description: "" });
   const [form, setForm] = useState<ProjectSettings | null>(null);
   useEffect(() => {
@@ -299,6 +301,25 @@ function General({ project }: { project: string }) {
           </Field>
           <Field label="Self-check attempts" hint="How many times an agent is sent back when a required document is missing.">
             <input type="number" min={1} max={10} className={`${input} max-w-32`} value={form.max_attempts as number} onChange={(e) => set("max_attempts", Number(e.target.value))} />
+          </Field>
+        </section>
+
+        <section className="space-y-4">
+          <h2 className="font-semibold">Migrations</h2>
+          <Field
+            label="Default migration workflow"
+            hint="Selected when starting a migration in this project. A domain can have a default of its own (its Features tab), which comes first."
+          >
+            <select className={`${input} max-w-md`} value={(form.default_workflow as string) ?? ""} onChange={(e) => set("default_workflow", e.target.value)}>
+              <option value="">Standard migration (built-in default)</option>
+              {migrationWorkflows
+                .filter((w) => w.key !== "standard")
+                .map((w) => (
+                  <option key={w.key} value={w.key}>
+                    {w.name}
+                  </option>
+                ))}
+            </select>
           </Field>
         </section>
 

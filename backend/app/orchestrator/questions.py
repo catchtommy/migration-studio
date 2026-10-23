@@ -25,9 +25,12 @@ class QuestionAbandoned(RuntimeError):
 def ask(run_id: str, stage: str, attempt: int, question: str, options: list[str] | None = None) -> str:
     question = question.strip()
     with session_scope() as s:
-        earlier = s.scalar(select(Question).where(
-            Question.run_id == run_id, Question.stage == stage, Question.question == question,
-            Question.status == "answered").order_by(Question.id.desc()))
+        # The same question answered before in this stage gets that answer. The text is compared here, not in SQL:
+        # the question is a long-text column (an NCLOB on Oracle), which Oracle can't compare with = (ORA-00932).
+        answered = s.scalars(select(Question).where(
+            Question.run_id == run_id, Question.stage == stage, Question.status == "answered")
+            .order_by(Question.id.desc())).all()
+        earlier = next((q for q in answered if (q.question or "").strip() == question), None)
         if earlier is not None:
             return earlier.answer
         q = Question(run_id=run_id, stage=stage, attempt=attempt, question=question, options=options or None)

@@ -366,6 +366,53 @@ function GitSettings({ value, onChange }: { value: WorkflowGit; onChange: (git: 
   );
 }
 
+/** Deleting a project's copy of a shared workflow: the project's own changes go, and it uses the shared workflow
+ * again. Runs never block it, since they fall back to the shared one. */
+function DeleteCopyDialog({ workflow, revert, onClose }: {
+  workflow: Workflow;
+  revert: { isPending: boolean; error: unknown; mutate: () => void; isSuccess: boolean };
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (revert.isSuccess) onClose();
+  }, [revert.isSuccess, onClose]);
+  return (
+    <DangerDialog
+      title={`Delete this project's copy of ${workflow.name}`}
+      subtitle="The project's own changes are lost; it uses the shared workflow again."
+      sections={[
+        {
+          tone: "bad",
+          title: "Deleted for good",
+          items: [
+            <>
+              This project's changes to <strong>{workflow.name}</strong>: its steps, approval gates and settings as edited here
+            </>,
+            "Its code settings: which repository each step changes code in, base branches, and how the feature branch is reviewed and named",
+          ],
+        },
+        {
+          tone: "warn",
+          title: "Runs that go on use the shared one",
+          text: `${workflow.runs} run${workflow.runs === 1 ? "" : "s"} started with this workflow keep the steps they started with, but from their next step they take the shared workflow's code settings (which steps change code and where; a repository a run has already checked out stays as it is). Check those on the shared workflow first if steps change code.`,
+        },
+        {
+          tone: "ok",
+          title: "Kept",
+          items: [`The shared ${workflow.name} workflow, which this project uses again from now`, "Every run, with its documents and history", "Other projects' copies"],
+        },
+      ]}
+      confirmText={workflow.key}
+      actionLabel="Delete this project's copy"
+      pendingLabel="Deleting…"
+      pending={revert.isPending}
+      error={revert.error}
+      onConfirm={() => revert.mutate()}
+      onClose={onClose}
+    />
+  );
+}
+
 /** Deleting a workflow: what it affects, or why it can't be deleted yet (a run uses it, or it is the last one). */
 function DeleteWorkflowDialog({ workflow, remove, onClose }: {
   workflow: Workflow;
@@ -561,16 +608,7 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
           Save workflow
         </button>
         <span className="text-xs text-subtle">Changes apply to this project only.</span>
-        {workflow.customised && (
-          <button
-            type="button"
-            className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
-            disabled={revert.isPending}
-            onClick={() => window.confirm(`Drop this project's changes to ${workflow.name} and go back to the standard version?`) && revert.mutate()}
-          >
-            Reset to standard
-          </button>
-        )}
+
         {dirty && (
           <button type="button" className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg" onClick={() => {
               setName(workflow.name);
@@ -584,17 +622,22 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
         )}
         {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
         {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
-        {((workflow.library === "project" && !workflow.customised) || (workflow.library === "shared" && isAdmin)) && (
+        {(workflow.library === "project" || (workflow.library === "shared" && isAdmin)) && (
           <button
             type="button"
             className="ml-auto rounded-md px-3 py-1.5 text-sm text-bad hover:bg-bad/10 disabled:opacity-50"
-            disabled={remove.isPending}
+            disabled={remove.isPending || revert.isPending}
             onClick={() => setDeleting(true)}
           >
-            Delete workflow
+            {workflow.customised ? "Delete this project's copy" : "Delete workflow"}
           </button>
         )}
-        {deleting && <DeleteWorkflowDialog workflow={workflow} remove={remove} onClose={() => setDeleting(false)} />}
+        {deleting &&
+          (workflow.customised ? (
+            <DeleteCopyDialog workflow={workflow} revert={revert} onClose={() => setDeleting(false)} />
+          ) : (
+            <DeleteWorkflowDialog workflow={workflow} remove={remove} onClose={() => setDeleting(false)} />
+          ))}
         {(save.error || remove.error || revert.error) && (
           <p className="w-full text-sm text-bad">{((save.error || remove.error || revert.error) as Error).message}</p>
         )}

@@ -210,3 +210,36 @@ def test_workflows_can_be_browsed_by_project_or_all_together(client):
     outsider = signed_in(make_user(client, ["viewer"])["username"])  # a member of the default project only
     assert outsider.get("/api/workflows/browse", params={"of": other}).status_code == 404
     assert own not in {w["key"] for w in outsider.get("/api/workflows/browse", params={"of": "all"}).json()}
+
+
+def test_a_project_default_migration_workflow_is_used_unless_the_domain_has_one(client):
+    from app.db.models import Run
+    from app.db.session import session_scope
+
+    try:
+        assert client.put("/api/projects/default/settings", json={"default_workflow": "list_features"}).status_code == 422
+        assert client.put("/api/projects/default/settings", json={"default_workflow": "nope"}).status_code == 422
+        r = client.put("/api/projects/default/settings", json={"default_workflow": "lean"})
+        assert r.status_code == 200 and r.json()["default_workflow"] == "lean"
+        run = start_run(client, {"domain": "auditing", "operation": _key("op")}).json()
+        assert run["workflow"] == "lean"  # the project's default
+
+        own = _key("wf")
+        client.post("/api/workflows", json={"key": own, "name": "Domain's", "steps": [{"kind": "agent", "key": "as_is_doc"}]})
+        assert client.put("/api/domains/auditing", json={"default_workflow": own}).status_code == 200
+        assert start_run(client, {"domain": "auditing", "operation": _key("op")}).json()["workflow"] == own  # domain wins
+        client.put("/api/domains/auditing", json={"default_workflow": ""})
+
+        # Deleting the project's default workflow puts the default back to the Standard migration.
+        r = client.put("/api/projects/default/settings", json={"default_workflow": own})
+        assert r.status_code == 200
+        assert client.delete(f"/api/workflows/{own}").status_code == 409  # a run used it
+        with session_scope() as s:
+            used = [(r.domain, r.operation) for r in s.query(Run).filter(Run.workflow == own)]
+        for domain, operation in used:  # the runs that use it go first
+            client.post(f"/api/domains/{domain}/features/{operation}/reset")
+        assert client.delete(f"/api/workflows/{own}").status_code == 204
+        assert client.get("/api/projects/default/settings").json()["default_workflow"] == ""
+        assert start_run(client, {"domain": "auditing", "operation": _key("op")}).json()["workflow"] == "standard"
+    finally:
+        client.put("/api/projects/default/settings", json={"default_workflow": ""})

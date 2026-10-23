@@ -38,6 +38,8 @@ PROJECT_DEFAULTS: dict[str, Any] = {
     "event_topic_pattern": "{domain}-events",  # one topic per publishing domain
     "command_queue_pattern": "{domain}-commands",  # saga commands
     "service_dir_pattern": "services/{domain}-service",  # where each extracted service lives in the workspace
+    # The migration workflow a new run uses unless its domain has a default of its own; "" = the Standard migration
+    "default_workflow": "",
 }
 DEFAULTS = {**GLOBAL_DEFAULTS, **PROJECT_DEFAULTS}
 NETWORK_KEYS = {"https_proxy", "no_proxy", "extra_ca_file", "copilot_cli_path", "copilot_disable_websockets"}

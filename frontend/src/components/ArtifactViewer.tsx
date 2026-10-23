@@ -4,6 +4,10 @@ import { Markdown } from "./Markdown";
 import { api, saveFile } from "../lib/api";
 import { DownloadButton } from "./DownloadButton";
 import { SpecView } from "./SpecView";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { parseYaml } from "./YamlView";
+
+const isYaml = (name: string) => /\.ya?ml$/i.test(name);
 
 export function ArtifactViewer({ artifactId, editable }: { artifactId: number; editable: boolean }) {
   const queryClient = useQueryClient();
@@ -17,6 +21,7 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
     mutationFn: () => api.updateArtifact(artifactId, draft),
     onSuccess: (updated) => {
       queryClient.setQueryData(["artifact", artifactId], updated);
+      queryClient.invalidateQueries({ queryKey: ["artifacts"] });
       setEditing(false);
     },
   });
@@ -49,10 +54,13 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
       {editing ? (
         <div className="space-y-2 p-3">
           <textarea
+            aria-label={`Edit ${artifact.name}`}
             value={draft}
+            spellCheck={false}
             onChange={(e) => setDraft(e.target.value)}
-            className="h-96 w-full rounded-md border border-border bg-bg p-3 font-mono text-xs"
+            className="h-[32rem] w-full resize-y rounded-md border border-border bg-bg p-3 font-mono text-xs leading-5"
           />
+          {isYaml(artifact.name) && <YamlCheck text={draft} />}
           {save.error && <p className="text-xs text-bad">{(save.error as Error).message}</p>}
           <div className="flex justify-end gap-2">
             <button className="rounded-md px-3 py-1.5 text-sm hover:bg-muted" onClick={() => setEditing(false)}>
@@ -67,13 +75,46 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
             </button>
           </div>
         </div>
-      ) : artifact.kind === "markdown" ? (
-        <Markdown className="p-4">{artifact.content}</Markdown>
       ) : (
-        <div className="max-w-full overflow-x-auto">
-          <SpecView content={artifact.content} yaml={<pre className="max-w-full overflow-x-auto p-4 font-mono text-xs">{artifact.content}</pre>} />
-        </div>
+        // A document a viewer can't render (a malformed spec, say) shows as text instead of breaking the page; Edit stays.
+        <ErrorBoundary key={artifact.content} fallback={(error) => <Unrendered text={artifact.content} error={error} editable={editable} />}>
+          {artifact.kind === "markdown" ? (
+            <Markdown className="p-4">{artifact.content}</Markdown>
+          ) : (
+            <div className="max-w-full overflow-x-auto">
+              <SpecView content={artifact.content} yaml={<pre className="max-w-full overflow-x-auto p-4 font-mono text-xs">{artifact.content}</pre>} />
+            </div>
+          )}
+        </ErrorBoundary>
       )}
     </div>
+  );
+}
+
+/** The document as text, when its formatted view failed: what went wrong, and that Edit can fix it. */
+function Unrendered({ text, error, editable }: { text: string; error: Error; editable: boolean }) {
+  return (
+    <div>
+      <p className="border-b border-warn/40 bg-warn/10 px-4 py-2 text-xs text-warn">
+        This document can't be shown formatted ({error.message.split("\n")[0]}). Its text is below{editable ? "; use Edit above to fix it" : ""}.
+      </p>
+      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap p-4 font-mono text-xs">{text}</pre>
+    </div>
+  );
+}
+
+/** While a YAML document is edited: whether it parses, and where it doesn't. Saving is allowed either way. */
+function YamlCheck({ text }: { text: string }) {
+  const parsed = parseYaml(text);
+  if (parsed && "error" in parsed)
+    return (
+      <p role="status" className="rounded-md bg-warn/10 px-3 py-1.5 text-xs text-warn">
+        Not valid YAML yet: {parsed.error}. You can still save it, but steps and checks that read this file will fail on it.
+      </p>
+    );
+  return (
+    <p role="status" className="text-xs text-ok">
+      Valid YAML
+    </p>
   );
 }

@@ -163,6 +163,11 @@ def get_settings(key: str, user: CurrentUser = Depends(current_user)) -> dict:
 def update_settings(key: str, values: dict[str, Any], user: CurrentUser = Depends(current_user)) -> dict:
     _access(key, user, "project.manage")
     before = settings_store.get_project(key)["monolith_repo"]
+    if values.get("default_workflow"):
+        from app import workflow_store
+        with projects.use(key):
+            if workflow_store.scope_of(values["default_workflow"]) != "operation":
+                raise HTTPException(422, f"{values['default_workflow']} is not a migration workflow of this project")
     try:
         saved = settings_store.update_project(key, values)
     except KeyError as e:

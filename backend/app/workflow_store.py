@@ -16,6 +16,7 @@ from app.db.session import session_scope
 from app.orchestrator.stages import BOUNDED_CONTEXTS, DOMAIN_FEATURES, LEAN, STANDARD, StageDef, Workflow
 
 STANDARD_KEY = "standard"
+PROJECT_DEFAULT = "default_workflow"  # project setting: its default migration workflow (default_for)
 LEAN_KEY = "lean"
 LEAN_NAME = "Lean migration"
 LEAN_DESCRIPTION = ("The standard migration with fewer agents: analysis → Modulith design (domain, linked-domain "
@@ -461,6 +462,12 @@ def delete(key: str, library: str = "shared") -> None:
         row = s.get(WorkflowDef, (target, key))
         if row is None:
             raise KeyError(key)
+        # Project defaults pointing at it go back to the next one down (default_for), where it is gone: everywhere
+        # for a shared one; for a project's own, unless a shared one with its key remains.
+        gone_for_project = library != "shared" and s.get(WorkflowDef, (SHARED, key)) is None
+        for setting in s.scalars(select(Setting).where(Setting.key == PROJECT_DEFAULT)):
+            if setting.value == key and (library == "shared" or (gone_for_project and setting.project == target)):
+                setting.value = ""
         if library == "shared":
             s.query(Domain).filter(Domain.default_workflow == key).update({Domain.default_workflow: None})
             s.query(WorkflowDef).filter(WorkflowDef.key == key).delete(synchronize_session=False)
@@ -485,11 +492,16 @@ def scope_of(key: str) -> str | None:
 
 
 def default_for(domain: Domain | None, scope: str = "operation") -> str | None:
-    """The workflow a new run of this scope uses: for migrations the domain's default, otherwise the built-in one,
-    otherwise the first one created."""
+    """The workflow a new run of this scope uses: for migrations the domain's default, else the project's (Project
+    settings), else the built-in one; otherwise the first one created."""
+    project = projects.current_or_none()
     with session_scope() as s:
-        keys = [w.key for w, _ in _effective_rows(s, projects.current_or_none()) if (w.scope or "operation") == scope]
+        keys = [w.key for w, _ in _effective_rows(s, project) if (w.scope or "operation") == scope]
         if scope == "operation" and domain is not None and domain.default_workflow in keys:
             return domain.default_workflow
+        if scope == "operation" and project:
+            stored = s.get(Setting, (project, PROJECT_DEFAULT))
+            if stored is not None and stored.value in keys:
+                return stored.value
         preferred = STANDARD_KEY if scope == "operation" else DISCOVERY[scope][0]
         return preferred if preferred in keys else (keys[0] if keys else None)

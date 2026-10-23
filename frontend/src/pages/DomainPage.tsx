@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, FEATURES_OP, type Agent, type AgentInputs, type Dependency, type Domain } from "../lib/api";
 import { PatternChip } from "../components/Chips";
-import { useAgents, useDomains, useWorkflows } from "../lib/hooks";
+import { useAgents, useCan, useDomains, useWorkflows } from "../lib/hooks";
 import { ArtifactViewer } from "../components/ArtifactViewer";
 import { DownloadButton } from "../components/DownloadButton";
 import { chosen, DocumentPicker, type DocumentChoice } from "../components/DocumentPicker";
@@ -157,6 +157,12 @@ function Documentation({ domain }: { domain: Domain }) {
   const stageDocs = (selected?.artifacts ?? []).filter((a) => a.stage === shownStage);
   const [doc, setDoc] = useState<DocumentChoice>("all");
   useEffect(() => setDoc("all"), [runId, shownStage]);
+  // Documents waiting for approval can be edited here as on the run's page: the run waits at a gate that reviews the
+  // step, and these are the step's latest documents (what this tab shows).
+  const canEdit = useCan("runs.edit");
+  const pendingStatus = selected && ["awaiting_approval", "changes_requested"].includes(selected.run.status);
+  const { data: detail } = useQuery({ queryKey: ["run", runId], queryFn: () => api.run(runId!), enabled: !!pendingStatus && !!runId });
+  const editable = canEdit && !!pendingStatus && !!shownStage && !!detail?.pending_gate?.reviews.includes(shownStage);
 
   if (isLoading || !docs) return <p className="text-sm text-subtle">Loading…</p>;
   if (docs.length === 0)
@@ -218,7 +224,7 @@ function Documentation({ domain }: { domain: Domain }) {
                 </nav>
                 {stageDocs.length > 1 && <DocumentPicker docs={stageDocs} value={doc} onChange={setDoc} />}
                 {chosen(stageDocs, doc).map((a) => (
-                  <ArtifactViewer key={a.id} artifactId={a.id} editable={false} />
+                  <ArtifactViewer key={a.id} artifactId={a.id} editable={editable} />
                 ))}
               </>
             )}

@@ -214,3 +214,40 @@ def test_boolean_filters_are_valid_on_oracle():
     assert not offenders, offenders
     sql = str(select(StageExecution.id).where(_not_true(StageExecution.rerun)).compile(dialect=oracle.dialect()))
     assert "IS NOT 1" not in sql and "rerun = 0" in sql
+
+
+def test_no_query_compares_a_long_text_column(client):
+    """Oracle stores long text (LongText, NonNullText, JSONText) as an NCLOB, and an NCLOB can't be compared in SQL
+    (=, !=, IN, LIKE: ORA-00932), which SQLite and PostgreSQL allow, so tests would not notice. IS NULL is fine."""
+    import re
+    from pathlib import Path
+
+    from app.db import models
+    from app.db.types import JSONText, LongText, NonNullText
+
+    lob = [f"{cls.__name__}.{col.key}" for cls in models.Base.__subclasses__() if hasattr(cls, "__table__")
+           for col in cls.__table__.columns if isinstance(col.type, (LongText, NonNullText, JSONText))]
+    assert "Question.question" in lob and "Artifact.content" in lob
+    pattern = re.compile(r"\b(" + "|".join(re.escape(c) for c in lob) +
+                         r")\s*(==|!=|\.in_\(|\.not_in\(|\.like\(|\.ilike\(|\.contains\(|\.startswith\(|\.endswith\()")
+    found = [f"{p.relative_to(Path('app').parent)}:{n}: {line.strip()}"
+             for p in sorted(Path("app").rglob("*.py")) for n, line in enumerate(p.read_text().splitlines(), 1)
+             if pattern.search(line)]
+    assert not found, "Long-text columns compared in SQL (fails on Oracle):\n" + "\n".join(found)
+
+
+def test_an_agent_asking_the_same_question_again_gets_the_earlier_answer(client):
+    """The earlier answer is found without comparing the question text in SQL (see the test above)."""
+    from app.db.models import Question, Run
+    from app.orchestrator import questions
+
+    run_id = start_run(client, {"domain": "loan", "operation": f"ask{next(_ids)}"}).json()["id"]
+    wait_for(client, run_id, {"awaiting_approval"})
+    text = "Which domain owns BANK_ACCOUNT? " + "It is written by two DAOs. " * 40  # long, like real questions
+    with session.session_scope() as s:
+        s.add(Question(run_id=run_id, stage="deep_dive", attempt=1, question=text, status="answered",
+                       answer="Payments owns it"))
+    assert questions.ask(run_id, "deep_dive", 2, f"  {text}  ") == "Payments owns it"
+    with session.session_scope() as s:  # answered from before: no new question, the run isn't held up
+        assert s.query(Question).filter(Question.run_id == run_id).count() == 1
+        assert s.get(Run, run_id).status != "awaiting_input"
