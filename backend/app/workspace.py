@@ -10,6 +10,7 @@ of the stages in effect are replayed. A repository whose changes were committed 
 feature branch (with anything else pushed there since), and only later changes are replayed on it.
 """
 
+import time
 from pathlib import Path
 
 from sqlalchemy import or_, select
@@ -202,18 +203,52 @@ def check_out_monolith(run_id: str, branch: str, base_branch: str | None, user_i
         _restore(tmp, project, read["url"], branch, base_sha, None, root_diffs, user_id, f"{DOCS_ROOT}/*", log)
         nested = ws / ".studio"
         if nested.exists():
-            nested.rename(tmp / ".studio")
+            git_ops.rename_with_retry(nested, tmp / ".studio")
         exclude_nested(tmp)
     except Exception:
         git_ops.remove_tree(tmp)
         raise
-    git_ops.remove_tree(ws)
-    tmp.rename(ws)
+    _swap_in(tmp, ws, log)
     with session_scope() as s:
         run = s.get(Run, run_id)
         run.repository, run.base_branch, run.base_sha, run.legacy = read["url"], base_branch, base_sha, None
     log(f"Checked out the monolith for the steps that change its code: branch {branch} cut from {base_branch} at "
         f"{base_sha[:10]}")
+
+
+LEFTOVER = ".old-"  # a workspace moved aside by _swap_in, deleted once nothing holds it any more
+
+
+def _swap_in(new: Path, ws: Path, log) -> None:
+    """Put `new` in place of the workspace `ws`. The old one is moved aside first and deleted after, best effort:
+    on Windows a folder can't be deleted while a program still holds a file in it (an Explorer or editor window,
+    antivirus or Windows Search scanning it: WinError 145), and that must not stop the step. What is left is deleted
+    by cleanup_leftovers, at the next start."""
+    old = ws.with_name(f"{ws.name}{LEFTOVER}{time.strftime('%Y%m%d%H%M%S')}") if ws.exists() else None
+    if old is not None:
+        git_ops.rename_with_retry(ws, old)
+    git_ops.rename_with_retry(new, ws)
+    if old is not None:
+        try:
+            git_ops.remove_tree(old)
+        except OSError as e:
+            log(f"Left {old.name} next to the workspace, to delete later: {e}")
+
+
+def cleanup_leftovers(root: Path) -> int:
+    """Delete workspaces moved aside earlier (_swap_in) and unfinished checkouts, best effort: those still held stay
+    for the next time. Returns how many were deleted."""
+    if not root.is_dir():
+        return 0
+    done = 0
+    for path in root.iterdir():
+        if path.is_dir() and (LEFTOVER in path.name or path.name.endswith(".monolith")):
+            try:
+                git_ops.remove_tree(path)
+                done += 1
+            except OSError:
+                pass
+    return done
 
 
 def release_workspace(run_id: str) -> None:

@@ -1,11 +1,13 @@
 """Thin wrapper over the git CLI. Every stage commits its output so it can be diffed and rolled back."""
 
+import errno
 import os
 import re
 import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 _AUTHOR = ["-c", "user.name=Migration Studio", "-c", "user.email=studio@localhost"]
@@ -32,17 +34,63 @@ class GitError(RuntimeError):
 _BRANCH = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$")  # a plain ref name, never an option
 
 
+# A file or folder another process still has open: on Windows a delete then leaves it "delete pending" and its folder
+# can't go (145, directory not empty), or the file is in use (32) or locked (5); elsewhere the same shows as these.
+_HELD_WINERRORS = {5, 32, 145}
+_HELD_ERRNOS = {errno.ENOTEMPTY, errno.EBUSY, errno.EACCES}
+_HELD_BACKOFF = (0.2, 0.5, 1.0, 1.0, 2.0, 2.0)  # seconds between tries: a scanner or indexer lets go within a few
+
+
+class PathInUse(OSError):
+    """A folder still held by another program after the retries: what to do about it is in the message."""
+
+
+def _held(e: OSError) -> bool:
+    return getattr(e, "winerror", None) in _HELD_WINERRORS or e.errno in _HELD_ERRNOS
+
+
+def _in_use(path: Path, what: str, e: OSError) -> PathInUse:
+    return PathInUse(e.errno, f"Couldn't {what} {path}: a program still has a file in it open (an Explorer or "
+                              "editor window on it, antivirus or Windows Search scanning it, or a git process). "
+                              "Close it, or exclude the studio's data folder from scanning and indexing, then retry "
+                              f"the step. ({e})")
+
+
+def _with_retries(action, path: Path, what: str) -> None:
+    for wait in (*_HELD_BACKOFF, None):
+        try:
+            action()
+            return
+        except OSError as e:
+            if not _held(e):
+                raise
+            if wait is None:
+                raise _in_use(path, what, e) from e
+            time.sleep(wait)
+
+
 def remove_tree(path: Path) -> None:
     """Delete a directory tree, including read-only files and folders (git's object files, which Windows won't delete
-    as they are, and the shared legacy copies, made read-only on purpose)."""
+    as they are, and the shared legacy copies, made read-only on purpose). A file another program still holds (a
+    scanner, an indexer, an open window) is waited for a few seconds; after that PathInUse says what to do."""
     def retry_writable(func, p, _exc):
+        # Read-only (git's objects): made writable and deleted again. Still failing means held: that error ends this
+        # pass, and the whole delete is tried again shortly (_with_retries), continuing with what is left.
         os.chmod(os.path.dirname(p), stat.S_IRWXU)  # deleting needs a writable folder (off Windows)
         if os.path.lexists(p) and not os.path.islink(p):
             os.chmod(p, stat.S_IRWXU if os.path.isdir(p) else stat.S_IREAD | stat.S_IWRITE)
         func(p)
 
-    if Path(path).exists():
-        shutil.rmtree(path, onexc=retry_writable)
+    def remove():
+        if Path(path).exists():
+            shutil.rmtree(path, onexc=retry_writable)
+
+    _with_retries(remove, Path(path), "delete")
+
+
+def rename_with_retry(src: Path, dst: Path) -> None:
+    """Rename a folder, waiting a few seconds while another program still holds a file in it (see remove_tree)."""
+    _with_retries(lambda: os.rename(src, dst), Path(src), "move")
 
 
 def hash_bytes(repo: Path, data: bytes) -> str:
@@ -126,7 +174,7 @@ def clone_mirror(url: str, path: Path, env: dict | None = None) -> None:
         remove_tree(tmp)
         raise GitError(f"git clone {url} failed: {proc.stderr.strip()}")
     git(tmp, "config", "gc.auto", "0")  # never drop commits runs started from, even if upstream rewrites history
-    tmp.rename(path)
+    rename_with_retry(tmp, path)
 
 
 def fetch_mirror(path: Path, url: str, env: dict | None = None) -> None:
