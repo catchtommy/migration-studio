@@ -322,3 +322,35 @@ def test_the_spring_boot_version_may_come_from_a_property(tmp_path):
     assert rg.modernise(service, base, None, None) == []
     (service / "pom.xml").write_text(bom.replace(">4.0.1<", ">3.5.0<"))
     assert any("Spring Boot 4 (its parent or BOM, found 3.5.0)" in p for p in rg.modernise(service, base, None, None))
+
+
+def test_steps_changing_the_monolith_run_focused_tests_not_the_whole_legacy_suite(ctx):
+    """The monolith's modules are large: Module in monolith and Orchestrator in monolith run the tests of the classes
+    they change (or a module they created), never a legacy module's whole suite."""
+    from app.agents.common import brief
+
+    ctx, _, _ = ctx
+    (ctx.workspace / "loan-web").mkdir()
+    (ctx.workspace / "loan-web" / "pom.xml").write_text("<project/>")
+    git_ops.git(ctx.workspace, "add", "-A")
+    git_ops.git(ctx.workspace, "commit", "-qm", "legacy module")
+    tools = _code_step(ctx)  # Module in monolith, starting now
+    (ctx.workspace / "loan-domain").mkdir()  # the module this step creates
+    (ctx.workspace / "loan-domain" / "pom.xml").write_text("<project/>")
+
+    refused = ["mvn test", "mvn -q -o verify", "./mvnw clean install", "mvn -pl loan-web test",
+               "mvn.cmd -pl loan-web,loan-domain package", "gradle build", "./gradlew :loan-web:test",
+               "cd loan-web && mvn test"]
+    for command in refused:
+        with pytest.raises(ToolError, match="whole test suite of the legacy code"):
+            tools.run("run_command", {"command": command})
+    allowed = ["mvn -q -o -pl loan-web test -Dtest=LoanServiceTest,LoanRouterTest -Dsurefire.failIfNoSpecifiedTests=false",
+               "mvn -q -o install -DskipTests", "mvn -Dmaven.test.skip=true package", "mvn -q compile",
+               "mvn -q test-compile", "mvn -pl loan-domain test", "gradle :loan-web:test --tests '*LoanService*'",
+               "gradle build -x test", "git status"]
+    for command in allowed:
+        assert tools._unfocused_tests(command) is None, command
+    assert "never the whole legacy suite" in brief(ctx) and "-Dtest=" in brief(ctx)
+
+    ctx.stage = "microservice_scaffold"  # a service of its own: its whole (copied) suite is the point
+    assert tools._unfocused_tests("mvn test") is None

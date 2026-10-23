@@ -163,6 +163,23 @@ COMMAND_ENV = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "
                "PROGRAMFILES", "PROGRAMDATA"}
 # Git commands that reach beyond the step's own commits: publishing, remotes, configuration, rewriting refs or
 # history. The run commits and pushes through the review, never from an agent.
+# Steps that change the legacy monolith's code: its modules are large, so their full test suites are never run;
+# only the tests of the classes the step changes, and the whole suite of a module the step created.
+FOCUSED_TEST_STAGES = {"modular_monolith", "monolith_orchestrator"}
+_MAVEN = re.compile(r"(?:^|[\s;&|/\\])(?:mvn|mvnw)(?:\.cmd|\.bat)?(?=\s|$)")
+_GRADLE = re.compile(r"(?:^|[\s;&|/\\])(?:gradle|gradlew)(?:\.bat)?(?=\s|$)")
+_MAVEN_TEST_GOALS = re.compile(r"(?:^|\s)(?:[\w.-]+:)?(test|verify|install|package|integration-test|deploy)(?=\s|$)")
+_GRADLE_TEST_TASKS = re.compile(r"(?:^|\s)(?::?[\w-]+:)*(test|check|build)(?=\s|$)")
+_SKIPS_TESTS = re.compile(r"-DskipTests(?:=true)?(?=\s|$)|-Dmaven\.test\.skip(?:=true)?(?=\s|$)|-x\s+(?::?[\w-]+:)*test(?=\s|$)")
+_NAMES_TESTS = re.compile(r"-D(?:test|it\.test)=\S+|--tests\s+\S+")
+_PROJECTS = re.compile(r"(?:-pl|--projects)[\s=]+(\S+)")
+FOCUSED_TESTS_HINT = (
+    "Run only the tests of the classes you changed, by name: Maven `mvn -q -o -pl <module> test "
+    "-Dtest=LoanServiceTest,LoanServiceRouterTest -Dsurefire.failIfNoSpecifiedTests=false` (add `-am` if it needs "
+    "the modules it depends on built), Gradle `gradle :<module>:test --tests '*LoanService*'`. A module this step "
+    "created may run all its tests (`-pl <new module>`). To only compile: add `-DskipTests` (Gradle: `-x test`).")
+
+
 FORBIDDEN_GIT = re.compile(
     r"\bgit\b(?:\s+(?:-[cC]\s+\S+|--\S+))*\s+(?:push|remote|config|filter-branch|filter-repo|update-ref|symbolic-ref|"
     r"replace|reflog|gc|prune|worktree|submodule|credential|send-email|branch\s+(?:-[dDmMcC]|--(?:delete|move|copy))|"
@@ -363,6 +380,9 @@ class Toolbox:
                             "revert, restore, reset within this step). Pushing, remotes, configuration and rewriting "
                             "branches or history are done by the run, through the review; ignored files are never "
                             "forced in (the studio's documents stay in .migration/ and are never committed)")
+        unfocused = self._unfocused_tests(command)
+        if unfocused:
+            raise ToolError(unfocused)
         env = toolchain_env(command_env(), self.toolchain_home, self.ctx.settings.get("language") or "java")
         if self.legacy is not None:
             env["STUDIO_LEGACY_DIR"] = str(self.legacy)  # the read-only monolith, for commands that read it
@@ -375,6 +395,32 @@ class Toolbox:
             raise ToolError(f"Command timed out after {timeout_seconds}s")
         output = (proc.stdout + proc.stderr)[-MAX_COMMAND_OUTPUT:]
         return f"exit code {proc.returncode}\n{output}"
+
+    def _unfocused_tests(self, command: str) -> str | None:
+        """Why a build command would run a legacy module's whole test suite in a step that changes the monolith, or
+        None. Allowed: naming the tests (-Dtest=, --tests), skipping them (-DskipTests, -x test), or running a module
+        this step created (-pl pointing only at folders that didn't exist when the step started)."""
+        if self.ctx.stage not in FOCUSED_TEST_STAGES:
+            return None
+        maven, gradle = _MAVEN.search(command), _GRADLE.search(command)
+        if not (maven and _MAVEN_TEST_GOALS.search(command)) and not (gradle and _GRADLE_TEST_TASKS.search(command)):
+            return None  # not a build that runs tests (compile, dependency:tree, ...)
+        if _SKIPS_TESTS.search(command) or _NAMES_TESTS.search(command):
+            return None
+        projects = [p for m in _PROJECTS.finditer(command) for p in m.group(1).split(",") if p]
+        if projects and all(self._new_folder(p) for p in projects):
+            return None  # only modules this step created: their own (new, small) tests
+        return ("Not run: this would run the whole test suite of the legacy code, which is large and slow. "
+                + FOCUSED_TESTS_HINT)
+
+    def _new_folder(self, project: str) -> bool:
+        """Whether a -pl entry is a folder this step created (absent at the commit it started from)."""
+        if project.startswith((":", "!", "-")) or not self.ctx.base_sha:
+            return False  # by artifactId, or excluded: can't tell, so not counted as new
+        path = project.strip("./").rstrip("/")
+        root = self._resolve(self.ctx.code_dir)
+        proc = subprocess.run(["git", "cat-file", "-e", f"{self.ctx.base_sha}:{path}"], cwd=root, capture_output=True)
+        return proc.returncode != 0 and (root / path).is_dir()
 
     def _check(self, name: str, problems: list[str], report) -> str:
         """A check tool's result: its report, and what to do when the agent can't fix a problem or keeps getting the

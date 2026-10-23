@@ -207,6 +207,21 @@ def amend_brief(ctx: AgentContext) -> str:
             "- Finish with a short summary that lists exactly what you changed, file by file.")
 
 
+def focused_tests_brief() -> str:
+    """For the steps that change the legacy monolith: its test suites are large, so only the tests that matter run."""
+    from app.agents.tools import FOCUSED_TESTS_HINT
+
+    return ("## Builds and tests in this step: focused, never the whole legacy suite\n"
+            "The monolith's modules are large and their full test suites take very long, so this step never runs "
+            "them (run_command refuses a build that would). Wherever these instructions say to build and test:\n"
+            "- Compile with tests skipped to check the code builds.\n"
+            "- Run the tests of the classes you created or changed: your characterization tests, the router's and "
+            "adapters' tests, the wiring test, and the existing tests of any legacy class you touched (a caller "
+            "with a toggle branch).\n"
+            "- A module this step created (the domain or orchestrator module) may run all its own tests.\n"
+            f"{FOCUSED_TESTS_HINT}")
+
+
 def brief(ctx: AgentContext) -> str:
     """The agent's opening message: the task, where to write, earlier documents, guidance, answers and feedback."""
     title = ctx.stage_def.title if ctx.stage_def else ctx.config.get("title", ctx.stage)
@@ -224,6 +239,9 @@ def brief(ctx: AgentContext) -> str:
     repos = repository_brief(ctx)
     if repos:
         parts.append(repos)
+    from app.agents.tools import FOCUSED_TEST_STAGES
+    if ctx.stage in FOCUSED_TEST_STAGES and ctx.stage_def is not None and ctx.stage_def.code:
+        parts.append(focused_tests_brief())
     docs = documentation_brief(ctx)
     if docs:
         parts.append(docs)
