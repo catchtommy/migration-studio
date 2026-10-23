@@ -116,6 +116,8 @@ class AgentContext:
     # A retry after this step stopped (failed) with its work kept: {"attempt", "error", "documents": paths restored,
     # "commits": its commits (one line each), "files": code files it changed, "code_kept": its commits are in place}.
     resume: dict | None = None
+    # A reviewer rejected this step for a specific change: make that change only, in place (see common.amend_brief).
+    amend: bool = False
     # Documents of steps a gate before this one approved: this step may read them but not change them.
     locked_documents: set[str] = field(default_factory=set)
     # Asks a person a question (with optional suggested answers) and blocks until it is answered.

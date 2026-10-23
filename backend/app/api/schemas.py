@@ -137,6 +137,9 @@ class Decision(BaseModel):
     # Rejections only: "now" re-runs straight away; "later" holds the run so agents, inputs and documents can be
     # amended first, and it re-runs on POST /runs/{id}/rerun.
     rerun: Literal["now", "later"] = "now"
+    # Rejections only: "amend" makes only the requested change, in place (the step's other work and the steps after
+    # it up to the gate stay as they are); "redo" re-runs the step from where it started.
+    scope: Literal["amend", "redo"] = "amend"
 
 
 class Restart(BaseModel):
@@ -161,6 +164,7 @@ class WorkflowUpdateIn(BaseModel):
 class Rerun(BaseModel):
     comments: str | None = None  # replaces the rejection's comments when given
     target_stage: str | None = None
+    scope: Literal["amend", "redo"] | None = None  # replaces the rejection's scope when given
 
 
 class EventOut(ORM):

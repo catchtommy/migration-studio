@@ -265,7 +265,8 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
         # The graph stays paused at the gate; agents and inputs are read when a stage starts, so amendments made now
         # apply to the re-run.
         run.status = "changes_requested"
-        run.pending_rerun = {"gate": gate["gate"], "target_stage": target, "comments": body.comments}
+        run.pending_rerun = {"gate": gate["gate"], "target_stage": target, "comments": body.comments,
+                             "scope": body.scope}
         db.commit()
         emit(run_id, "approval", f"Changes requested by {user.display_name}; {_stage_title(run, target)} re-runs once "
                                  "the amendments are made", gate["gate"])
@@ -305,6 +306,8 @@ def rerun(run_id: str, body: Rerun, db: Session = Depends(get_db)):
         if not body.comments.strip():
             raise HTTPException(422, "Comments are required when rejecting")
         pending["comments"] = body.comments
+    if body.scope is not None:
+        pending["scope"] = body.scope
     latest = db.scalar(select(Approval).where(Approval.run_id == run_id, Approval.gate == pending["gate"])
                        .order_by(Approval.id.desc()).limit(1))
     if latest is not None and latest.decision == "reject":
@@ -316,7 +319,7 @@ def rerun(run_id: str, body: Rerun, db: Session = Depends(get_db)):
     delivery.refresh_code_settings(run_id)
     try:
         get_runner().resume(run_id, {"decision": "reject", "target_stage": pending["target_stage"],
-                                     "comments": pending["comments"]})
+                                     "comments": pending["comments"], "scope": pending.get("scope", "amend")})
     except RunBusyError as e:
         raise HTTPException(409, str(e))
     return run

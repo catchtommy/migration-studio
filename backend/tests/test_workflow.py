@@ -52,7 +52,7 @@ def test_reject_rolls_back_and_reruns_target_with_feedback(client):
     assert run["pending_gate"]["gate"] == "gate_design"
     design_start = executions(run, "domain_dependencies")[0]["start_sha"]  # the gate's first reviewed stage
 
-    decide(client, run_id, decision="reject", comments="Split payments tables out")
+    decide(client, run_id, decision="reject", comments="Split payments tables out", scope="redo")
     run = wait_for(client, run_id, {"awaiting_approval"})
     assert run["pending_gate"]["gate"] == "gate_design"
 
@@ -69,7 +69,8 @@ def test_reject_rolls_back_and_reruns_target_with_feedback(client):
 def test_reject_can_target_an_earlier_reviewed_stage(client):
     run_id = new_run(client)
     wait_for(client, run_id, {"awaiting_approval"})
-    decide(client, run_id, decision="reject", comments="Missing batch job entry point", target_stage="as_is_doc")
+    decide(client, run_id, decision="reject", comments="Missing batch job entry point", target_stage="as_is_doc",
+           scope="redo")
     run = wait_for(client, run_id, {"awaiting_approval"})
     assert len(executions(run, "as_is_doc")) == 2
     assert len(executions(run, "deep_dive")) == 2  # everything after the target re-runs too
@@ -134,12 +135,12 @@ def test_duplicate_unfinished_run_is_refused(client):
 def test_rejection_can_be_held_for_amendments_before_the_rerun(client):
     run_id = new_run(client)
     wait_for(client, run_id, {"awaiting_approval"})
-    decide(client, run_id, decision="reject", comments="Cover the batch job too", target_stage="as_is_doc",
+    decide(client, run_id, decision="reject", comments="Cover the batch job too", target_stage="as_is_doc", scope="redo",
            rerun="later")
     run = client.get(f"/api/runs/{run_id}").json()
     assert run["status"] == "changes_requested"
     assert run["pending_rerun"] == {"gate": "gate_analysis", "target_stage": "as_is_doc",
-                                    "comments": "Cover the batch job too"}
+                                    "comments": "Cover the batch job too", "scope": "redo"}
     assert run["pending_gate"]["gate"] == "gate_analysis"
     assert len(executions(run, "as_is_doc")) == 1  # nothing re-ran yet
     assert client.post(f"/api/runs/{run_id}/decision",
@@ -344,3 +345,56 @@ def test_a_step_the_workflow_gained_before_the_point_reached_runs_in_a_re_run(cl
     deep = executions(run, "deep_dive")
     assert [e["status"] for e in deep] == ["completed"] and not deep[0].get("rerun")  # a new step, not an update
     assert [e["status"] for e in executions(run, "as_is_doc")] == ["completed"]
+
+
+def test_a_rejection_for_a_specific_change_amends_only_that_step_in_place(client, monkeypatch):
+    """By default a rejection asks for a specific change: the target step makes it in place, from its documents as they
+    are, and the steps after it up to the gate keep their work; the gate then asks again."""
+    from app.agents.common import brief
+
+    seen = {}
+    original = stub.StubAgent.run
+
+    def record(self, ctx):
+        seen.setdefault(self.stage, []).append((ctx.amend, ctx.refresh, ctx.feedback, brief(ctx)))
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", record)
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})  # AS-IS and deep dive done, at the analysis gate
+    deep_before = [a for a in client.get(f"/api/runs/{run_id}/artifacts").json() if a["stage"] == "deep_dive"]
+
+    decide(client, run_id, decision="reject", comments="Name the iBatis statement in step 3", target_stage="as_is_doc")
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    assert run["pending_gate"]["gate"] == "gate_analysis"  # back at the same gate
+    amend, refresh, feedback, text = seen["as_is_doc"][-1]
+    assert amend and refresh and feedback == "Name the iBatis statement in step 3"
+    assert "Amendment: make only the change the reviewer asked for" in text and "edit_file" in text
+    assert "## The change the reviewer asked for (the only thing to change)" in text
+    as_is = executions(run, "as_is_doc")
+    assert [e["status"] for e in as_is] == ["completed", "completed"] and as_is[1]["rerun"]  # in place
+    assert len(executions(run, "deep_dive")) == 1 and len(seen["deep_dive"]) == 1  # kept as it is: not re-run
+    deep_now = [a for a in client.get(f"/api/runs/{run_id}/artifacts").json() if a["stage"] == "deep_dive"]
+    assert deep_now == deep_before
+
+    decide(client, run_id, decision="approve")  # and the run goes on normally
+    assert wait_for(client, run_id, {"awaiting_approval"})["pending_gate"]["gate"] == "gate_design"
+    assert len(seen["deep_dive"]) == 1
+
+
+def test_a_rejection_can_still_redo_the_step_from_where_it_started(client, monkeypatch):
+    seen = {}
+    original = stub.StubAgent.run
+
+    def record(self, ctx):
+        seen.setdefault(self.stage, []).append(ctx.amend)
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", record)
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    decide(client, run_id, decision="reject", comments="Start over: wrong entry point", target_stage="as_is_doc",
+           scope="redo")
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    assert seen["as_is_doc"] == [False, False] and len(seen["deep_dive"]) == 2  # redone, and the steps after it too
+    assert not executions(run, "as_is_doc")[1]["rerun"]

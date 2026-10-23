@@ -188,6 +188,25 @@ def resume_brief(ctx: AgentContext) -> str:
     return "\n\n".join(lines)
 
 
+def amend_brief(ctx: AgentContext) -> str:
+    """For a rejection that asks for a specific change: make that change, and nothing else."""
+    existing = "\n".join(f"- `{p}`" for p in ctx.previous_outputs) or "- (check the documents folder)"
+    return ("## Amendment: make only the change the reviewer asked for\n"
+            "A reviewer read this step's work and rejected it for the specific change below. Everything else in it "
+            "was accepted as it is. Your documents (and code) from before are in place:\n"
+            f"{existing}\n\n"
+            "Rules for this amendment:\n"
+            "- Find exactly what the change concerns: which document, which section, which entries, which code.\n"
+            "- Change only that. Every other document, section, entry, contract and line of code stays exactly as it "
+            "is: don't rewrite, regenerate, reformat, reorder, rename or \"improve\" anything else.\n"
+            "- Edit the specific lines with edit_file; don't rewrite a whole file with write_file.\n"
+            "- Read only what the change needs; don't re-analyse the code from scratch.\n"
+            "- If the change has to be reflected somewhere else to stay consistent (a renamed contract key that "
+            "another file refers to, say), change those lines too, and only those.\n"
+            "- If the request is unclear, ask with ask_user rather than guess.\n"
+            "- Finish with a short summary that lists exactly what you changed, file by file.")
+
+
 def brief(ctx: AgentContext) -> str:
     """The agent's opening message: the task, where to write, earlier documents, guidance, answers and feedback."""
     title = ctx.stage_def.title if ctx.stage_def else ctx.config.get("title", ctx.stage)
@@ -208,7 +227,9 @@ def brief(ctx: AgentContext) -> str:
     docs = documentation_brief(ctx)
     if docs:
         parts.append(docs)
-    if ctx.refresh:
+    if ctx.amend:
+        parts.append(amend_brief(ctx))
+    elif ctx.refresh:
         parts.append(refresh_brief(ctx))
     if ctx.resume:
         parts.append(resume_brief(ctx))
@@ -223,7 +244,8 @@ def brief(ctx: AgentContext) -> str:
         parts.append("## Answers you already received\n" +
                      "\n\n".join(f"Q: {q}\nA: {a}" for q, a in ctx.answered))
     if ctx.feedback:
-        heading = ("## Notes for this re-run (what changed, what to update)" if ctx.refresh else
+        heading = ("## The change the reviewer asked for (the only thing to change)" if ctx.amend else
+                   "## Notes for this re-run (what changed, what to update)" if ctx.refresh else
                    "## Reviewer feedback on the previous attempt (address all of it)")
         parts.append(f"{heading}\n{ctx.feedback}")
     return "\n\n".join(parts)

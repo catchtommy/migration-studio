@@ -168,6 +168,10 @@ export interface AccountGit {
   credentials: { id: number; host: string; username: string; updated_at: string }[];
 }
 
+/** How a rejected step re-runs: "amend" makes only the requested change, in place, keeping the rest (and the steps
+ * after it, up to the gate); "redo" starts the step over from where it began. */
+export type RerunScope = "amend" | "redo";
+
 export interface StageExecution {
   id: number;
   stage: string;
@@ -206,7 +210,7 @@ export interface RunDetail extends Run {
   pending_branches: PendingBranches | null; // awaiting_branches: confirm before a step changes code
   pending_publish: { stage: string; steps: string[]; files: string[]; repository: string } | null; // awaiting_publish
   pending_commit: { stage: string; stage_title: string; repository: { key: string; name: string; url: string } } | null; // awaiting_commit right after a step
-  pending_rerun: { gate: string; target_stage: string; comments: string | null } | null; // rejection held for amendments
+  pending_rerun: { gate: string; target_stage: string; comments: string | null; scope?: RerunScope } | null; // rejection held for amendments
   base_sha: string | null; // the monolith commit the run started from
   monolith_behind: number | null; // commits the project's base branch has gained since (as last fetched)
   workflow_update: WorkflowUpdate | null; // the run's workflow changed since it started: what updating it would do
@@ -753,9 +757,9 @@ export const api = {
   setGitCredential: (body: { host: string; username: string; token: string }) => request<AccountGit>("/account/git/credentials", json("PUT", body)),
   removeGitCredential: (id: number) => request<AccountGit>(`/account/git/credentials/${id}`, { method: "DELETE" }),
   testGit: (project: string) => request<{ ok: boolean; repository: string; with_token: boolean; error: string | null }>("/account/git/test", json("POST", { project })),
-  decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; rerun?: "now" | "later" }) =>
+  decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; rerun?: "now" | "later"; scope?: RerunScope }) =>
     request<Approval>(`/runs/${id}/decision`, json("POST", body)),
-  rerun: (id: string, body: { comments?: string; target_stage?: string }) => request<Run>(`/runs/${id}/rerun`, json("POST", body)),
+  rerun: (id: string, body: { comments?: string; target_stage?: string; scope?: RerunScope }) => request<Run>(`/runs/${id}/rerun`, json("POST", body)),
   backToReview: (id: string) => request<Run>(`/runs/${id}/back-to-review`, { method: "POST" }),
   updateRunInputs: (id: string, inputs: AgentInputs) => request<RunDetail>(`/runs/${id}/inputs`, json("PUT", inputs)),
   startOver: (id: string, workflow: string) => request<Run>(`/runs/${id}/start-over`, json("POST", { workflow })),

@@ -104,7 +104,9 @@ def test_rebuild_chain_keeps_later_stages_after_an_in_place_rerun():
     defs = [{"key": k, "kind": "agent"} for k in ("a", "b", "c")]
     ex = lambda i, stage, status="completed", rerun=None: StageExecution(id=i, stage=stage, status=status, rerun=rerun)
     history = [ex(1, "a"), ex(2, "b"), ex(3, "c"), ex(4, "b", rerun=True), ex(5, "c", "failed", rerun=True)]
-    assert [(e.stage, e.id) for e in _effective(history, defs, None)] == [("a", 1), ("c", 3), ("b", 4)]
+    # b's attempt in place (4) changed the tree as it was, b's first attempt (2) and c (3) included: its diff is only
+    # its own change, so it is replayed on top of them; the failed one in place (5) left nothing.
+    assert [(e.stage, e.id) for e in _effective(history, defs, None)] == [("a", 1), ("b", 2), ("c", 3), ("b", 4)]
     # A normal re-run (rejection or retry) still undoes the later stages.
     assert [(e.stage, e.id) for e in _effective([ex(1, "a"), ex(2, "b"), ex(3, "c"), ex(4, "b")], defs, None)] == \
         [("a", 1), ("b", 4)]

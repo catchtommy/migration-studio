@@ -101,7 +101,7 @@ class Runner:
         # Steps that ran update their documents; a step the workflow gained since (never run here) runs as new.
         values: dict = {"refresh": [] if fresh else [d["key"] for d in stages[at:] if d["kind"] == "agent"
                                                      and d["key"] in ran],
-                        "route": stage}
+                        "route": stage, "amend": None}  # a re-run of the workflow, not a reviewer's amendment
         if notes:
             values["feedback"] = {stage: notes}
         # Continue as if the step before had just finished (START for the first step); a pending gate is dropped.

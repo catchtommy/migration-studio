@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type StageDef } from "../lib/api";
+import { api, type RerunScope, type StageDef } from "../lib/api";
+import { RerunScopeChoice } from "./RerunScopeChoice";
 import { useCan, useMe } from "../lib/hooks";
 
 export function ApprovalPanel({ runId, gate, stages }: { runId: string; gate: { gate: string; reviews: string[] }; stages: StageDef[] }) {
@@ -9,6 +10,7 @@ export function ApprovalPanel({ runId, gate, stages }: { runId: string; gate: { 
   const canApprove = useCan("runs.approve");
   const [comments, setComments] = useState("");
   const [target, setTarget] = useState(gate.reviews[0]);
+  const [scope, setScope] = useState<RerunScope>("amend");
   const title = (key: string) => stages.find((s) => s.key === key)?.title ?? key;
 
   const decide = useMutation({
@@ -18,6 +20,7 @@ export function ApprovalPanel({ runId, gate, stages }: { runId: string; gate: { 
         comments: comments || undefined,
         target_stage: decision === "reject" ? target : undefined,
         rerun,
+        scope: decision === "reject" ? scope : undefined,
       }),
     onSuccess: () => {
       setComments("");
@@ -48,6 +51,11 @@ export function ApprovalPanel({ runId, gate, stages }: { runId: string; gate: { 
               className="w-full rounded-md border border-border bg-surface px-2 py-1.5"
             />
           </label>
+          {comments.trim() && (
+            <div className="mt-3">
+              <RerunScopeChoice value={scope} onChange={setScope} stepTitle={title(target)} />
+            </div>
+          )}
           {decide.error && <p className="mt-2 text-sm text-bad">{(decide.error as Error).message}</p>}
 
           <div className="mt-3 flex flex-wrap items-center justify-end gap-2">

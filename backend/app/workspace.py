@@ -23,18 +23,20 @@ from app.tools import git_ops
 
 def _effective(executions: list[StageExecution], stage_defs: list[dict],
                before_stage: str | None) -> list[StageExecution]:
-    """The completed attempts whose changes are in the workspace now. A stage normally starts from a tree where it and
-    every later stage are undone (rejections and retries reset to its start), so each attempt drops those first; a
-    restart's re-run (`rerun`) updates the tree as it is, replacing only the stage's own earlier attempt."""
+    """The completed attempts whose changes are in the workspace now, in the order to replay them. A stage normally
+    starts from a tree where it and every later stage are undone (rejections and retries reset to its start), so each
+    attempt drops those first. An attempt in place (`rerun`: a restart that updates the documents, or a reviewer's
+    amendment) changed the tree as it was, its earlier attempt included: its diff is only what it changed, so it is
+    replayed on top of that attempt, not instead of it."""
     position = {d["key"]: i for i, d in enumerate(stage_defs)}
     agents = {d["key"] for d in stage_defs if d["kind"] == "agent"}
     chain: list[StageExecution] = []
     for ex in sorted(executions, key=lambda e: (e.started_at, e.id)):  # as they happened (not ids alone: Oracle)
         if ex.stage not in agents:
             continue
-        if ex.rerun:  # a restart updates the stage in place: later stages' changes stay until they re-run
+        if ex.rerun:  # in place: the stage's earlier attempt and later stages' changes stay until they re-run
             if ex.status == "completed":  # a failed one was reset to its start, which kept the earlier attempt
-                chain = [c for c in chain if c.stage != ex.stage] + [ex]
+                chain.append(ex)
             continue
         chain = [c for c in chain if position[c.stage] < position[ex.stage]]
         if ex.status == "completed":

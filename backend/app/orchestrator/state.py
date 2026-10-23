@@ -15,3 +15,6 @@ class MigrationState(TypedDict, total=False):
     stage_shas: dict[str, StageShas]  # latest attempt's git range per agent stage
     route: str | None  # set by gates: where to go next
     refresh: list[str]  # agent stages still to re-run in place (a restart from a completed stage), see Runner.restart
+    # A rejection asking for a specific change (scope "amend"): {"stage": the one that makes it, in place, None once
+    # done; "skip": the steps between it and the gate, kept as they are}. See make_gate_node.
+    amend: dict | None

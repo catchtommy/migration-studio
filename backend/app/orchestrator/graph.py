@@ -303,6 +303,14 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         feedback = state.get("feedback", {}).get(stage.key)
         refresh = stage.key in (state.get("refresh") or [])
         settings = get_settings()
+        amend = state.get("amend") or {}
+        if stage.key in (amend.get("skip") or []):  # a step after an amended one, before its gate: kept as it is
+            emit(run_id, "log", f"{stage.title} kept as it is: the reviewer asked for a change in "
+                                f"{workflow.by_key[amend['stage']].title if amend.get('stage') in workflow.by_key else 'an earlier step'} only",
+                 stage.key)
+            return {"amend": {**amend, "skip": [k for k in amend["skip"] if k != stage.key]},
+                    "refresh": [k for k in state.get("refresh") or [] if k != stage.key]}
+        amending = amend.get("stage") == stage.key  # this step makes a reviewer's specific change, in place
 
         # Before the first code change in a repository, a person confirms its base branch and the feature branch.
         # (Everything before interrupt() runs again on resume, so nothing above has side effects.)
@@ -391,7 +399,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             legacy=legacy_info, legacy_dir=legacy.path_for(_project_of(run_id), legacy_info, started_by),
             ask=lambda question, options=None: questions.ask(run_id, stage.key, attempt, question, options),
             refresh=refresh, previous_outputs=_previous_outputs(run_id, stage.key) if refresh else [],
-            locked_documents=locked, resume=resume,
+            locked_documents=locked, resume=resume, amend=amending,
             # Continuing on its commits: the checks compare with where the step first started, not with them.
             base_sha=resume["base_sha"] if resume and resume["code_kept"] and stage.code else None,
         )
@@ -492,7 +500,12 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         return {
             "feedback": remaining_feedback,
             "refresh": [k for k in state.get("refresh") or [] if k != stage.key],
-            "stage_shas": {**state.get("stage_shas", {}), stage.key: {"start": start_sha, "end": end_sha}},
+            # Where the step started: an attempt in place (a re-run updating it, an amendment) keeps the start of the
+            # attempt it builds on, so a later rejection or redo rolls back to before the step, not just this attempt.
+            "stage_shas": {**state.get("stage_shas", {}), stage.key: {
+                "start": (state.get("stage_shas", {}).get(stage.key) or {}).get("start", start_sha) if refresh else start_sha,
+                "end": end_sha}},
+            **({"amend": {**amend, "stage": None}} if amending else {}),
         }
 
     return node
@@ -554,12 +567,20 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
             return {"route": approved_to}
 
         target = decision.get("target_stage") or gate.reviews[0]
+        comments = decision.get("comments") or "Rejected by reviewer."
+        feedback = {**state.get("feedback", {}), target: comments}
+        if decision.get("scope", "amend") == "amend":
+            # Only the requested change: nothing is rolled back. The target step updates its documents (and code) in
+            # place, changing just what the comments ask; the steps between it and the gate keep what they did.
+            keys = workflow.keys
+            between = [k for k in keys[keys.index(target) + 1:keys.index(gate.key)] if workflow.by_key[k].kind == "agent"]
+            emit(run_id, "approval", f"{gate.title}: rejected, {workflow.by_key[target].title} makes the requested "
+                                     "change only; everything else stays as it is", gate.key)
+            return {"route": target, "feedback": feedback, "refresh": [*(state.get("refresh") or []), target],
+                    "amend": {"stage": target, "skip": between}}
         workspace.roll_back(run_id, Path(state["workspace"]), state["stage_shas"][target]["start"], target)
         emit(run_id, "approval", f"{gate.title}: rejected, re-running from {workflow.by_key[target].title}", gate.key)
-        return {
-            "route": target,
-            "feedback": {**state.get("feedback", {}), target: decision.get("comments") or "Rejected by reviewer."},
-        }
+        return {"route": target, "feedback": feedback, "amend": None}
 
     return node, list(dict.fromkeys([*gate.reviews, after, approved_to]))
 

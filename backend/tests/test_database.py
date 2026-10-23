@@ -251,3 +251,49 @@ def test_an_agent_asking_the_same_question_again_gets_the_earlier_answer(client)
     with session.session_scope() as s:  # answered from before: no new question, the run isn't held up
         assert s.query(Question).filter(Question.run_id == run_id).count() == 1
         assert s.get(Run, run_id).status != "awaiting_input"
+
+
+def _amending_stub(monkeypatch):
+    """The AS-IS agent changes code: its first attempt writes first.java, an amendment adds amend.java, a redo
+    writes redo.java (each on top of what the workspace has)."""
+    original = stub.StubAgent.run
+
+    def run(self, ctx):
+        if self.stage == "as_is_doc":
+            name = {1: "first", 2: "amend"}.get(ctx.attempt, "redo")
+            (ctx.workspace / "src").mkdir(exist_ok=True)
+            (ctx.workspace / "src" / f"{name}.java").write_text(f"class {name} {{}}\n")
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", run)
+
+
+def test_an_amended_code_step_keeps_its_first_attempts_code_through_a_rebuild(client, monkeypatch, code_steps):
+    """An amendment builds on the step's code: its diff is only the change. A lost workspace is rebuilt with the
+    first attempt's code and the amendment on top, not the amendment alone."""
+    _amending_stub(monkeypatch)
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    decide(client, run_id, decision="reject", comments="Add the amendment", target_stage="as_is_doc")  # in place
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    ws = Path(run["workspace"])
+    assert (ws / "src" / "first.java").exists() and (ws / "src" / "amend.java").exists()
+
+    shutil.rmtree(ws)  # lost: the next step rebuilds it from the database
+    decide(client, run_id, decision="approve")
+    wait_for(client, run_id, {"awaiting_approval"})
+    assert (ws / "src" / "first.java").exists(), "the first attempt's code was lost in the rebuild"
+    assert (ws / "src" / "amend.java").exists()
+
+
+def test_a_redo_after_an_amendment_starts_from_where_the_step_first_started(client, monkeypatch, code_steps):
+    _amending_stub(monkeypatch)
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    decide(client, run_id, decision="reject", comments="Add the amendment", target_stage="as_is_doc")
+    wait_for(client, run_id, {"awaiting_approval"})
+    decide(client, run_id, decision="reject", comments="Start over", target_stage="as_is_doc", scope="redo")
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    ws = Path(run["workspace"])
+    assert (ws / "src" / "redo.java").exists()
+    assert not (ws / "src" / "first.java").exists() and not (ws / "src" / "amend.java").exists()  # from scratch

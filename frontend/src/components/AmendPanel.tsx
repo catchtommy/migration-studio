@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, MONOLITH, type RunDetail } from "../lib/api";
+import { api, MONOLITH, type RerunScope, type RunDetail } from "../lib/api";
+import { RerunScopeChoice } from "./RerunScopeChoice";
 import { EMPTY_INPUTS, InputsEditor } from "./InputsEditor";
 import { Guarded } from "./Guarded";
 import { useCan } from "../lib/hooks";
@@ -15,6 +16,7 @@ export function AmendPanel({ run }: { run: RunDetail }) {
   const title = (key: string) => run.workflow_stages.find((s) => s.key === key)?.title ?? key;
   const [comments, setComments] = useState(pending.comments ?? "");
   const [target, setTarget] = useState(pending.target_stage);
+  const [scope, setScope] = useState<RerunScope>(pending.scope ?? "amend");
   const [inputs, setInputs] = useState(run.inputs ?? EMPTY_INPUTS);
   const clean = (i: typeof inputs) => ({ paths: i.paths.map((p) => p.trim()).filter(Boolean), notes: i.notes.trim() });
   const inputsDirty = JSON.stringify(clean(inputs)) !== JSON.stringify(clean(run.inputs ?? EMPTY_INPUTS));
@@ -24,7 +26,7 @@ export function AmendPanel({ run }: { run: RunDetail }) {
   const rerun = useMutation({
     mutationFn: async () => {
       if (inputsDirty) await api.updateRunInputs(run.id, clean(inputs));
-      return api.rerun(run.id, { comments, target_stage: target });
+      return api.rerun(run.id, { comments, target_stage: target, scope });
     },
     onSuccess: refresh,
   });
@@ -37,7 +39,8 @@ export function AmendPanel({ run }: { run: RunDetail }) {
         <div>
           <h2 className="font-semibold">✏️ Changes requested: amend, then re-run</h2>
           <p className="mt-1 text-sm text-subtle">
-            {title(target)} re-runs from where it started, with your comments, once you click <strong>Re-run</strong>. Until then nothing runs, so you can change:
+            {title(target)} re-runs with your comments once you click <strong>Re-run</strong>
+            {scope === "amend" ? ", making only the change they ask for" : ", starting over from where it began"}. Until then nothing runs, so you can change:
           </p>
         </div>
         <ul className="grid gap-2 text-sm md:grid-cols-3">
@@ -84,6 +87,7 @@ export function AmendPanel({ run }: { run: RunDetail }) {
           <span className="mb-1 block text-xs font-medium text-subtle">Comments for the agent (required)</span>
           <textarea value={comments} onChange={(e) => setComments(e.target.value)} rows={3} className="w-full rounded-md border border-border bg-surface px-2 py-1.5" />
         </label>
+        <RerunScopeChoice value={scope} onChange={setScope} stepTitle={title(target)} />
 
         {error && <p className="text-sm text-bad">{error.message}</p>}
         <div className="flex flex-wrap items-center justify-end gap-2">
