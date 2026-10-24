@@ -124,8 +124,8 @@ def integration(monolith: Path, base: str, modules: list[str], routing: dict | N
             if hit:
                 problems.append(f"{c.path}: tests must not be disabled or ignored (`{hit.strip()[:60]}`)")
         if c.path.endswith(".xml") and c.status != "A":
-            before = mg.statements(mg._show(monolith, base, c.old_path or c.path))
-            after = mg.statements(mg._read(monolith, c.path)) if c.status != "D" else []
+            before = mg.statements(mg._show(monolith, base, c.old_path or c.path), strict=True)
+            after = mg.statements(mg._read(monolith, c.path), strict=True) if c.status != "D" else []
             if before and sorted(before) != sorted(after):
                 problems.append(f"SQL changed in {c.path}. The monolith's SQL stays as it is")
         if Path(c.path).name == "pom.xml":

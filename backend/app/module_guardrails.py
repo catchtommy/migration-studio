@@ -21,6 +21,7 @@ The module and bridge folders are new, or this domain's own from an earlier feat
 monolith step reuses the same rules (see orchestrator_guardrails.py). `check()` returns one line per violation.
 """
 
+import copy
 import os
 import re
 import shutil
@@ -159,9 +160,38 @@ def _simple(path: str) -> str:
 
 # ---- SQL maps ---------------------------------------------------------------------------------------------------
 
-def statements(xml_text: str | None) -> list[str]:
-    """Canonical text of every statement in an iBatis SQL map: whitespace collapsed and its id left out, so a statement
-    moved to another file or namespace compares equal, and any change to its SQL does not."""
+# Attributes that name another part of the SQL maps (a statement, result map, parameter map, SQL fragment, cache):
+# a copy running beside the original in the same iBatis configuration must rename them to keep them unique.
+NAME_ATTRS = {"id", "resultMap", "parameterMap", "extends", "refid", "select", "cacheModel"}
+# Attributes that name a Java type: by class name (the copied classes move to the module's package) or by alias
+# (renamed with the copy, like the names above). The built-in aliases are the same everywhere.
+TYPE_ATTRS = {"resultClass", "parameterClass", "class", "javaType", "typeHandler", "type"}
+BUILTIN_ALIASES = {"string", "int", "integer", "long", "short", "byte", "double", "float", "boolean", "date", "decimal",
+                   "bigdecimal", "biginteger", "object", "map", "hashmap", "list", "arraylist", "collection",
+                   "iterator", "cursor", "xml", "char", "character"}
+
+
+def _renamable(el: ET.Element) -> ET.Element:
+    """The statement with what a copy renames set aside: names of SQL-map parts, aliases, and packages of classes."""
+    el = copy.deepcopy(el)
+    for node in el.iter():
+        for attr, value in list(node.attrib.items()):
+            if attr in NAME_ATTRS:
+                node.set(attr, "#name")
+            elif attr in TYPE_ATTRS:
+                if "." in value:
+                    node.set(attr, value.rsplit(".", 1)[-1].split("$")[-1])  # the class, whatever its package
+                elif value.lower() not in BUILTIN_ALIASES:
+                    node.set(attr, "#alias")
+    return el
+
+
+def statements(xml_text: str | None, strict: bool = False) -> list[str]:
+    """Canonical text of every statement in an iBatis SQL map, whitespace collapsed. By default for comparing a copy
+    with its original: what the copy may rename to run beside it in the same iBatis configuration is set aside (ids of
+    statements, result maps, parameter maps and fragments, and references to them; type aliases; packages of classes),
+    while any change to its SQL, its mappings or its dynamic tags still shows. `strict`: exactly as written, ids
+    included, for maps that must not change at all."""
     if not xml_text or "<sqlMap" not in xml_text:
         return []
     try:
@@ -171,7 +201,7 @@ def statements(xml_text: str | None) -> list[str]:
     out = []
     for el in tree.iter():
         if el.tag in STATEMENT_TAGS:
-            text = re.sub(r'\sid="[^"]*"', "", ET.tostring(el, encoding="unicode"), count=1)
+            text = ET.tostring(el if strict else _renamable(el), encoding="unicode")
             out.append(re.sub(r"\s+", " ", text).strip())
     return out
 
@@ -356,7 +386,9 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
                             "(the router and adapters) in the bridge package")
             continue
         if c.path.endswith(".xml") and statements(_show(root, base, c.path)):
-            if sorted(statements(_read(root, c.path))) != sorted(statements(_show(root, base, c.path))):
+            # Exactly as it was, ids included: the legacy flow runs these, and the copies need their own names.
+            if sorted(statements(_read(root, c.path), strict=True)) != \
+                    sorted(statements(_show(root, base, c.path), strict=True)):
                 problems.append(f"Legacy SQL map changed: {c.path}. Its statements stay as they are; the module has its "
                                 "own copies")
             continue
@@ -385,7 +417,10 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
         if s in pool:
             pool.remove(s)
         else:
-            problems.append(f"SQL in a module is new or differs from the monolith's: {s[:100]}…")
+            problems.append(f"SQL in a module is new or differs from the monolith's: {s[:100]}… A copied statement "
+                            "keeps its SQL, mappings and dynamic tags exactly as they are; only names may change to "
+                            "keep them unique beside the original (statement, resultMap, parameterMap and sql ids and "
+                            "the references to them, type aliases, and the package of copied classes)")
             break
 
     # 5b. The parallel run (Module in monolith): own folders, the bridge holds the router and adapters, the toggle.

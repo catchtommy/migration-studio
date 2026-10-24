@@ -655,3 +655,64 @@ def test_the_toggle_defaults_to_the_legacy_code_and_the_router_exists(repo):
     (root / ROUTER).unlink()
     out = "\n".join(run(root, base))
     assert f"The router {ROUTER}" in out and "doesn't exist" in out
+
+
+LEGACY_MAP = """<sqlMap namespace="loan">
+  <typeAlias alias="loan" type="com.acme.loan.Loan"/>
+  <resultMap id="loanResult" class="loan">
+    <result property="id" column="LOAN_ID"/>
+    <result property="customer" column="CUSTOMER_ID" select="loan.selectCustomer"/>
+  </resultMap>
+  <sql id="loanColumns">LOAN_ID, CUSTOMER_ID, AMOUNT</sql>
+  <select id="selectLoan" parameterClass="long" resultMap="loanResult">
+    SELECT <include refid="loanColumns"/> FROM LOAN WHERE LOAN_ID = #value#
+    <dynamic><isNotNull property="status"> AND STATUS = #status#</isNotNull></dynamic>
+  </select>
+  <insert id="insertLoan" parameterClass="com.acme.loan.Loan">INSERT INTO LOAN (LOAN_ID) VALUES (#id#)</insert>
+</sqlMap>"""
+# The copy in the module, beside the original in the same iBatis configuration: every name made unique, the classes
+# in the module's package, the SQL as it is.
+COPIED_MAP = """<sqlMap namespace="loanDomain">
+  <typeAlias alias="domainLoan" type="com.acme.loan.domain.Loan"/>
+  <resultMap id="domainLoanResult" class="domainLoan">
+    <result property="id" column="LOAN_ID"/>
+    <result property="customer" column="CUSTOMER_ID" select="loanDomain.selectCustomer"/>
+  </resultMap>
+  <sql id="domainLoanColumns">LOAN_ID, CUSTOMER_ID, AMOUNT</sql>
+  <select id="domainSelectLoan" parameterClass="long" resultMap="domainLoanResult">
+    SELECT <include refid="domainLoanColumns"/> FROM LOAN WHERE LOAN_ID = #value#
+    <dynamic><isNotNull property="status"> AND STATUS = #status#</isNotNull></dynamic>
+  </select>
+  <insert id="domainInsertLoan" parameterClass="com.acme.loan.domain.Loan">INSERT INTO LOAN (LOAN_ID) VALUES (#id#)</insert>
+</sqlMap>"""
+
+
+def test_a_copied_sql_map_may_rename_what_must_be_unique_but_not_change_its_sql():
+    from app.module_guardrails import statements
+
+    assert sorted(statements(COPIED_MAP)) == sorted(statements(LEGACY_MAP))  # names only: the same statements
+    for changed in (COPIED_MAP.replace("AMOUNT", "AMOUNT, RATE"),  # the SQL
+                    COPIED_MAP.replace('column="LOAN_ID"', 'column="ID"'),  # a mapping
+                    COPIED_MAP.replace(" AND STATUS = #status#", ""),  # a dynamic condition
+                    COPIED_MAP.replace('parameterClass="long"', 'parameterClass="string"'),  # a built-in type
+                    COPIED_MAP.replace("domain.Loan\">INSERT", "domain.LoanDto\">INSERT")):  # another class
+        assert sorted(statements(changed)) != sorted(statements(LEGACY_MAP)), changed
+    # The legacy maps themselves stay exactly as they are: renaming one of their ids is a change.
+    assert statements(LEGACY_MAP.replace('id="selectLoan"', 'id="legacySelectLoan"'), strict=True) != \
+        statements(LEGACY_MAP, strict=True)
+
+
+def test_the_module_check_accepts_a_copy_with_unique_names(repo):
+    root, base = repo
+    extract(root)
+    f = root / MOD / "src/main/resources/BrokerProfile.xml"
+    f.write_text(f.read_text().replace('id="insertBroker"', 'id="profileInsertBroker"'))  # unique beside the original
+    assert not [p for p in run(root, base) if "SQL in a module" in p]
+
+
+def test_renaming_an_id_in_a_legacy_sql_map_is_refused(repo):
+    root, base = repo
+    extract(root)
+    put(root, SQLMAP_PATH, SQLMAP.replace('id="selectBroker"', 'id="legacySelectBroker"'))
+    declaration = {**DECLARATION, "outside_changes": [*DECLARATION["outside_changes"], SQLMAP_PATH]}
+    assert any("Legacy SQL map changed: " + SQLMAP_PATH in p for p in run(root, base, declaration))
