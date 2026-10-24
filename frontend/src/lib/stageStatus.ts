@@ -1,6 +1,6 @@
 import type { RunDetail, StageDef, StageExecution } from "./api";
 
-export type DisplayStatus = "pending" | StageExecution["status"];
+export type DisplayStatus = "pending" | "awaiting_branches" | StageExecution["status"];
 
 /**
  * Status of each stage for the timeline. A stage's latest execution is superseded (shown as pending)
@@ -30,7 +30,8 @@ export function stageStatuses(stages: StageDef[], run: RunDetail): Map<string, {
     const superseded = latest !== undefined && newestEarlier !== undefined && after(newestEarlier, latest);
     let status: DisplayStatus = !latest || superseded ? "pending" : latest.status;
     if (onStep && i > current) status = "pending";
-    else if (onStep && i === current) status = run.status === "running" ? "running" : "awaiting_approval";
+    // Waiting for its branches to be confirmed (before it starts) is not an approval: the run page asks for them.
+    else if (onStep && i === current) status = run.status === "running" ? "running" : "awaiting_branches";
     result.set(stage.key, { status, latest, attempts });
     for (const e of attempts) if (!newestEarlier || after(e, newestEarlier)) newestEarlier = e;
   });

@@ -7,6 +7,7 @@ const DOT: Record<DisplayStatus, string> = {
   completed: "border-ok bg-ok",
   approved: "border-ok bg-ok",
   awaiting_approval: "border-warn bg-warn",
+  awaiting_branches: "border-violet-500 bg-violet-500",
   failed: "border-bad bg-bad",
   rejected: "border-bad bg-bad",
 };

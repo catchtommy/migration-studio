@@ -47,7 +47,7 @@ test("a step being re-run shows as running, and the steps after it as pending, b
 test("a step waiting for its branches shows as waiting", () => {
   const s = stageStatuses(stages, { ...run([ex("a", "completed")]), status: "awaiting_branches", current_stage: "b" } as RunDetail);
   expect(s.get("a")!.status).toBe("completed");
-  expect(s.get("b")!.status).toBe("awaiting_approval");
+  expect(s.get("b")!.status).toBe("awaiting_branches"); // the branch confirmation, not an approval
 });
 
 test("an approved gate stays approved while the run moves on", () => {

@@ -168,14 +168,18 @@ def _stopped_attempt(run_id: str, stage: str) -> dict | None:
                 "repos": dict(ex.repos or {}), "documents": documents}
 
 
-def _code_kept(stopped: dict, head: str, nested_heads: dict[str, str]) -> bool:
-    """Whether the repositories are where the stopped attempt left them. A rebuilt workspace replays completed steps
-    only, so its commits would be gone."""
-    if head != stopped["end"]:
+def _code_kept(stopped: dict, ws: Path, head: str, nested: list[dict], nested_heads: dict[str, str]) -> bool:
+    """Whether the repositories still have what the stopped attempt left: its last commit in each, at their head or
+    under it. Under it when something came on top since, such as the latest of the feature branch from git, which
+    confirming the branches brings in (its commit and push through the review, say). A rebuilt workspace replays
+    completed steps only, so its commits would be gone."""
+    if head != stopped["end"] and not git_ops.is_ancestor(ws, stopped["end"], head):
         return False
+    paths = {r["key"]: ws / r["path"] for r in nested}
     for key, now in nested_heads.items():
         was = stopped["repos"].get(key)
-        if was and now != was.get("end", was.get("start")):
+        end = was and was.get("end", was.get("start"))
+        if end and now != end and not (key in paths and git_ops.is_ancestor(paths[key], end, now)):
             return False
     return True
 
@@ -333,7 +337,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             legacy_info, started_by = run_row.legacy, run_row.started_by
             start_sha = git_ops.head(ws)
             nested_starts = workspace.nested_heads(ws, nested)  # the run's other repositories, for rollbacks
-            code_kept = stopped is not None and _code_kept(stopped, start_sha, nested_starts)
+            code_kept = stopped is not None and _code_kept(stopped, ws, start_sha, nested, nested_starts)
             if code_kept:  # on top of its commits: the step's changes still count from where it first started
                 start_sha = stopped["start"]
                 nested_starts = {k: (stopped["repos"].get(k) or {}).get("start", v) for k, v in nested_starts.items()}

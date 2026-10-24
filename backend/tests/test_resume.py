@@ -118,3 +118,26 @@ def test_a_re_run_of_the_workflow_does_not_continue_a_stopped_attempt(client, mo
     wait_for(client, run_id, {"awaiting_approval"})
     ctx, found = seen[1]
     assert ctx.resume is None and "half-done.md" not in found  # the steps start over; nothing stopped is picked up
+
+
+def test_a_retry_keeps_the_code_when_a_commit_came_on_top_of_it(client, tmp_path, monkeypatch):
+    """Confirming the branches before the retry brings in the latest of the feature branch from git (the step's work
+    committed and pushed through the review, say): the stopped attempt's commits are still there, under it, so the
+    retry continues on them instead of telling the agent its code is gone."""
+    seen: list = []
+    _failing_once(monkeypatch, "as_is_doc", seen)
+    _upstream, _key, proj = setup_project(client, tmp_path)
+    run_id = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()["id"]
+    run = _until_failed(proj, run_id)
+    ws, failed = Path(run["workspace"]), run["stages"][-1]
+    (ws / "FromGit.java").write_text("class FromGit {}\n")  # on top of the stopped attempt's commits
+    git_ops.commit_all(ws, "Merge the latest of the feature branch")
+
+    assert proj.post(f"/api/runs/{run_id}/retry").status_code == 200
+    run = _until_failed(proj, run_id)
+    assert run["status"] == "awaiting_approval"
+    ctx, _found = seen[1]
+    assert ctx.resume["code_kept"], "the retry thought the stopped attempt's code was gone"
+    assert {"Half.java", "Uncommitted.java"} <= set(ctx.resume["files"])
+    assert ctx.base_sha == failed["start_sha"]  # the checks still count from where the step first started
+    assert "redo them" not in brief(ctx)
