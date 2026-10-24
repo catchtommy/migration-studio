@@ -89,9 +89,12 @@ def env_for(user_id: int | None, url: str | None) -> dict | None:
     if found is None:
         return None
     username, token = found
+    # Added after the config entries the server's environment already has (core.longpaths on Windows, see
+    # app/tools/git_ops.py), which this environment is merged over, so they still apply.
+    n = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
     return {"GIT_ASKPASS": _askpass(), "GIT_TERMINAL_PROMPT": "0", "STUDIO_GIT_USERNAME": username,
-            "STUDIO_GIT_PASSWORD": token, "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper",
-            "GIT_CONFIG_VALUE_0": ""}
+            "STUDIO_GIT_PASSWORD": token, "GIT_CONFIG_COUNT": str(n + 1), f"GIT_CONFIG_KEY_{n}": "credential.helper",
+            f"GIT_CONFIG_VALUE_{n}": ""}
 
 
 def identity(user_id: int) -> tuple[str, str] | None:

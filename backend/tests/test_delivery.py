@@ -1,5 +1,6 @@
 """Committing a run's code changes to git: feature branches, the review, conflicts, per-user credentials."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -257,7 +258,7 @@ def test_workflow_git_settings_are_validated(client, tmp_path):
         assert proj.put(f"/api/workflows/{wf['key']}?library=project", json={"steps": steps}).status_code == 422, bad
 
 
-def test_git_tokens_are_per_user_encrypted_and_reach_git_through_askpass(client):
+def test_git_tokens_are_per_user_encrypted_and_reach_git_through_askpass(client, monkeypatch):
     r = client.put("/api/account/git/credentials", json={"host": "https://GitHub.com/acme/repo.git",
                                                          "username": "ada", "token": "ghp_secret"})
     assert r.status_code == 200
@@ -268,7 +269,19 @@ def test_git_tokens_are_per_user_encrypted_and_reach_git_through_askpass(client)
         assert "ghp_secret" not in row.token
         user_id = row.user_id
     env = git_auth.env_for(user_id, "https://github.com/acme/repo.git")
-    assert env["GIT_CONFIG_VALUE_0"] == ""  # no other credential helper
+    last = int(env["GIT_CONFIG_COUNT"]) - 1
+    assert env[f"GIT_CONFIG_KEY_{last}"] == "credential.helper" and env[f"GIT_CONFIG_VALUE_{last}"] == ""  # no other
+
+    # The server's own config entries (core.longpaths on Windows) are kept, not overwritten
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.longpaths")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    merged = {**os.environ, **git_auth.env_for(user_id, "https://github.com/acme/repo.git")}
+    assert merged["GIT_CONFIG_COUNT"] == "2"
+    assert (merged["GIT_CONFIG_KEY_0"], merged["GIT_CONFIG_VALUE_0"]) == ("core.longpaths", "true")
+    assert (merged["GIT_CONFIG_KEY_1"], merged["GIT_CONFIG_VALUE_1"]) == ("credential.helper", "")
+    proc = subprocess.run(["git", "config", "--get", "core.longpaths"], env=merged, capture_output=True, text=True)
+    assert proc.stdout.strip() == "true"
     script = env["GIT_ASKPASS"]
     ask = lambda prompt: subprocess.run([script, prompt], env=env, capture_output=True, text=True).stdout  # noqa: E731
     assert ask("Username for 'https://github.com': ") == "ada"

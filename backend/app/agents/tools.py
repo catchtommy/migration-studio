@@ -202,7 +202,7 @@ MONOLITH_CHECKS = {"service_guardrails", "orchestrator_service_guardrails", "acc
 COMMAND_ENV |= {"JAVA_TOOL_OPTIONS", "MAVEN_ARGS", "GRADLE_OPTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
                 "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "DOCKER_HOST", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
                 "DOCKER_CONFIG"}
-COMMAND_ENV_PREFIXES = ("LC_", "TESTCONTAINERS_")
+COMMAND_ENV_PREFIXES = ("LC_", "TESTCONTAINERS_", "GIT_CONFIG_")  # GIT_CONFIG_: core.longpaths on Windows
 
 
 def command_env() -> dict[str, str]:

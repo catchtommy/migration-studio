@@ -301,8 +301,12 @@ def test_commands_keep_what_builds_need_behind_a_proxy_and_for_testcontainers(ct
     monkeypatch.setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
     monkeypatch.setenv("JAVA_TOOL_OPTIONS", "-Djavax.net.ssl.trustStore=/etc/corp.jks")
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_notforagents")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")  # core.longpaths on Windows, for the agents' git commands too
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.longpaths")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
     out = _code_step(ctx).run("run_command", {"command": "env"})
     assert "DOCKER_HOST=" in out and "TESTCONTAINERS_RYUK_DISABLED=" in out and "trustStore" in out
+    assert "GIT_CONFIG_COUNT=1" in out and "GIT_CONFIG_KEY_0=core.longpaths" in out
     assert "ghp_notforagents" not in out
 
 
