@@ -10,6 +10,7 @@ export interface StageDef {
   include_content?: boolean;
   code?: StepCode | null;
   publish_docs?: boolean;
+  checklist?: string[]; // gates: items the approver ticks before approving
 }
 
 export type Scope = "operation" | "domain" | "monolith";
@@ -182,8 +183,23 @@ export interface StageExecution {
   feedback: string | null;
   error: string | null;
   rerun?: boolean | null; // re-ran a completed step in place ("Re-run from here")
+  checklist?: ChecklistTick[] | null; // gates: the checklist items ticked at this attempt
   started_at: string;
   finished_at: string | null;
+}
+
+export interface ChecklistTick {
+  item: string;
+  by: string;
+  at: string;
+}
+
+/** An item of the checklist of the gate a run waits at. */
+export interface ChecklistItem {
+  item: string;
+  done: boolean;
+  by: string | null;
+  at: string | null;
 }
 
 export interface Approval {
@@ -206,7 +222,7 @@ export interface RunDetail extends Run {
   inputs: AgentInputs | null;
   stages: StageExecution[];
   approvals: Approval[];
-  pending_gate: { gate: string; reviews: string[] } | null;
+  pending_gate: { gate: string; reviews: string[]; checklist?: ChecklistItem[] } | null;
   pending_branches: PendingBranches | null; // awaiting_branches: confirm before a step changes code
   pending_publish: { stage: string; steps: string[]; files: string[]; repository: string } | null; // awaiting_publish
   pending_commit: { stage: string; stage_title: string; repository: { key: string; name: string; url: string } } | null; // awaiting_commit right after a step
@@ -370,6 +386,7 @@ export interface WorkflowStep {
   title?: string;
   description?: string;
   reviews?: string[];
+  checklist?: string[]; // gates: items the approver ticks before approving
   uses?: string[] | null; // agents: earlier agent steps whose output they get; null = all of them
   include_content?: boolean;
   code?: StepCode | null; // agents: the step changes code, in this repository; null = documents only
@@ -759,6 +776,7 @@ export const api = {
   testGit: (project: string) => request<{ ok: boolean; repository: string; with_token: boolean; error: string | null }>("/account/git/test", json("POST", { project })),
   decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; rerun?: "now" | "later"; scope?: RerunScope }) =>
     request<Approval>(`/runs/${id}/decision`, json("POST", body)),
+  tickChecklist: (id: string, body: { item: string; done: boolean }) => request<ChecklistItem[]>(`/runs/${id}/checklist`, json("POST", body)),
   rerun: (id: string, body: { comments?: string; target_stage?: string; scope?: RerunScope }) => request<Run>(`/runs/${id}/rerun`, json("POST", body)),
   backToReview: (id: string) => request<Run>(`/runs/${id}/back-to-review`, { method: "POST" }),
   updateRunInputs: (id: string, inputs: AgentInputs) => request<RunDetail>(`/runs/${id}/inputs`, json("PUT", inputs)),

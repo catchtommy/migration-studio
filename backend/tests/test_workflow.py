@@ -341,7 +341,7 @@ def test_a_step_the_workflow_gained_before_the_point_reached_runs_in_a_re_run(cl
     r = client.post(f"/api/runs/{run_id}/update-workflow", json={"rerun": True})
     assert r.status_code == 200, r.text
     run = wait_for(client, run_id, {"awaiting_approval"})
-    assert run["pending_gate"] == {"gate": "gate_analysis", "reviews": ["as_is_doc", "deep_dive"]}
+    assert run["pending_gate"] == {"gate": "gate_analysis", "reviews": ["as_is_doc", "deep_dive"], "checklist": []}
     deep = executions(run, "deep_dive")
     assert [e["status"] for e in deep] == ["completed"] and not deep[0].get("rerun")  # a new step, not an update
     assert [e["status"] for e in executions(run, "as_is_doc")] == ["completed"]

@@ -78,7 +78,7 @@ def test_a_cross_domain_feature_runs_through_the_lean_workflow(client):
                                           "orchestrator_service", "independent_tests"]),
                           ("gate_release", ["modernise_and_test", "monolith_integration"])):
         run = wait_for(client, run_id, {"awaiting_approval"})
-        assert run["pending_gate"] == {"gate": gate, "reviews": reviews}
+        assert run["pending_gate"] == {"gate": gate, "reviews": reviews, "checklist": []}
         assert _approve(client, run_id).status_code == 200
 
     done = wait_for(client, run_id, {"completed"})

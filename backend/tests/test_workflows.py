@@ -31,7 +31,7 @@ def test_custom_workflow_runs_its_own_steps_and_gates(client):
     run = start_run(client, {"domain": "broker", "operation": _key("op"), "workflow": key}).json()
     assert [s["key"] for s in run["workflow_stages"]] == ["as_is_doc", "gate_check_docs", "deep_dive"]
     run = wait_for(client, run["id"], {"awaiting_approval"})
-    assert run["pending_gate"] == {"gate": "gate_check_docs", "reviews": ["as_is_doc"]}
+    assert run["pending_gate"] == {"gate": "gate_check_docs", "reviews": ["as_is_doc"], "checklist": []}
 
     client.post(f"/api/runs/{run['id']}/decision", json={"reviewer": "t", "decision": "reject", "comments": "More"})
     run = wait_for(client, run["id"], {"awaiting_approval"})
@@ -243,3 +243,56 @@ def test_a_project_default_migration_workflow_is_used_unless_the_domain_has_one(
         assert start_run(client, {"domain": "auditing", "operation": _key("op")}).json()["workflow"] == "standard"
     finally:
         client.put("/api/projects/default/settings", json={"default_workflow": ""})
+
+
+def test_a_gate_checklist_must_be_ticked_before_approving(client):
+    key = _key("wf")
+    steps = _two_step()
+    steps[1]["checklist"] = ["  Read the AS-IS document ", "Checked the SQL", "Checked the SQL", ""]
+    r = client.post("/api/workflows", json={"key": key, "name": "Checklist", "steps": steps})
+    assert r.status_code == 201, r.text
+    assert r.json()["steps"][1]["checklist"] == ["Read the AS-IS document", "Checked the SQL"]  # trimmed, unique
+
+    run = start_run(client, {"domain": "broker", "operation": _key("op"), "workflow": key}).json()
+    run = wait_for(client, run["id"], {"awaiting_approval"})
+    assert [(c["item"], c["done"]) for c in run["pending_gate"]["checklist"]] == [
+        ("Read the AS-IS document", False), ("Checked the SQL", False)]
+    r = client.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"})
+    assert r.status_code == 422 and "Read the AS-IS document; Checked the SQL" in r.json()["detail"]
+
+    assert client.post(f"/api/runs/{run['id']}/checklist", json={"item": "Not on it"}).status_code == 422
+    state = client.post(f"/api/runs/{run['id']}/checklist", json={"item": "Checked the SQL"}).json()
+    assert [c["done"] for c in state] == [False, True] and state[1]["by"]
+    assert client.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 422
+
+    # Rejecting doesn't need the checklist; the gate reached again starts with nothing ticked.
+    client.post(f"/api/runs/{run['id']}/decision", json={"decision": "reject", "comments": "More"})
+    run = wait_for(client, run["id"], {"awaiting_approval"})
+    assert [c["done"] for c in run["pending_gate"]["checklist"]] == [False, False]
+    rejected = [s for s in run["stages"] if s["stage"] == "gate_check_docs"][0]
+    assert [t["item"] for t in rejected["checklist"]] == ["Checked the SQL"]  # what that attempt had ticked
+
+    # Items added to the workflow while the run waits apply to it; ones removed no longer hold it back.
+    steps[1]["checklist"] = ["Checked the SQL", "Asked the DBA"]
+    steps[1]["key"] = "gate_check_docs"
+    assert client.put(f"/api/workflows/{key}", json={"steps": steps}).status_code == 200
+    run = client.get(f"/api/runs/{run['id']}").json()
+    assert [c["item"] for c in run["pending_gate"]["checklist"]] == ["Checked the SQL", "Asked the DBA"]
+    assert not (run["workflow_update"] or {}).get("rerun")  # a checklist is no reason to re-run agents
+    for item in ("Checked the SQL", "Asked the DBA"):
+        client.post(f"/api/runs/{run['id']}/checklist", json={"item": item})
+    client.post(f"/api/runs/{run['id']}/checklist", json={"item": "Asked the DBA", "done": False})
+    assert client.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 422
+    client.post(f"/api/runs/{run['id']}/checklist", json={"item": "Asked the DBA"})
+    assert client.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
+    done = wait_for(client, run["id"], {"completed"})
+    approved = [s for s in done["stages"] if s["stage"] == "gate_check_docs"][-1]
+    assert approved["status"] == "approved" and [t["item"] for t in approved["checklist"]] == [
+        "Checked the SQL", "Asked the DBA"]  # in the checklist's order
+
+
+def test_a_checklist_must_be_a_list_of_texts(client):
+    steps = _two_step()
+    steps[1]["checklist"] = ["x" * 301]
+    r = client.post("/api/workflows", json={"key": _key("bad"), "name": "Bad", "steps": steps})
+    assert r.status_code == 422 and "longer than 300" in r.json()["detail"]

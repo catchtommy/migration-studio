@@ -46,7 +46,7 @@ def steps_of(workflow: Workflow) -> list[dict]:
     return [{"kind": "agent", "key": s.key, "uses": None if s.uses is None else list(s.uses),
              "include_content": s.include_content, "publish_docs": s.publish_docs} if s.kind == "agent" else
             {"kind": "gate", "key": s.key, "title": s.title, "description": s.description,
-             "reviews": list(s.reviews)} for s in workflow.stages]
+             "reviews": list(s.reviews), "checklist": list(s.checklist)} for s in workflow.stages]
 
 
 STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → Modulith design (linked-domain contracts, domain, "
@@ -111,6 +111,7 @@ def _upgraded(steps: list[dict]) -> list[dict]:
     """The current STANDARD, keeping the settings of the stored steps (code, uses, publishing). A step new in this
     release that changes the same code as an earlier one (the orchestrator, after the module) gets its settings."""
     stored = {st["key"]: st for st in steps if st.get("kind") == "agent"}
+    gates = {st["key"]: st for st in steps if st.get("kind") == "gate"}
     # A step that changes the same repository as another gets its code settings: new steps, and Independent tests,
     # which now writes its acceptance suite in the domain service's repository (it could only write documents before).
     inherit = {"monolith_orchestrator": "modular_monolith", "service_tests": "modernise",
@@ -125,6 +126,8 @@ def _upgraded(steps: list[dict]) -> list[dict]:
             if st["key"] in stored:
                 st = {**st, **{k: stored[st["key"]][k] for k in ("uses", "include_content", "publish_docs")
                                if k in stored[st["key"]]}}
+        elif gates.get(st["key"], {}).get("checklist"):
+            st = {**st, "checklist": gates[st["key"]]["checklist"]}
         out.append(st)
     return out
 
@@ -240,9 +243,15 @@ def validate(steps: list[dict]) -> list[dict]:
             if late:
                 raise WorkflowInvalid(f"Step {i}: approval gate {title!r} can only review agent steps before it "
                                       f"(not {', '.join(late)})")
+            from app.gate_checklist import ChecklistError, clean
+            try:
+                checklist = clean(step.get("checklist"), f"Step {i}: approval gate {title!r}")
+            except ChecklistError as e:
+                raise WorkflowInvalid(str(e)) from e
             keys.add(key)
             out.append({"kind": "gate", "key": key, "title": title,
-                        "description": (step.get("description") or "").strip(), "reviews": reviews})
+                        "description": (step.get("description") or "").strip(), "reviews": reviews,
+                        "checklist": checklist})
         else:
             raise WorkflowInvalid(f"Step {i}: kind must be 'agent' or 'gate'")
     if not agents_so_far:
@@ -291,7 +300,7 @@ def resolve(steps: list[dict]) -> Workflow:
                                    publish_docs=bool(step.get("publish_docs"))))
         else:
             stages.append(StageDef(step["key"], step["title"], "gate", step.get("description", ""),
-                                   tuple(step["reviews"])))
+                                   tuple(step["reviews"]), checklist=tuple(step.get("checklist") or ())))
     return Workflow(stages)
 
 

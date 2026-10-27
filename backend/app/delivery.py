@@ -376,7 +376,8 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
 
 def apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
     """Use the confirmed branches: rename the feature branch everywhere if it changed, check out the repository
-    (cut from its base branch) if it isn't yet, and bring in the latest of the branch in git."""
+    (cut from its base branch) if it isn't yet, and bring in the latest of the branch in git, in the monolith too
+    when the step changes another repository (it reads the monolith, e.g. the module the microservice step lifts)."""
     with run_lock(run_id):
         _apply_confirmation(run_id, key, answer, log)
 
@@ -416,6 +417,8 @@ def _apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
         delivery["confirmed"] = sorted({*delivery.get("confirmed", []), key})
         run.delivery, run.branch, run.repositories = delivery, feature, nested or None
     update_from_git(run_id, key, user_id, log)
+    if key != ROOT:  # a step changing another repository reads the monolith (the module it lifts): its latest too
+        update_from_git(run_id, ROOT, user_id, log)
 
 
 def update_from_git(run_id: str, key: str, user_id: int | None, log) -> None:

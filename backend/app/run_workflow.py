@@ -26,8 +26,9 @@ _ALWAYS = ("preamble", "feature_rules")
 
 
 def _plain(stage: dict) -> dict:
-    """A step without its code settings, which every run picks up when it goes on (delivery.refresh_code_settings)."""
-    return {k: v for k, v in stage.items() if k != "code"}
+    """A step without its code settings, which every run picks up when it goes on (delivery.refresh_code_settings), and
+    without a gate's checklist, which a run waiting at the gate reads from the workflow (app/gate_checklist.py)."""
+    return {k: v for k, v in stage.items() if k not in ("code", "checklist")}
 
 
 def _reached(run, keys: list[str]) -> int:

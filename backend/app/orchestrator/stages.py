@@ -26,10 +26,12 @@ class StageDef:
     # Agents only: once approved, the step's documents are published to the monolith's docs/<domain>/<feature>/
     # (AS-IS documentation, for later agents; see app/docs_publish.py).
     publish_docs: bool = False
+    # Gates only: items the approver ticks before approving (app/gate_checklist.py).
+    checklist: tuple[str, ...] = field(default_factory=tuple, hash=False, compare=False)
 
     def to_dict(self) -> dict:
         return {**asdict(self), "reviews": list(self.reviews),
-                "uses": None if self.uses is None else list(self.uses)}
+                "uses": None if self.uses is None else list(self.uses), "checklist": list(self.checklist)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "StageDef":
@@ -37,7 +39,7 @@ class StageDef:
         return cls(key=d["key"], title=d["title"], kind=d["kind"], description=d.get("description", ""),
                    reviews=tuple(d.get("reviews") or ()), uses=None if uses is None else tuple(uses),
                    include_content=bool(d.get("include_content")), code=d.get("code") or None,
-                   publish_docs=bool(d.get("publish_docs")))
+                   publish_docs=bool(d.get("publish_docs")), checklist=tuple(d.get("checklist") or ()))
 
 
 class Workflow:

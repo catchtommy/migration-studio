@@ -99,6 +99,8 @@ class StageExecution(Base):
     repos: Mapped[dict | None] = mapped_column(JSONText)
     # A restart from a completed stage: the attempt updated the previous documents in place instead of starting over.
     rerun: Mapped[bool | None] = mapped_column(Boolean)
+    # Gates only: the checklist items the approver ticked at this attempt, [{"item", "by", "at"}] (app/gate_checklist.py)
+    checklist: Mapped[list | None] = mapped_column(JSONText)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

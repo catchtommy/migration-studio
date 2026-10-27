@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.schemas import (
-    AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, Decision, EventOut, QuestionOut,
+    AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, ChecklistTick, Decision, EventOut,
+    QuestionOut,
     RetryIn, RunCreate, RunDetail, RunOut, Rerun, Restart, StartOverIn, WorkflowUpdateIn,
 )
 from app.agents import common
@@ -18,8 +19,8 @@ from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
 from app.db.session import emit, get_db, session_scope
-from app import (auth, contracts_store, delivery, discovery_store, docs_publish, document_export, projects, repos,
-                 run_cleanup, run_workflow, settings_store, workflow_store, workspace)
+from app import (auth, contracts_store, delivery, discovery_store, docs_publish, document_export, gate_checklist,
+                 projects, repos, run_cleanup, run_workflow, settings_store, workflow_store, workspace)
 from app.auth import CurrentUser, ProjectAccess, project_context, require, require_admin
 from app.domain_store import normalize_inputs
 from app.orchestrator import graph, questions
@@ -173,6 +174,9 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
                                   repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha))
     if run.status in ("awaiting_approval", "changes_requested"):
         detail.pending_gate = get_runner().pending_gate(run_id)
+        if detail.pending_gate and detail.pending_gate.get("gate"):
+            detail.pending_gate = {**detail.pending_gate,
+                                   "checklist": gate_checklist.state(db, run, detail.pending_gate["gate"])}
     if run.status == "awaiting_branches":
         detail.pending_branches = branches or get_runner().pending_gate(run_id)
     if run.status == "awaiting_commit" and run.current_stage:
@@ -227,6 +231,10 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
     gate = runner.pending_gate(run_id) if run.status == "awaiting_approval" else None
     if gate is None:
         raise HTTPException(409, "Run is not waiting for approval")
+    if body.decision == "approve":
+        missing = gate_checklist.missing(db, run, gate["gate"])
+        if missing:
+            raise HTTPException(422, f"Tick every checklist item before approving; still open: {'; '.join(missing)}")
     if body.decision == "reject":
         if not body.comments:
             raise HTTPException(422, "Comments are required when rejecting")
@@ -258,6 +266,7 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
             emit(run_id, "artifact", summary, gate["gate"])
 
     target = (body.target_stage or gate["reviews"][0]) if body.decision == "reject" else None
+    gate_checklist.settle(db, run, gate["gate"])
     approval = Approval(run_id=run_id, gate=gate["gate"], decision=body.decision, comments=body.comments,
                         target_stage=target, reviewer=user.display_name)
     db.add(approval)
@@ -278,6 +287,23 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
     except RunBusyError as e:
         raise HTTPException(409, str(e))
     return approval
+
+
+@router.post("/runs/{run_id}/checklist")
+def tick_checklist(run_id: str, body: ChecklistTick, db: Session = Depends(get_db),
+                   user: CurrentUser = Depends(require("runs.approve"))) -> list[dict]:
+    """Tick (or untick) an item of the checklist of the gate the run waits at; approving needs every item ticked."""
+    run = _run_or_404(db, run_id)
+    gate = get_runner().pending_gate(run_id) if run.status == "awaiting_approval" else None
+    if gate is None:
+        raise HTTPException(409, "Run is not waiting for approval")
+    try:
+        out = gate_checklist.tick(db, run, gate["gate"], body.item, body.done, user.display_name)
+    except gate_checklist.ChecklistError as e:
+        raise HTTPException(422, str(e))
+    db.commit()
+    emit(run_id, "approval", f"{user.display_name} {'ticked' if body.done else 'unticked'} {body.item!r}", gate["gate"])
+    return out
 
 
 def _stage_title(run: Run, key: str) -> str:

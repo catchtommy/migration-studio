@@ -54,6 +54,7 @@ class StageExecutionOut(ORM):
     feedback: str | None
     error: str | None
     rerun: bool | None = None  # re-ran a completed stage in place
+    checklist: list[dict] | None = None  # gates: the checklist items ticked at this attempt [{"item", "by", "at"}]
     started_at: datetime
     finished_at: datetime | None
 
@@ -140,6 +141,11 @@ class Decision(BaseModel):
     # Rejections only: "amend" makes only the requested change, in place (the step's other work and the steps after
     # it up to the gate stay as they are); "redo" re-runs the step from where it started.
     scope: Literal["amend", "redo"] = "amend"
+
+
+class ChecklistTick(BaseModel):
+    item: str = Field(max_length=300)
+    done: bool = True
 
 
 class Restart(BaseModel):
@@ -292,6 +298,7 @@ class WorkflowStep(BaseModel):
     title: str = ""  # gates only
     description: str = ""  # gates only
     reviews: list[str] = []  # gates only: agent steps this gate reviews
+    checklist: list[str] = []  # gates only: items the approver ticks before approving
     uses: list[str] | None = None  # agents only: earlier agent steps whose output it gets; None = all of them
     include_content: bool = False  # agents only: include those documents' contents in the prompt
     code: StepCode | None = None  # agents only: the step changes code, in this repository

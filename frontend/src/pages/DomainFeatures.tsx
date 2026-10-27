@@ -10,6 +10,7 @@ import { DomainAvatar } from "../components/DomainAvatar";
 import { AgentModeNote } from "../components/AgentModeNote";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { Guarded } from "../components/Guarded";
+import { StartMigration } from "../components/StartMigration";
 
 const FEATURES_AGENT = "domain_features";
 
@@ -71,9 +72,6 @@ const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boo
 const matches = (f: Feature, query: string) =>
   [f.name, f.key, f.description, ...f.entry_points, ...f.tables].some((s) => s.toLowerCase().includes(query));
 const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "awaiting_publish", "failed"];
-
-/** A link to start migrating a feature: the New migration form, with the domain and feature chosen. */
-export const migrateUrl = (domain: string, feature: string) => `/?domain=${encodeURIComponent(domain)}&feature=${encodeURIComponent(feature)}`;
 
 export function FeatureForm({ domain, feature, onDone }: { domain: Domain; feature?: Feature; onDone: () => void }) {
   const queryClient = useQueryClient();
@@ -151,7 +149,9 @@ function FeatureRow({ domain, feature, names }: { domain: Domain; feature: Featu
   });
   const run = feature.migration;
   const canEdit = useCan("domains.manage");
+  const [starting, setStarting] = useState(false); // the Start migration form, open under the row
   return (
+    <>
     <tr id={`feature-${feature.key}`} className="scroll-mt-24 border-t border-border align-top">
       <td className="px-4 py-3">
         <span className="font-medium">{feature.name}</span>
@@ -190,9 +190,13 @@ function FeatureRow({ domain, feature, names }: { domain: Domain; feature: Featu
             <StatusBadge status={run.status} />
           </Link>
         ) : (
-          <Link to={migrateUrl(domain.key, feature.key)} className="inline-block rounded-md bg-accent px-3 py-1 text-xs font-medium text-white">
+          <button
+            onClick={() => setStarting(!starting)}
+            aria-expanded={starting}
+            className={`rounded-md px-3 py-1 text-xs font-medium ${starting ? "bg-muted text-fg" : "bg-accent text-white"}`}
+          >
             Migrate
-          </Link>
+          </button>
         )}
       </td>
       <td className="whitespace-nowrap px-4 py-3 text-right">
@@ -214,6 +218,14 @@ function FeatureRow({ domain, feature, names }: { domain: Domain; feature: Featu
         )}
       </td>
     </tr>
+    {starting && !run && (
+      <tr>
+        <td colSpan={6} className="px-4 pb-3">
+          <StartMigration domain={domain} feature={feature} onCancel={() => setStarting(false)} />
+        </td>
+      </tr>
+    )}
+    </>
   );
 }
 

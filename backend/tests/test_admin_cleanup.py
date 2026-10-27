@@ -65,7 +65,7 @@ def test_an_admin_starts_a_waiting_feature_over_with_another_workflow(client):
     assert client.get(f"/api/runs/{run_id}").status_code == 404  # the old run is gone, with its data
     assert _rows(Artifact, run_id) == 0 and _rows(StageExecution, run_id) == 0
     run = wait_for(client, new["id"], {"awaiting_approval"})
-    assert run["pending_gate"] == {"gate": "gate_analysis", "reviews": ["analysis"]}
+    assert run["pending_gate"] == {"gate": "gate_analysis", "reviews": ["analysis"], "checklist": []}
     with session_scope() as s:
         logged = [e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == new["id"]))]
     assert any("over with the lean workflow" in m and "1 earlier run(s)" in m for m in logged)

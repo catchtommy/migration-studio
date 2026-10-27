@@ -82,6 +82,18 @@ export function StageDetail({ stage, stages, run, events, questions }: {
           <span className="font-medium">{execution.rerun ? "Notes for this re-run:" : "Reviewer feedback for this attempt:"}</span> {execution.feedback}
         </div>
       )}
+      {stage.kind === "gate" && execution?.checklist && execution.checklist.length > 0 && execution.status !== "awaiting_approval" && (
+        <div className="rounded-md border border-border bg-surface p-3 text-sm">
+          <span className="font-medium">Checklist ticked at this attempt:</span>
+          <ul className="mt-1 space-y-0.5">
+            {execution.checklist.map((t) => (
+              <li key={t.item}>
+                ☑ {t.item} <span className="text-xs text-subtle">— {t.by}, {new Date(t.at).toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {execution?.error && <div className="rounded-md border border-bad/40 bg-bad/5 p-3 text-sm text-bad">{execution.error}</div>}
 
       {answered.length > 0 && (

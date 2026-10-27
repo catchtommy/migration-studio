@@ -661,6 +661,47 @@ def test_once_the_branch_is_pushed_the_review_compares_with_the_branch_in_git(cl
     assert "attempt 2" in detail["ours"] and detail["original"] is None  # the run's version; new since the start
 
 
+def test_a_step_changing_another_repository_reads_the_latest_of_the_monolith_branch(client, tmp_path):
+    """The monolith step pushed its feature branch, and someone changed that branch outside the studio. A later step
+    that changes another repository (the microservice lifting the module) starts from the monolith's latest too."""
+    upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
+    service = tmp_path / "loan-service"
+    make_monolith(service)
+    wf = proj.get("/api/workflows/standard").json()
+    later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]
+    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == later else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    first = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)["current_stage"]
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={
+        "repo": "monolith", "message": "First step", "branch": run["branch"], "files": [f"studio-stub/{first}.txt"],
+        "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    _push_as_someone_else(upstream, tmp_path, run["branch"], {"module/Fix.java": "fixed outside the studio\n"})
+
+    while True:
+        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches", "awaiting_publish"}, timeout=60)
+        if run["status"] == "awaiting_branches":
+            break
+        if run["status"] == "awaiting_publish":
+            assert proj.post(f"/api/runs/{run['id']}/docs/skip").status_code == 204
+        else:
+            assert proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
+    ws = Path(run["workspace"])
+    assert not (ws / "module/Fix.java").exists()  # not before confirming
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    paused = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert paused["current_stage"] == later
+    assert (ws / "module/Fix.java").read_text() == "fixed outside the studio\n"
+    git(ws, "merge-base", "--is-ancestor", git(upstream, "rev-parse", run["branch"]), "HEAD")  # has the branch's latest
+    repos = {r["key"]: r for r in proj.get(f"/api/runs/{run['id']}/repositories").json()}
+    assert not repos["monolith"]["pending"]  # what came from git is not the run's to commit
+
+
 def _pushed_first_step(client, tmp_path):
     """A run whose first step changed the monolith, committed and pushed; paused afterwards. (upstream, proj, run,
     the step, its file)."""

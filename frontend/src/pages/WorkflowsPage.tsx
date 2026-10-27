@@ -18,8 +18,73 @@ const toSteps = (steps: EditableStep[]): WorkflowStep[] =>
   steps.map(({ uid: _uid, ...s }) =>
     s.kind === "agent"
       ? { kind: "agent", key: s.key, uses: s.uses ?? null, include_content: s.include_content ?? false, code: s.code ?? null, publish_docs: s.publish_docs ?? false }
-      : { kind: "gate", key: s.key, title: s.title ?? "", description: s.description ?? "", reviews: s.reviews ?? [] },
+      : {
+          kind: "gate",
+          key: s.key,
+          title: s.title ?? "",
+          description: s.description ?? "",
+          reviews: s.reviews ?? [],
+          checklist: (s.checklist ?? []).map((i) => i.trim()).filter(Boolean),
+        },
   );
+
+/** The items an approver must tick at a gate before approving. */
+function ChecklistEditor({ index, items, onChange }: { index: number; items: string[]; onChange: (items: string[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const item = draft.trim();
+    if (item && !items.includes(item)) onChange([...items, item]);
+    setDraft("");
+  };
+  return (
+    <fieldset className="text-sm">
+      <legend className="mb-1 text-xs font-medium text-subtle">☑ Checklist: the approver ticks every item before approving</legend>
+      {items.length > 0 && (
+        <ol className="mb-2 space-y-1">
+          {items.map((item, i) => (
+            <li key={i} className="flex items-center gap-2">
+              <span className="w-4 text-xs text-subtle">{i + 1}.</span>
+              <input
+                aria-label={`Step ${index + 1} checklist item ${i + 1}`}
+                className={`${inputClass} flex-1`}
+                value={item}
+                maxLength={300}
+                onChange={(e) => onChange(items.map((x, j) => (j === i ? e.target.value : x)))}
+              />
+              <button
+                type="button"
+                aria-label={`Remove checklist item ${i + 1}`}
+                className="rounded-md px-2 py-1 text-xs text-subtle hover:bg-bad/10 hover:text-bad"
+                onClick={() => onChange(items.filter((_, j) => j !== i))}
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          aria-label={`Step ${index + 1} new checklist item`}
+          className={`${inputClass} flex-1`}
+          value={draft}
+          maxLength={300}
+          placeholder="Add an item, e.g. The SQL map matches the legacy one"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <button type="button" className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50" disabled={!draft.trim()} onClick={add}>
+          Add
+        </button>
+      </div>
+    </fieldset>
+  );
+}
 
 /** The agent a new single-step workflow starts with, by what each run covers. */
 const FIRST_AGENT: Record<Scope, string> = { operation: "as_is_doc", domain: "domain_features", monolith: "bounded_contexts" };
@@ -289,6 +354,7 @@ function StepRow({ step, index, steps, agents, codeSteps, onChange, onMove, onRe
                 )}
                 {earlierAgents.length > 0 && !step.reviews?.length && <p className="mt-1 text-xs text-bad">Select at least one step to review.</p>}
               </fieldset>
+              <ChecklistEditor index={index} items={step.checklist ?? []} onChange={(checklist) => onChange({ ...step, checklist })} />
             </>
           ) : (
             <div className="flex flex-wrap items-center gap-3">
@@ -674,6 +740,13 @@ function WorkflowPreview({ workflow, projectName }: { workflow: Workflow; projec
               <span className="font-medium">{s.title}</span>
               {s.kind === "gate" && <span className="ml-2 text-xs text-warn">approval gate</span>}
               {s.description && <span className="block text-xs text-subtle">{s.description}</span>}
+              {s.kind === "gate" && (s.checklist?.length ?? 0) > 0 && (
+                <ul className="mt-1 space-y-0.5 text-xs text-subtle">
+                  {s.checklist!.map((item) => (
+                    <li key={item}>☐ {item}</li>
+                  ))}
+                </ul>
+              )}
             </span>
           </li>
         ))}
