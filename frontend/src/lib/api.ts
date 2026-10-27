@@ -420,7 +420,8 @@ export interface Workflow {
 /** A workflow's code changes: review and commit them at the end; where; the feature branch's name. */
 export interface WorkflowGit {
   commit: boolean;
-  branch_pattern: string; // {domain} {feature} {run} {date}
+  branch_per?: "domain" | "feature"; // one branch shared by the domain's features (default), or one per feature
+  branch_pattern: string; // {domain} {feature} {run} {date}; a domain's branch can't use {feature} or {run}
 }
 
 export interface AgentCatalog {

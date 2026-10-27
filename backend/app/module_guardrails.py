@@ -622,8 +622,29 @@ def for_context(ctx) -> list[str]:
     if declaration is None:
         return [f"Write {cs.MODULE_EXTRACTION_FILE} (in {ctx.rel(out)}/) first: it declares the new modules, which the "
                 "check needs"]
-    return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, declaration, design, ctx.ownership,
-                 ctx.domain, (finder or {}).get("god_modules"), earlier=earlier_folders(ctx.run_id, ctx.domain))
+    root = (ctx.workspace / ctx.code_dir).resolve()
+    return check(root, ctx.base_sha, declaration, design, ctx.ownership, ctx.domain, (finder or {}).get("god_modules"),
+                 earlier=earlier_folders(ctx.run_id, ctx.domain)) + one_per_domain(ctx, root, "domain", next(
+                     (str(m["path"]) for m in declaration["modules"] if m["kind"] == "domain"), ""), declaration)
+
+
+def one_per_domain(ctx, root: Path, kind: str, declared: str, declaration: dict) -> list[str]:
+    """The domain's one module of `kind`, with one package per feature (app/domain_modules.py)."""
+    from app import domain_modules
+    from app.db.models import Run
+    from app.db.session import session_scope
+
+    try:
+        with session_scope() as s:
+            run = s.get(Run, ctx.run_id)
+            project = run.project if run is not None else None
+    except Exception:  # noqa: BLE001 - without the database there are no earlier features to know
+        project = None
+    if project is None:
+        return []
+    return (domain_modules.problems(project, ctx.domain, ctx.run_id, root, kind, declared)
+            + domain_modules.package_problems(project, ctx.domain, ctx.operation, ctx.run_id, root, ctx.base_sha, kind,
+                                              declared, declaration))
 
 
 def declarations(run_id: str, domain: str, name: str) -> list[str]:

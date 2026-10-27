@@ -26,6 +26,9 @@ def _commit_step(proj, run, files):
 
 def test_two_features_change_the_same_repository_on_their_own_branches(client, tmp_path):
     upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
+    wf = proj.get("/api/workflows/standard").json()  # one branch per feature (the default shares the domain's)
+    assert proj.put("/api/workflows/standard?library=project",
+                    json={"steps": wf["steps"], "git": {"commit": True, "branch_per": "feature"}}).status_code == 200
     a, b = _to_first_code_step(proj, "approve"), _to_first_code_step(proj, "reject")
     assert a["branch"] != b["branch"]
     assert proj.post(f"/api/runs/{a['id']}/branches", json={"feature_branch": a["branch"]}).status_code == 200

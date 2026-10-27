@@ -31,7 +31,12 @@ from app.text import decode
 from app.tools import git_ops
 
 DEFAULT_PATTERN = "migration/{domain}/{feature}"
+# One branch per domain: every feature of the domain adds its work to it, so a later feature builds on the domain's
+# module as the earlier ones left it (app/domain_modules.py). Not migration/{domain}: git can't have that branch beside
+# the domain's per-feature ones.
+DOMAIN_PATTERN = "migration/{domain}/modules"
 PLACEHOLDERS = ("domain", "feature", "run", "date")
+PER_FEATURE = ("feature", "run")  # placeholders a branch shared by the domain's features can't use
 MAX_TEXT = 1_000_000  # larger files are shown as "too large" and can only be taken whole
 ROOT = "monolith"  # the key of the workspace root's repository
 NESTED_DIR = ".studio/repos"  # where a run's other repositories are checked out, inside the workspace
@@ -54,19 +59,35 @@ class DeliveryError(RuntimeError):
 
 # --- settings -------------------------------------------------------------------------------------------------------
 
+def _placeholders(pattern: str) -> set[str]:
+    return set(re.findall(r"{(\w+)}", pattern))
+
+
 def git_settings(workflow: dict | None) -> dict:
-    """A workflow's git settings, with defaults: migrations review and commit their changes; discovery doesn't."""
+    """A workflow's git settings, with defaults: migrations review and commit their changes; discovery doesn't. The
+    branch is one per domain unless the workflow says one per feature (a workflow saved before the choice existed with
+    a pattern naming the feature keeps one per feature)."""
     stored = (workflow or {}).get("git") or {}
     migration = (workflow or {}).get("scope", "operation") == "operation"
-    return {"commit": bool(stored.get("commit", migration)) and migration,
-            "branch_pattern": stored.get("branch_pattern", "") or DEFAULT_PATTERN}
+    pattern = stored.get("branch_pattern", "") or ""
+    per = stored.get("branch_per") or ("feature" if _placeholders(pattern) & set(PER_FEATURE) else "domain")
+    return {"commit": bool(stored.get("commit", migration)) and migration, "branch_per": per,
+            "branch_pattern": pattern or (DOMAIN_PATTERN if per == "domain" else DEFAULT_PATTERN)}
 
 
 def validate_git(values: dict) -> dict:
     """Clean a workflow's git settings, or ValueError."""
-    out = {"commit": bool(values.get("commit", True)), "branch_pattern": str(values.get("branch_pattern") or "").strip()}
+    pattern = str(values.get("branch_pattern") or "").strip()
+    per = values.get("branch_per") or ("feature" if _placeholders(pattern) & set(PER_FEATURE) else "domain")
+    if per not in ("domain", "feature"):
+        raise ValueError("branch_per must be 'domain' or 'feature'")
+    out = {"commit": bool(values.get("commit", True)), "branch_per": per,
+           "branch_pattern": str(values.get("branch_pattern") or "").strip()}
     if out["branch_pattern"]:
-        unknown = set(re.findall(r"{(\w+)}", out["branch_pattern"])) - set(PLACEHOLDERS)
+        unknown = _placeholders(out["branch_pattern"]) - set(PLACEHOLDERS)
+        if per == "domain" and _placeholders(out["branch_pattern"]) & set(PER_FEATURE):
+            raise ValueError("A branch shared by the domain's features can't name the feature or the run; leave out "
+                             "{feature} and {run}, or choose one branch per feature")
         if unknown:
             raise ValueError(f"Unknown placeholder {{{sorted(unknown)[0]}}}; use {', '.join('{%s}' % p for p in PLACEHOLDERS)}")
         if not git_ops.valid_branch(branch_name(out["branch_pattern"], "domain", "feature", "run")):
@@ -76,7 +97,7 @@ def validate_git(values: dict) -> dict:
 
 def branch_name(pattern: str, domain: str, feature: str, run_id: str = "") -> str:
     safe = lambda v: re.sub(r"[^A-Za-z0-9._-]+", "-", v).strip("-.") or "x"  # noqa: E731
-    return (pattern or DEFAULT_PATTERN).format(domain=safe(domain), feature=safe(feature), run=safe(run_id[:8] or "run"),
+    return (pattern or DOMAIN_PATTERN).format(domain=safe(domain), feature=safe(feature), run=safe(run_id[:8] or "run"),
                                                date=datetime.now(UTC).strftime("%Y%m%d"))
 
 
@@ -124,7 +145,7 @@ def plan(project: str, workflow: dict, domain: str, feature: str, base_branches:
     for r in code_repositories(stages, domain):
         listed.append({**r, "name": r["key"], "root": False,
                        "base_branch": (base_branches.get(r["key"]) or "").strip() or r["base_branch"]})
-    out = {"commit": cfg["commit"] and bool(listed),
+    out = {"commit": cfg["commit"] and bool(listed), "domain": domain, "branch_per": cfg["branch_per"],
            "feature_branch": (feature_branch or "").strip() or branch_name(cfg["branch_pattern"], domain, feature),
            "repositories": []}
     for r in listed:
@@ -145,8 +166,9 @@ def check_branches(project: str, info: dict) -> None:
     if not git_ops.valid_branch(feature):
         raise ValueError("The feature branch must be a valid git branch name, e.g. migration/loan/approve")
     with session_scope() as s:
+        # The domain's own runs share its branch (one per domain); another domain's never.
         unfinished = s.scalars(select(Run).where(Run.project == project, Run.branch == feature,
-                                                 Run.status != "completed")).all()
+                                                 Run.status != "completed", Run.domain != info["domain"])).all()
         busy = {url for run in unfinished for url in [_monolith_url(run), *(r["url"] for r in run.repositories or [])]
                 if url}
     for r in info["repositories"]:
@@ -347,7 +369,7 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
         if key == ROOT and workspace.monolith_pending(run):  # its own checkout is cut once confirmed
             target = {"url": run.legacy["url"], "base_branch": run.base_branch or run.legacy.get("branch") or None}
         others = s.scalars(select(Run).where(Run.project == project, Run.branch == feature, Run.status != "completed",
-                                             Run.id != run_id)).all()
+                                             Run.id != run_id, Run.domain != run.domain)).all()
         busy = {u for o in others for u in [_monolith_url(o), *(r["url"] for r in o.repositories or [])] if u}
     if target is not None and not target.get("base_sha"):
         urls.append(target["url"])

@@ -308,8 +308,10 @@ class WorkflowStep(BaseModel):
 
 class WorkflowGit(BaseModel):
     """Code changes (the repositories are on the steps that change code): review and commit them when the run
-    finishes, and the feature branch's name ({domain}, {feature}, {run}, {date})."""
+    finishes, one branch per domain (shared by its features) or per feature, and the branch's name ({domain},
+    {feature}, {run}, {date}; a domain's branch can't use {feature} or {run})."""
     commit: bool = True
+    branch_per: Literal["domain", "feature"] | None = None  # None: per feature when the pattern names it, else domain
     branch_pattern: str = Field(default="", max_length=255)
 
 

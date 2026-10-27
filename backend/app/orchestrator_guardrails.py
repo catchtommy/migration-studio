@@ -126,8 +126,12 @@ def for_context(ctx) -> list[str]:
     if module_decl is None and declaration.get("orchestrator") != "none":
         return [blocker(f"{cs.MODULE_EXTRACTION_FILE} of the Module in monolith step is missing: it says where the domain "
                 "module is")]
-    return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, declaration, module_decl, design,
-                 ctx.ownership, ctx.domain, (finder or {}).get("god_modules"), earlier=_earlier(ctx.run_id, ctx.domain))
+    root = (ctx.workspace / ctx.code_dir).resolve()
+    problems = check(root, ctx.base_sha, declaration, module_decl, design, ctx.ownership, ctx.domain,
+                     (finder or {}).get("god_modules"), earlier=_earlier(ctx.run_id, ctx.domain))
+    if declaration.get("orchestrator") == "module":  # the domain's one orchestrator module (app/domain_modules.py)
+        problems += mg.one_per_domain(ctx, root, "orchestrator", str(declaration["module"]["path"]), declaration)
+    return problems
 
 
 def _earlier(run_id: str, domain: str) -> set[str]:

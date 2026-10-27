@@ -1,6 +1,7 @@
 """Runtime settings editable from the UI, persisted in the `settings` table: global ones (AI provider, network) and
 each project's own (its monolith, stack, toolchains, conventions)."""
 
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -38,6 +39,10 @@ PROJECT_DEFAULTS: dict[str, Any] = {
     "event_topic_pattern": "{domain}-events",  # one topic per publishing domain
     "command_queue_pattern": "{domain}-commands",  # saga commands
     "service_dir_pattern": "services/{domain}-service",  # where each extracted service lives in the workspace
+    # Where each domain's modules live in the monolith: one domain module and one orchestrator module per domain, which
+    # every feature of the domain extends (app/domain_modules.py)
+    "domain_module_dir_pattern": "{domain}-domain",
+    "orchestrator_module_dir_pattern": "{domain}-orchestrator",
     # The migration workflow a new run uses unless its domain has a default of its own; "" = the Standard migration
     "default_workflow": "",
 }
@@ -74,6 +79,11 @@ def get(key: str, project: str | None = None) -> Any:
     return get_all(project)[key]
 
 
+def _relative_folder(value: Any) -> bool:
+    return (isinstance(value, str) and bool(value.strip("/")) and ".." not in value.split("/")
+            and not value.startswith(("/", "\\", "-")) and ":" not in value)
+
+
 def _check(values: dict[str, Any], allowed: dict[str, Any], kind: str) -> None:
     unknown = set(values) - set(allowed)
     if unknown:
@@ -81,9 +91,14 @@ def _check(values: dict[str, Any], allowed: dict[str, Any], kind: str) -> None:
     if "language" in values and values["language"] not in LANGUAGES:
         raise KeyError(f"language must be one of {', '.join(LANGUAGES)}")
     docs = values.get("monolith_docs_dir")
-    if docs is not None and not (isinstance(docs, str) and docs.strip("/") and ".." not in docs.split("/")
-                                 and not docs.startswith(("/", "\\", "-")) and ":" not in docs):
+    if docs is not None and not _relative_folder(docs):
         raise KeyError("The monolith documentation folder must be a relative folder, e.g. docs")
+    for key, example in (("domain_module_dir_pattern", "{domain}-domain"),
+                         ("orchestrator_module_dir_pattern", "{domain}-orchestrator")):
+        value = values.get(key)
+        if value is not None and not (_relative_folder(value) and "{domain}" in value
+                                      and set(re.findall(r"{(\w+)}", value)) == {"domain"}):
+            raise KeyError(f"The module folder must be a relative folder naming the domain, e.g. {example}")
     branch = values.get("monolith_branch")
     if branch is not None and branch != "" and not valid_branch(branch):
         raise KeyError("The base branch must be a git branch or tag name, e.g. main or release/2.4")

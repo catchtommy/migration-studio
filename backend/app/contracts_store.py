@@ -270,9 +270,10 @@ def parse_module_extraction(text: str) -> dict:
     if not data.get("bridge_dir"):
         raise InvalidDocument(f"{where}: add the bridge_dir: the new package in the monolith with the router (and the "
                               "adapters: context ports, and the local adapters of a cross-domain feature)")
-    for field in ("outside_changes", "events"):
-        if data.get(field) is not None and not isinstance(data[field], list):
+    for field in ("outside_changes", "events", "added", "reused"):  # added/reused: classes this feature added to the
+        if data.get(field) is not None and not isinstance(data[field], list):  # domain's module, or reused from it
             raise InvalidDocument(f"{where}: {field} must be a list")
+    _feature_packages(data, where)
     data["toggle_branches"] = _toggle_branches(data.get("toggle_branches"), where)
     data["routing"] = _routing_section(data.get("routing"), where, bool(data["toggle_branches"]))
     bridge = str(data["bridge_dir"]).strip("/")
@@ -364,6 +365,18 @@ def _routing_section(routing, where: str, branches: bool = False) -> dict:
     return routing
 
 
+JAVA_PACKAGE = re.compile(r"^[a-z_][\w]*(?:\.[a-z_][\w]*)*$")
+
+
+def _feature_packages(data: dict, where: str) -> None:
+    """base_package (the module's package; each feature's is <base_package>.<feature>) and uses_features (the domain's
+    other features whose packages this feature uses): app/domain_modules.py."""
+    if data.get("base_package") is not None and not JAVA_PACKAGE.match(str(data["base_package"])):
+        raise InvalidDocument(f"{where}: base_package must be a Java package, e.g. com.acme.broker.domain")
+    if data.get("uses_features") is not None and not isinstance(data["uses_features"], list):
+        raise InvalidDocument(f"{where}: uses_features must be a list of the domain's feature keys")
+
+
 def parse_orchestrator_extraction(text: str) -> dict:
     """What the Orchestrator in monolith step declares it created and changed (or `orchestrator: none` and why)."""
     data = _load(text, ORCHESTRATOR_EXTRACTION_FILE)
@@ -380,6 +393,7 @@ def parse_orchestrator_extraction(text: str) -> dict:
     module = data.get("module")
     if not isinstance(module, dict):
         raise InvalidDocument(f"{where}: module must be a mapping with path and artifact")
+    _feature_packages(data, where)
     _require(module, ("path", "artifact"), f"{where} module")
     if str(module["path"]).startswith("/") or ".." in Path(str(module["path"])).parts:
         raise InvalidDocument(f"{where} module: path must be inside the repository")

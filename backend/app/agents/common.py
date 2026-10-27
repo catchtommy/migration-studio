@@ -258,6 +258,8 @@ def brief(ctx: AgentContext) -> str:
                              "operation. Explore the workspace, and ask the user if you cannot find the code.")
     if ctx.catalogue:
         parts.append(ctx.catalogue)
+    if ctx.domain_modules:
+        parts.append(ctx.domain_modules)
     if ctx.answered:
         parts.append("## Answers you already received\n" +
                      "\n\n".join(f"Q: {q}\nA: {a}" for q, a in ctx.answered))

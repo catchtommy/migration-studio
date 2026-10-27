@@ -340,6 +340,14 @@ function General({ project }: { project: string }) {
               <input className={input} value={form.service_dir_pattern as string} onChange={(e) => set("service_dir_pattern", e.target.value)} />
             </Field>
           </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Domain module folder" hint="In the monolith; {domain} is replaced. One per domain: every feature of the domain extends it.">
+              <input className={input} value={form.domain_module_dir_pattern as string} onChange={(e) => set("domain_module_dir_pattern", e.target.value)} />
+            </Field>
+            <Field label="Orchestrator module folder" hint="In the monolith; {domain} is replaced. One per domain, for its cross-domain features.">
+              <input className={input} value={form.orchestrator_module_dir_pattern as string} onChange={(e) => set("orchestrator_module_dir_pattern", e.target.value)} />
+            </Field>
+          </div>
         </section>
 
         <section className="space-y-2">

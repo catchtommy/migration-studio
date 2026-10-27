@@ -255,9 +255,14 @@ feature: create-broker
 domain: broker
 scope: domain-only            # copy of decision.scope in domain-dependencies.yaml
 modules:
-  - path: broker-domain/broker-profile/domain     # folder of the new Maven module (or this domain's, from before)
-    kind: domain              # the domain module, the only one this step creates (the next step adds the orchestrator)
-    artifact: com.acme:broker-profile-domain
+  - path: broker-domain        # the domain's ONE module (see "This domain's modules"): new for its first feature
+    kind: domain              # the domain module, the only one this step creates or extends (the next step adds the orchestrator)
+    artifact: com.acme:broker-domain
+base_package: com.acme.broker.domain   # the module's package (the same for every feature of the domain)
+#   this feature's classes: com.acme.broker.domain.createbroker (its key without dashes), sub-packages allowed;
+#   the domain's types several features use and none owns (entities, DAOs, DTOs): com.acme.broker.domain.shared
+#   stateless helpers several features use (formatters, mappers, validators): com.acme.broker.domain.util
+uses_features: [view-broker]  # the domain's other features whose packages this feature's code uses; [] when none
 bridge_dir: web/src/main/java/com/acme/broker/legacybridge   # new: the router, and adapters for context ports and local bindings
 routing:                      # the parallel run: legacy (as-is) or monolith (the new module), per call
   property: migration.broker.create-broker.route
@@ -273,6 +278,8 @@ outside_changes:              # every existing file outside the module and the b
   - web/src/main/webapp/WEB-INF/applicationContext.xml
   - pom.xml
 events: [BrokerCreated]       # only events named in the approved designs
+added: [CloseBrokerCommand]   # optional: classes this feature added to the module
+reused: [BrokerDao, Broker]   # optional: classes earlier features had copied, reused as they were
 ```"""
 
 SERVICE_EXTRACTION_SCHEMA = """```yaml
@@ -299,8 +306,10 @@ domain: loan
 orchestrator: module          # module | none (no orchestrator: give the reason and nothing else)
 # reason: The feature is domain-only   # only with orchestrator: none
 module:
-  path: loan-domain/create-loan/orchestrator   # folder of the new Maven module
-  artifact: com.acme:create-loan-orchestrator
+  path: loan-orchestrator    # the domain's ONE orchestrator module (see "This domain's modules"): new for its first feature
+  artifact: com.acme:loan-orchestrator
+base_package: com.acme.loan.orchestrator   # this feature's classes in com.acme.loan.orchestrator.createloan; shared ones in .shared, helpers in .util
+uses_features: []             # the domain's other features whose packages this feature's code uses
 operations:                   # what the router's monolith value now calls
   - method: LoanOrchestrator#create            # same name and signature as the domain API method it takes over
     replaces: LoanService#create               # the domain API method the router called before
@@ -801,8 +810,24 @@ know the legacy types.
 
 Read first: `domain-dependencies.yaml` (the scope decision, `god_modules`, `shared_code`), \
 `linked-domain-contracts.yaml`, `domain-design.yaml` and `domain-design.md`, `orchestrator-design.md` and \
-`integration-decisions.yaml` when they exist. If a module for this domain already exists (an earlier feature), extend \
-it; do not create it again.
+`integration-decisions.yaml` when they exist, and "This domain's modules" below.
+
+**One module per domain.** The domain has ONE domain module, shared by all its features, where "This domain's \
+modules" says. Its first feature creates it; every later feature extends it and never creates another. What earlier \
+features copied (classes, SQL statements, the router, context ports and their adapters) is reused, not copied again. \
+If "This domain's modules" says the module exists but it is not in your checkout, stop and ask: the earlier feature's \
+work must be committed and pushed to the domain's branch first. Earlier features keep working exactly as before: \
+their characterization tests stay unchanged and must still pass.
+
+**One package per feature.** Inside the module, every class goes in the package of the feature it belongs to, \
+`<base_package>.<feature package>` (the feature packages are listed in "This domain's modules"), never directly in \
+`<base_package>`. Code this feature uses that belongs to ANOTHER feature of the domain goes in that feature's package \
+(create it if it doesn't exist yet, even when that feature's migration hasn't started) and that feature is listed in \
+`uses_features`. The domain's types several features use and none owns (for example the domain's entity, or a DAO \
+serving several features) go in `<base_package>.shared`. Stateless helpers several features use (formatters, mappers, \
+validators: no business rules, no database access, no state) go in `<base_package>.util`. Helpers in the monolith's \
+utility jars are not copied at all: the module depends on the jar (`utility_modules`). So each feature's package can later move as it is, and the module \
+shows which feature uses which. The tests go in the same packages as the classes they test.
 
 Procedure:
 1. Baseline. Build and test only the modules this feature touches, with the project's build tool (offline and quiet \
@@ -817,18 +842,27 @@ legacy service. Run them; they must pass before anything else. Commit them. They
 commit locally (`git add -A`, then `git -c user.name=migration-studio -c user.email=studio@localhost commit -m "step \
 N: ..."`). If a step fails, revert it with git instead of fixing behaviour; fix forward only when the fix is \
 mechanical. Never push.
-   a. Module skeleton: a POM that inherits everything from the parent (no versions, plugins or Java level) with only \
-the allowed dependencies; the `<module>` line in the parent; the dependency line in the POM that uses it.
+   a. Module skeleton, only when the domain has no module yet: a POM that inherits everything from the parent (no \
+versions, plugins or Java level) with only the allowed dependencies; the `<module>` line in the parent; the \
+dependency line in the POM that uses it. When the module exists, skip this step (add a dependency to its POM only if \
+this feature needs an allowed one it lacks).
    b. Copy the feature's classes (service interface and implementation, DAO, DTOs and entities) into the module, \
-changing the package line only. The legacy files stay as they are.
+each into its package (rule above: this feature's, another feature's, `shared` or `util`), changing the package line (and \
+the imports of other copied classes) only. The legacy files stay as they are. A class already in the module (an earlier \
+feature copied it) is reused, not copied again; if this feature needs something of the legacy class the copy does not \
+have yet, copy the legacy file over it again (package line only) and check that the earlier features' tests still \
+pass. List what you added and reused in `added` and `reused`.
    c. Context ports: in the copy, replace every ambient input (HttpSession, HttpServletRequest, \
 RequestContextHolder, SecurityContextHolder, ThreadLocal, static holders of the user, session or request) with a \
 call on a port from `context_ports` in `domain-design.yaml`: an interface in the domain module, named for what it \
 gives, such as CurrentUser. The adapter that reads the legacy source lives in the bridge package, one class per port, \
 registered as the port's bean. If you find an ambient input the design does not list, stop and ask.
    d. SQL: copy the statements the feature uses into the module's own SQL map (its own namespace), text identical, \
-registered in `sqlMapConfig` by one line. The legacy SQL maps stay as they are. A statement another domain also uses: \
-stop and ask.
+registered in `sqlMapConfig` by one line. The legacy SQL maps stay as they are. A statement already in the module's \
+SQL map (an earlier feature copied it) is reused; add only the ones missing, text identical. Each statement goes in \
+the SQL map of the package whose class uses it (one SQL map per feature package, and one for `shared`; `util` has \
+none). A statement another \
+domain also uses: stop and ask.
    e. Cross-domain features only: every call the copy makes to another domain goes through a port of the domain \
 module (the ports in `domain-design.md`). Its `local` adapter lives in the bridge package (`bridge_dir`): one class \
 per contract binding, calling only the single legacy method it names, resolving that bean lazily (setter injection \
@@ -843,7 +877,9 @@ context, and the router: in the bridge package, implementing the legacy service'
 legacy bean's id while the legacy bean gets a new one. It reads the toggle on every call and delegates to the legacy \
 bean (`legacy`, also for an unknown value) or to the domain module (`monolith`), converting the types the copy has in \
 another package (in mappers in the bridge package when it is more than a line or two). If a caller has no bean seam \
-(rule above), add its toggle branch; if neither fits, stop and ask.
+(rule above), add its toggle branch; if neither fits, stop and ask. There is one router per legacy bean for the whole \
+domain: when an earlier feature's router already takes over the bean, add this feature's methods to it, each reading \
+this feature's toggle, and leave the earlier features' methods and toggles exactly as they are.
    h. Tests: the characterization tests pass with the toggle at `legacy` and at `monolith`, unchanged; a wiring test, \
 with the test libraries that exist, shows that the legacy bean id resolves to the router and each value reaches its \
 flow; the characterization test of each caller with a toggle branch passes unchanged at `legacy` and at \
@@ -873,8 +909,14 @@ the feature runs on the new flow
 ### Rollback: set the toggle to `legacy`, or revert the commit""",
 
     "monolith_orchestrator": f"""You are a careful legacy refactorer. You build the orchestrator of ONE cross-domain \
-feature as its own Maven module in the monolith, exactly as `orchestrator-design.md` says, on top of the domain module \
-that the Module in monolith step built. Afterwards, with the feature's toggle at `monolith`, a request flows \
+feature in the domain's orchestrator module in the monolith, exactly as `orchestrator-design.md` says, on top of the \
+domain module that the Module in monolith step built. The domain has ONE orchestrator module, shared by all its \
+cross-domain features, where "This domain's modules" says: its first such feature creates it, every later one adds \
+its orchestrator operations to it and reuses the ports, mode switches and contract adapters already there. As in the \
+domain module, each feature's classes go in its own package, `<base_package>.<feature package>`; ports, mode \
+switches and contract adapters several features use go in `<base_package>.shared`, stateless helpers in \
+`<base_package>.util`; code of another feature of the \
+domain goes in that feature's package, listed in `uses_features`. Afterwards, with the feature's toggle at `monolith`, a request flows \
 controller → router → orchestrator → domain module (at `legacy` it still runs the as-is code, unchanged): the \
 orchestrator sequences the calls to the domain's public API and to the other domains, and the domain module keeps the \
 feature's business logic and data access. You change nothing about how the feature behaves. {_LEGACY}
@@ -949,11 +991,13 @@ with the ports mocked. Run them on the current code; they must pass. Commit them
 `check_orchestrator_guardrails`, then commit locally (`git add -A`, then `git -c user.name=migration-studio -c \
 user.email=studio@localhost commit -m "step N: ..."`). If a step fails, revert it with git; fix forward only when the \
 fix is mechanical. Never push.
-   a. Module skeleton: a POM that inherits everything from the parent (no versions, plugins or Java level) and \
-depends on the domain module and only on libraries the monolith already uses; the `<module>` line in the parent; the \
-dependency line in the POM of the web application.
+   a. Module skeleton, only when the domain has no orchestrator module yet: a POM that inherits everything from the \
+parent (no versions, plugins or Java level) and depends on the domain module and only on libraries the monolith \
+already uses; the `<module>` line in the parent; the dependency line in the POM of the web application. When it \
+exists, skip this step.
    b. The port implementations with their mode switch, and the contract adapters, with tests for both modes \
-(`contract` mode against a stub of the contract).
+(`contract` mode against a stub of the contract). A port or contract adapter already in the module (an earlier \
+feature added it) is reused, not added again.
    c. The orchestrator classes, with tests that check the calls of each operation and their order in each mode.
    d. Spring: a context file in the orchestrator module with its beans and the defaults of the mode properties, one \
 import line in the monolith's root context, and the port beans pointed at the mode switches instead of the local \
@@ -1008,6 +1052,11 @@ them, follow the rules and list the difference under deviations in `microservice
 
 {_REST_RULES}
 
+The domain has ONE service, shared by all its features, like its one domain module ("This domain's modules"): when \
+an earlier feature already lifted the module into it, extend it with what this feature added, reuse what is there, \
+and keep everything the earlier features need working. Keep the module's package per feature (and `shared`, `util`) as it \
+is: only the base part of the package names changes.
+
 Read first: `module-extraction.yaml` (where the module is, in the monolith checkout at the workspace root, and its events), `domain-design.yaml`, `openapi.yaml`, `integration-decisions.yaml`, `orchestrator-design.md` when it exists, and the module itself.
 
 Procedure:
@@ -1039,9 +1088,10 @@ Stop and ask with ask_user when: the module's build or tests are not green; a co
 ### Open decisions: the transactional callers and the loops found in step 7
 ### Rollback: delete the service repository branch; the monolith is unchanged""",
 
-    "orchestrator_service": f"""You are a careful engineer. You lift ONE feature's orchestrator, the module the \
-Orchestrator in monolith step built, into its own Spring Boot service in its own repository, exactly as the approved \
-designs say. The service only orchestrates: for each operation it calls the domain microservice and the other \
+    "orchestrator_service": f"""You are a careful engineer. You lift ONE feature's orchestrator, from the domain's \
+orchestrator module the Orchestrator in monolith step built, into the domain's orchestrator service (one Spring Boot \
+service per domain, in its own repository, shared by the domain's cross-domain features: extend it when an earlier \
+feature created it, and reuse its clients and adapters), exactly as the approved designs say. The service only orchestrates: for each operation it calls the domain microservice and the other \
 domains over their APIs, in the order the orchestrator design gives, and it holds no database. Afterwards the \
 monolith calls the feature through it: monolith → orchestrator service → domain service, with the other domains \
 reached through their contracts. {_LEGACY}

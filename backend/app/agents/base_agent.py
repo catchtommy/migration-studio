@@ -98,6 +98,7 @@ class AgentContext:
     previous_artifacts: list[PriorDocument] = field(default_factory=list)
     answered: list[tuple[str, str]] = field(default_factory=list)  # (question, answer) from earlier attempts
     catalogue: str = ""  # cross-domain ownership, conventions and contracts (markdown)
+    domain_modules: str = ""  # the module and service steps: the domain's modules, which they extend (markdown)
     ownership: dict = field(default_factory=dict)  # domain key -> {"tables": [...], "packages": [...]}
     service_dir: str = ""  # this domain's microservice directory, relative to the workspace
     # Where this step changes code, relative to the workspace: "." (the monolith at the root) or the run's checkout of

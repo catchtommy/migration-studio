@@ -148,15 +148,15 @@ exceptions: []
                 scope = contracts_store.load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"]
             except contracts_store.InvalidDocument:
                 pass
-        base = f"{ctx.domain}-domain/{ctx.operation}"
-        modules = [("domain", f"{base}/domain", f"com.example:{ctx.domain}-{ctx.operation}-domain")]
+        modules = [("domain", f"{ctx.domain}-domain", f"com.example:{ctx.domain}-domain")]  # the domain's one module
         lines = ["# [stub] sample module extraction declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
                  f"scope: {scope}", "modules:"]
         for kind, path, artifact in modules:
             lines += [f"  - path: {path}", f"    kind: {kind}", f"    artifact: {artifact}"]
         bridge = f"src/main/java/com/example/{ctx.domain}/legacybridge"
         name = _ident(ctx.domain)
-        lines += [f"bridge_dir: {bridge}", "routing:", f"  property: migration.{ctx.domain}.{ctx.operation}.route",
+        lines += [f"base_package: com.example.{_ident(ctx.domain).lower()}.domain", "uses_features: []",
+                  f"bridge_dir: {bridge}", "routing:", f"  property: migration.{ctx.domain}.{ctx.operation}.route",
                   "  default: legacy", f"  router: {bridge}/{name}ServiceRouter.java", "  routes:",
                   f"    - bean: {ctx.domain}Service", f"      legacy_bean: {ctx.domain}ServiceLegacy",
                   f"      interface: com.example.{ctx.domain}.{name}Service",
@@ -169,8 +169,10 @@ exceptions: []
         if _scope(ctx) == "cross-domain":
             name = _ident(ctx.domain)
             lines += ["orchestrator: module", "module:",
-                      f"  path: {ctx.domain}-domain/{ctx.operation}/orchestrator",
-                      f"  artifact: com.example:{ctx.domain}-{ctx.operation}-orchestrator", "operations:",
+                      f"  path: {ctx.domain}-orchestrator",  # the domain's one orchestrator module
+                      f"  artifact: com.example:{ctx.domain}-orchestrator",
+                      f"base_package: com.example.{_ident(ctx.domain).lower()}.orchestrator", "uses_features: []",
+                      "operations:",
                       f"  - method: {name}Orchestrator#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
                       f"    replaces: {name}Service#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
                       f"router: src/main/java/com/example/{ctx.domain}/legacybridge/{name}ServiceRouter.java",
@@ -681,3 +683,29 @@ def _sample_code_change(ctx: AgentContext, stage: StageDef) -> None:
     code.parent.mkdir(parents=True, exist_ok=True)
     code.write_text(f"{stage.title} for {ctx.domain}/{ctx.operation} (stub agent, attempt {ctx.attempt})\n", encoding="utf-8")
     ctx.log(f"[stub] changed code: {ctx.rel(code)}")
+    _sample_module(ctx)
+
+
+def _sample_module(ctx: AgentContext) -> None:
+    """The module steps also add a placeholder class to the domain's one module, in this feature's package, as their
+    declarations say (app/domain_modules.py), so a stub run shows the layout real agents build."""
+    kind = {"modular_monolith": "domain", "monolith_orchestrator": "orchestrator"}.get(ctx.stage)
+    if kind is None or ctx.code_dir != "." or (kind == "orchestrator" and _scope(ctx) != "cross-domain"):
+        return
+    from app import domain_modules, projects
+    project = projects.current_or_none()
+    if project is None:
+        return
+    root = ctx.workspace / domain_modules.pattern_path(project, kind, ctx.domain)
+    pom = root / "pom.xml"
+    if not pom.exists():
+        root.mkdir(parents=True, exist_ok=True)
+        pom.write_text(f"<!-- [stub] the {ctx.domain} {kind} module -->\n<project>\n  <artifactId>{ctx.domain}-{kind}"
+                       "</artifactId>\n</project>\n", encoding="utf-8")
+    package = f"com.example.{_ident(ctx.domain).lower()}.{kind}.{domain_modules.feature_segment(ctx.operation)}"
+    name = f"{_ident(ctx.operation)}{'Orchestrator' if kind == 'orchestrator' else ''}Stub"
+    java = root / "src/main/java" / package.replace(".", "/") / f"{name}.java"
+    java.parent.mkdir(parents=True, exist_ok=True)
+    java.write_text(f"package {package};\n\n/** [stub] {ctx.operation}'s code in the {ctx.domain} {kind} module. */\n"
+                    f"public class {name} {{\n}}\n", encoding="utf-8")
+    ctx.log(f"[stub] changed code: {ctx.rel(java)}")

@@ -12,7 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from sqlalchemy import func, select
 
-from app import agent_store, contracts_store, discovery_store, modulith_scope
+from app import agent_store, contracts_store, discovery_store, domain_modules, modulith_scope
 from app import legacy, projects, workspace
 from app.agents import get_agent
 from app.agents.base_agent import AgentContext, AgentInputs, ArtifactOut, PriorDocument, docs_dir
@@ -398,6 +398,8 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             catalogue=(discovery_store.domains_brief(domain) if discovery else
                        contracts_store.catalogue_brief(domain, settings)),
             ownership=_ownership(),
+            domain_modules=(domain_modules.brief(_project_of(run_id), state["domain"], run_id, ws)
+                            if stage.key in domain_modules.STEPS and not discovery else ""),
             service_dir=code_dir if code_dir != "." else settings["service_dir_pattern"].format(domain=domain),
             code_dir=code_dir, repositories=_repository_notes(nested),
             legacy=legacy_info, legacy_dir=legacy.path_for(_project_of(run_id), legacy_info, started_by),
