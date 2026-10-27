@@ -111,8 +111,9 @@ def _sync(run_id: str, user_id: int | None) -> tuple[Path, str, str, str]:
 
 
 def preview(run_id: str, user_id: int | None) -> dict:
-    """The files to publish against the base branch now: new, modified or unchanged, the old and new contents, and
-    whether someone changed a file in git since this run last published it."""
+    """The files to publish against the base branch now: the new and modified ones (a document the branch already has
+    exactly as approved is only counted, in "unchanged"), the old and new contents, and whether someone changed a file
+    in git since this run last published it."""
     with session_scope() as s:
         run = s.get(Run, run_id)
         gate = run.current_stage if run.status == "awaiting_publish" else None
@@ -120,18 +121,21 @@ def preview(run_id: str, user_id: int | None) -> dict:
         domain, feature = run.domain, run.operation
     docs = documents(run_id, gate)
     mirror, url, branch, latest = _sync(run_id, user_id)
-    files = []
+    files, unchanged = [], 0
     for path, content in docs.items():
         old_bytes = git_ops.read_blob(mirror, latest, path)
         old = old_bytes.decode("utf-8", errors="replace") if old_bytes is not None else None
-        status = "new" if old is None else "unchanged" if old == content else "modified"
+        if old == content:
+            unchanged += 1
+            continue
+        status = "new" if old is None else "modified"
         changed_upstream = old is not None and path in last and _digest(old) != last[path] and old != content
         big = len(content) > MAX_TEXT or (old is not None and len(old) > MAX_TEXT)
         files.append({"path": path, "status": status, "changed_upstream": changed_upstream,
                       "old": None if big else old, "new": None if big else content})
     return {"repository": url, "branch": branch, "latest_sha": latest, "folder": f"{docs_folder(_project(run_id))}/"
             f"{domain}/{feature}/", "message": f"Document {domain} {feature} (AS-IS)\n\nApproved in Migration Studio.",
-            "files": files}
+            "files": files, "unchanged": unchanged}
 
 
 def publish(run_id: str, user_id: int, message: str, paths: list[str], latest_sha: str) -> dict:

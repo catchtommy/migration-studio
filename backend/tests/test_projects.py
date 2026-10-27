@@ -374,3 +374,30 @@ def test_a_run_gets_its_own_checkout_of_the_monolith_only_when_a_step_changes_it
     assert (ws / "App.java").read_text() == "release"
     assert git_ops.git(ws, "rev-parse", "--abbrev-ref", "HEAD") == detail["branch"]
     assert not ws.with_name(ws.name + ".monolith").exists()
+
+
+def test_commits_that_only_change_the_docs_folder_dont_make_a_run_look_out_of_date(tmp_path):
+    """Publishing approved AS-IS documents commits to the docs folder of the base branch after every approval; only
+    commits changing something else count as the base branch moving on (repos.behind)."""
+    import subprocess
+
+    from app.tools import git_ops
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo, check=True,  # noqa: E731
+                                    capture_output=True, text=True).stdout.strip()
+    run("init", "-q")
+    (repo / "App.java").write_text("v1")
+    run("add", "-A")
+    run("commit", "-qm", "start")
+    start = run("rev-parse", "HEAD")
+    (repo / "docs/broker/close").mkdir(parents=True)
+    (repo / "docs/broker/close/as_is_doc.md").write_text("doc")
+    run("add", "-A")
+    run("commit", "-qm", "Document broker close (AS-IS)")
+    assert git_ops.count_commits(repo, start, "HEAD") == 1
+    assert git_ops.count_commits(repo, start, "HEAD", exclude="docs") == 0
+    (repo / "App.java").write_text("v2")
+    run("commit", "-qam", "code change")
+    assert git_ops.count_commits(repo, start, "HEAD", exclude="docs") == 1

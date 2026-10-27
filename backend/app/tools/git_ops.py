@@ -194,8 +194,10 @@ def commit_info(repo: Path, ref: str) -> dict | None:
     return {"sha": sha, "subject": subject, "author": author, "date": date}
 
 
-def count_commits(repo: Path, since: str, until: str) -> int | None:
-    proc = subprocess.run(["git", "rev-list", "--count", f"{since}..{until}"], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
+def count_commits(repo: Path, since: str, until: str, exclude: str | None = None) -> int | None:
+    """Commits in since..until; with `exclude` (a folder), only those that change something outside it."""
+    paths = ["--", ".", f":(exclude){exclude}"] if exclude else []
+    proc = subprocess.run(["git", "rev-list", "--count", f"{since}..{until}", *paths], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return int(proc.stdout.strip()) if proc.returncode == 0 else None
 
 

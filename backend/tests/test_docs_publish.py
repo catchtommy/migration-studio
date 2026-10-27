@@ -108,3 +108,28 @@ def test_the_documentation_folder_is_a_safe_relative_path(client):
     for bad in ("../outside", "/abs", "C:docs", "-x"):
         assert client.put(f"/api/projects/{key}/settings", json={"monolith_docs_dir": bad}).status_code == 422, bad
     assert client.put(f"/api/projects/{key}/settings", json={"monolith_docs_dir": "documentation/as-is"}).status_code == 200
+
+
+def test_documents_the_branch_already_has_as_approved_are_not_listed(client, tmp_path):
+    work, commit, bare, key, proj = setup(client, tmp_path)
+    run = to_publish(proj)
+    docs = docs_publish.documents(run["id"], "gate_analysis")
+    same = "docs/loan/approve/as_is_doc.md"
+    (work / same).parent.mkdir(parents=True)
+    (work / same).write_text(docs[same])  # someone already pushed this document exactly as approved
+    commit("add", "-A")
+    commit("commit", "-qm", "same document")
+    git(work, "push", "--quiet", str(bare), "main")
+
+    preview = proj.get(f"/api/runs/{run['id']}/docs").json()
+    assert same not in [f["path"] for f in preview["files"]] and preview["unchanged"] == 1
+    assert preview["files"] and all(f["status"] in ("new", "modified") for f in preview["files"])
+
+    for path, content in docs.items():  # every document already there: nothing listed
+        (work / path).parent.mkdir(parents=True, exist_ok=True)
+        (work / path).write_text(content)
+    commit("add", "-A")
+    commit("commit", "-qm", "all documents")
+    git(work, "push", "--quiet", str(bare), "main")
+    preview = proj.get(f"/api/runs/{run['id']}/docs").json()
+    assert preview["files"] == [] and preview["unchanged"] == len(docs)

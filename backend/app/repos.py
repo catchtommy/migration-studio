@@ -159,13 +159,16 @@ def has_branch(project: str, url: str, branch: str) -> bool | None:
 
 
 def behind(project: str, url: str | None, base_branch: str | None, base_sha: str | None) -> int | None:
-    """How many commits the base branch has gained (as last fetched) since a run started from base_sha."""
+    """How many commits the base branch has gained (as last fetched) since a run started from base_sha. Commits that
+    only change the docs folder don't count: the studio publishes approved AS-IS documents there (app/docs_publish.py),
+    so every approval would otherwise make every run in progress look out of date."""
     if not url or not base_sha:
         return None
     path = mirror_dir(project, url)
     if not path.exists():
         return None
-    return git_ops.count_commits(path, base_sha, base_branch or "HEAD")
+    from app.docs_publish import docs_folder
+    return git_ops.count_commits(path, base_sha, base_branch or "HEAD", exclude=docs_folder(project) or None)
 
 
 def remove(project: str) -> None:

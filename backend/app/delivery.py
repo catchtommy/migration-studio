@@ -641,11 +641,13 @@ def _changes(run_id: str, key: str, user_id: int | None) -> dict:
         state = _file_state(ctx, status, path, upstream)
         added, deleted = stats.get(path, (None, None))
         state.pop("merged")
-        # Already on the feature branch in git exactly as the run has it: nothing new to commit there.
-        same = bool(remote) and git_ops.read_blob(ws, ctx["head"], path) == git_ops.read_blob(ws, remote, path)
+        # Already in git exactly as the run has it, on the feature branch or the latest base branch (the commit goes on
+        # top of it): nothing to commit.
+        ours = git_ops.read_blob(ws, ctx["head"], path)
+        same = ((bool(remote) and ours == git_ops.read_blob(ws, remote, path))
+                or (path in upstream and ours == git_ops.read_blob(ws, ctx["latest"], path)))
         files.append({**state, "additions": added, "deletions": deleted, "same_in_git": same})
-    # Only what is a change: a file already on the feature branch in git exactly as the run has it is left out (a
-    # commit leaves it as it is there).
+    # Only what is a change: a file already in git exactly as the run has it is left out (a commit leaves it as it is).
     unchanged = sum(1 for f in files if f["same_in_git"])
     files = sorted((f for f in files if not f["same_in_git"]), key=lambda f: (f["document"], f["path"]))  # code first
     previous = ctx["delivery"] if ctx["delivery"].get("status") == "pushed" else None

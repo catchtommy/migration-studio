@@ -914,3 +914,24 @@ def test_a_step_whose_change_matches_git_asks_for_no_review(client, tmp_path):
         assert not delivery._pending(r, repo)  # nothing differs from git: no review
     changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
     assert [f["path"] for f in changes["files"] if not f["document"]] == []
+
+
+def test_a_change_the_base_branch_already_has_is_not_listed(client, tmp_path):
+    """The run changed a file, and the base branch got exactly that version meanwhile: committing it on top of the
+    latest base branch changes nothing, so the review leaves it out and counts it."""
+    upstream, key, proj = setup_project(client, tmp_path)
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    first = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)["current_stage"]
+    path = f"studio-stub/{first}.txt"
+    before = [f["path"] for f in proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()["files"]]
+    assert path in before
+
+    (upstream / path).parent.mkdir(parents=True, exist_ok=True)
+    (upstream / path).write_text((Path(run["workspace"]) / path).read_text())  # the same change, on main
+    git(upstream, "add", "-A")
+    git(upstream, "commit", "-qm", "same change on main")
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    assert path not in [f["path"] for f in changes["files"]]
+    assert changes["unchanged_in_git"] == 1

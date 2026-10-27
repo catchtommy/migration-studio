@@ -83,7 +83,8 @@ export interface DocsPreview {
   latest_sha: string;
   folder: string;
   message: string;
-  files: { path: string; status: "new" | "modified" | "unchanged"; changed_upstream: boolean; old: string | null; new: string | null }[];
+  files: { path: string; status: "new" | "modified"; changed_upstream: boolean; old: string | null; new: string | null }[];
+  unchanged: number; // documents the branch already has exactly as approved: not listed
 }
 
 /** Where a new migration works, for the New migration form: the feature branch, cut in each repository. */
@@ -146,7 +147,7 @@ export interface RunChanges {
   warning: string | null;
   message: string;
   files: ChangedFile[]; // only files that differ from the feature branch in git
-  unchanged_in_git?: number; // files the run changed that are already on the branch in git as they are: not listed
+  unchanged_in_git?: number; // files the run changed that are already in git as they are (feature or base branch): not listed
   conflicts: number;
 }
 
@@ -228,7 +229,7 @@ export interface RunDetail extends Run {
   pending_commit: { stage: string; stage_title: string; repository: { key: string; name: string; url: string } } | null; // awaiting_commit right after a step
   pending_rerun: { gate: string; target_stage: string; comments: string | null; scope?: RerunScope } | null; // rejection held for amendments
   base_sha: string | null; // the monolith commit the run started from
-  monolith_behind: number | null; // commits the project's base branch has gained since (as last fetched)
+  monolith_behind: number | null; // commits the base branch has gained since (as last fetched), docs folder aside
   workflow_update: WorkflowUpdate | null; // the run's workflow changed since it started: what updating it would do
   stopping?: boolean; // an admin asked the working run to stop: its agent ends at its next step
 }

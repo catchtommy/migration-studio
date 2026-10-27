@@ -6,7 +6,7 @@ import { useCan } from "../lib/hooks";
 import { DiffView } from "./CommitReview";
 import { BranchIcon } from "./icons";
 
-const STATUS: Record<string, string> = { new: "text-ok", modified: "text-warn", unchanged: "text-subtle" };
+const STATUS: Record<string, string> = { new: "text-ok", modified: "text-warn" };
 
 /** The gate approved the AS-IS documents: publish them to the monolith's docs/<domain>/<feature>/ on its base branch
  * (as the user, by hand), so later agents read them instead of the code; or skip. */
@@ -25,7 +25,7 @@ export function PublishDocsPanel({ run }: { run: RunDetail }) {
   const [message, setMessage] = useState<string | null>(null);
   useEffect(() => {
     if (!data) return;
-    setSelected(new Set(data.files.filter((f) => f.status !== "unchanged").map((f) => f.path)));
+    setSelected(new Set(data.files.map((f) => f.path)));
     setActive((a) => a ?? data.files[0]?.path ?? null);
   }, [data]);
   const done = () => queryClient.invalidateQueries({ queryKey: ["run", run.id] });
@@ -49,7 +49,20 @@ export function PublishDocsPanel({ run }: { run: RunDetail }) {
         {error && <p className="text-sm text-bad">{(error as Error).message}</p>}
       </div>
       {!data && !error && <p className="p-4 text-sm text-subtle">Fetching the monolith and comparing…</p>}
-      {data && (
+      {data && data.files.length === 0 && (
+        <div className="space-y-3 p-4 text-sm">
+          <p>
+            Nothing to publish: {data.branch} already has {data.unchanged === 1 ? "this document" : `all ${data.unchanged} documents`} exactly as approved.
+          </p>
+          {(skip.error as Error | null) && <p className="text-bad">{(skip.error as Error).message}</p>}
+          {canPublish && (
+            <button type="button" disabled={skip.isPending} className="rounded-md bg-accent px-4 py-1.5 font-medium text-white disabled:opacity-50" onClick={() => skip.mutate()}>
+              Continue
+            </button>
+          )}
+        </div>
+      )}
+      {data && data.files.length > 0 && (
         <>
           <div className="grid min-h-[20rem] lg:grid-cols-[18rem_1fr]">
             <ul className="border-b border-border py-1 text-sm lg:border-b-0 lg:border-r" aria-label="Documents to publish">
@@ -106,6 +119,12 @@ export function PublishDocsPanel({ run }: { run: RunDetail }) {
               <span className="mb-1 block text-xs font-medium text-subtle">Commit message</span>
               <textarea rows={3} className="w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-xs" value={message ?? data.message} onChange={(e) => setMessage(e.target.value)} />
             </label>
+            {data.unchanged > 0 && (
+              <p className="text-xs text-subtle">
+                {data.unchanged} other document{data.unchanged === 1 ? " is" : "s are"} already in {data.branch} exactly as approved, so{" "}
+                {data.unchanged === 1 ? "it isn't" : "they aren't"} listed.
+              </p>
+            )}
             <p className="flex flex-wrap items-center gap-1 text-xs text-subtle">
               <BranchIcon className="h-3.5 w-3.5" />
               Commits {selected.size} document{selected.size === 1 ? "" : "s"} directly to <code>{data.branch}</code> of <span className="break-all font-mono">{data.repository}</span>

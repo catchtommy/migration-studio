@@ -385,13 +385,14 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
           {!!changes.unchanged_in_git && (
             <>
               {" "}
-              {changes.unchanged_in_git} other file{changes.unchanged_in_git === 1 ? " is" : "s are"} already on {changes.feature_branch} in git as {changes.unchanged_in_git === 1 ? "it is" : "they are"} here, so
+              {changes.unchanged_in_git} other file{changes.unchanged_in_git === 1 ? " is" : "s are"} already in git as {changes.unchanged_in_git === 1 ? "it is" : "they are"} here (on{" "}
+              {changes.feature_branch} or {changes.base_branch}), so
               {changes.unchanged_in_git === 1 ? " it isn't" : " they aren't"} listed.
             </>
           )}
         </p>
         {changes.files.length === 0 && (
-          <p className="rounded-md border border-border bg-surface px-3 py-2 text-sm">Nothing new to commit here: everything this run changed is already on {changes.feature_branch} in git.</p>
+          <p className="rounded-md border border-border bg-surface px-3 py-2 text-sm">Nothing new to commit here: everything this run changed is already in git, on {changes.feature_branch} or {changes.base_branch}.</p>
         )}
         {changes.conflicts > 0 && (
           <p className="text-sm text-bad">

@@ -82,8 +82,8 @@ export function RunPage() {
         </p>
         {!!run.monolith_behind && run.status !== "awaiting_commit" && !run.delivery?.repos?.monolith && (
           <p className="mt-2 rounded-md bg-warn/10 px-3 py-1.5 text-sm text-warn">
-            The monolith has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"} on the project's base branch since this run started. This run keeps
-            working on the commit it started from; a new run starts from the latest.
+            The monolith's base branch has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"} outside the docs folder since this run started. This
+            run keeps working on the commit it started from; a new run, or <em>Start over</em>, starts from the latest.
           </p>
         )}
         <WorkflowUpdate run={run} workflowName={workflowName ?? null} canUpdate={canRetry} />

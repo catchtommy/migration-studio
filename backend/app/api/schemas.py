@@ -105,7 +105,7 @@ class RunDetail(RunOut):
     pending_commit: dict | None = None  # awaiting_commit right after a step: the step and repository to commit
     pending_publish: dict | None = None  # awaiting_publish: approved AS-IS documents to publish to the monolith
     base_sha: str | None = None  # the monolith commit the run started from
-    monolith_behind: int | None = None  # commits the project's base branch has gained since (as last fetched)
+    monolith_behind: int | None = None  # commits the base branch has gained since (as last fetched), docs folder aside
     # The run's workflow has changed since it started: what updating its upcoming steps would do (run_workflow.plan)
     workflow_update: dict | None = None
     stopping: bool = False  # an admin asked the working run to stop: its agent ends at its next turn
