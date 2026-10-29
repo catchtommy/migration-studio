@@ -328,7 +328,7 @@ def test_two_repositories_modernise_is_told_the_lifted_files_and_checked_against
     assert "src/main/java/com/example/loan/service/approve/ApproveServiceStub.java" in info["files"]
     brief = domain_modules.brief(key, "loan", run["id"], ws, "modernise")
     assert "## The lifted feature" in brief and "ApproveServiceStub.java" in brief and "READ ONLY" in brief
-    assert "Keep the lifted service's base package, `com.example.loan.service`" in brief
+    assert "Keep the lifted service's base package (`com.example.loan.service`)" in brief
     assert f"Lifted service (the module's stack" in brief and f"`{tmp_path / 'loan-lift'}`" in brief
     assert f"Modern service (Modernise, Service tests; the one the monolith calls): `{tmp_path / 'loan-modern'}`" in brief
 
@@ -453,3 +453,27 @@ def test_paths_and_repositories_work_the_same_on_windows(client, tmp_path):
     # A step's recorded diff with CRLF line endings still names its files
     diff = "diff --git a/src/A.java b/src/A.java\r\n--- a/src/A.java\r\n+++ b/src/A.java\r\n@@ -1 +1 @@\r\n-x\r\n+y\r\n"
     assert domain_modules.DIFF_TARGET.findall(diff) == ["src/A.java"]
+
+
+def test_the_domain_architecture_and_lift_rules_are_shared_texts_editable_from_the_agents_page(client, tmp_path):
+    """Their wording lives in the database (Agents → Shared texts); the studio only fills in the run's data. Saving one
+    without a {{data.…}} the studio fills in is refused; Reset puts the default back."""
+    texts = {t["key"]: t for t in client.get("/api/shared-texts").json()}
+    assert {"domain_architecture", "lift_rules"} <= set(texts)
+    assert "Module in monolith" in texts["domain_architecture"]["used_by"] and texts["lift_rules"]["used_by"]
+    original = texts["domain_architecture"]["text"]
+    project = new_project(client)
+    try:
+        edited = original.replace("**One package per feature.**", "**One package per feature (house rule 7).**")
+        assert client.put("/api/shared-texts/domain_architecture", json={"text": edited}).status_code == 200
+        brief = domain_modules.brief(project, "loan", None, tmp_path)
+        assert "house rule 7" in brief and "{{data." not in brief
+        assert "Feature packages (key → package): no features listed for the domain yet; shared → shared" in brief
+
+        r = client.put("/api/shared-texts/domain_architecture", json={"text": edited.replace("{{data.modules}}", "")})
+        assert r.status_code == 422 and "{{data.modules}}" in r.json()["detail"]
+        r = client.put("/api/shared-texts/lift_rules", json={"text": "## Lifted\n{{data.lift_path}} {{data.feature}}"})
+        assert r.status_code == 422 and "{{data.lifted_files}}" in r.json()["detail"]
+    finally:
+        assert client.post("/api/shared-texts/domain_architecture/reset").status_code == 200
+    assert client.get("/api/shared-texts").json() and "house rule 7" not in domain_modules.brief(project, "loan", None, tmp_path)

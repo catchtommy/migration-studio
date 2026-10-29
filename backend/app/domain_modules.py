@@ -453,24 +453,20 @@ def _own_document(run_id: str, name: str) -> str | None:
 
 
 def lift_brief(info: dict | None, feature: str, base_package: str | None = None) -> str:
-    """For the Modernise step: where the lifted feature is, and exactly which of its files to convert."""
+    """For the Modernise step: where the lifted feature is, and exactly which of its files to convert (the wording is
+    the shared text "lift_rules", editable on the Agents page; the run's data is filled in here)."""
+    from app import shared_texts
+
     if info is None:
         return ""
     if info["path"] is None:
         return ("## The lifted feature\nThe domain's lifted service is " + f"`{info['url']}`" + ", but this run has not "
                 "checked it out (the Spring Boot microservice step didn't run in it). Stop and ask (ask_user).")
     listing = "\n".join(f"- `{info['path']}/{f}`" for f in info["files"][:200]) or "- (no file changed)"
-    return (f"## The lifted feature\nThe domain keeps two repositories: the lifted service (the module's stack, every "
-            f"feature) at `{info['path']}/` (`{info['url']}`), READ ONLY for you, and the modern service, this step's "
-            f"repository. This run lifted {feature} there; these are exactly its files (from the lift's commit "
-            f"{info['base'][:10]}):\n{listing}\n"
-            "Convert exactly these into the same packages of the modern service, on its stack: the feature's package, "
-            f"`{SHARED}`, `{UTIL}`, and the packages of the features in `uses_features`; with their REST layer, "
-            "adapters, events and tests as the lift has them. Change no other feature's code beyond what this feature "
-            "added to it. When the modern service has no project yet (the domain's first feature), create it first. "
-            f"The acceptance suite is in the lift's `{SUITE}`: run it, unchanged, against the modern service."
-            + (f" Keep the lifted service's base package, `{base_package}`, in the modern service: the same packages, "
-               "per feature, `shared` and `util`." if base_package else ""))
+    return shared_texts.fill("lift_rules", {
+        "lift_path": info["path"], "lift_url": info["url"], "feature": feature, "lift_commit": info["base"][:10],
+        "lifted_files": listing,
+        "base_package": f"`{base_package}`" if base_package else "the one in its microservice-extraction.yaml"})
 
 
 def modern_problems(ctx) -> list[str]:
@@ -652,56 +648,43 @@ def _unmapped_operations(ctx, modern_root: Path) -> list[str]:
 
 
 def brief(project: str, domain: str, run_id: str | None, ws: Path | None, stage: str | None = None) -> str:
-    """What the module and service steps must know: the domain's modules, and that they extend them."""
+    """What the module and service steps must know: the domain's modules and services, and that they extend them. The
+    wording is the shared text "domain_architecture" (and "lift_rules" for Modernise), editable on the Agents page;
+    the data (the domain's packages, modules and services as they are) is filled in here."""
+    from app import shared_texts
+
     mods = existing(project, domain, run_id, ws)
     features = domain_features(project, domain)
-    lines = ["## This domain's modules",
-             f"Domain `{domain}` has ONE domain module and ONE orchestrator module in the monolith, shared by all its "
-             "features: each feature extends them. Never create a second one, and never copy again what is already "
-             "in them: reuse it.",
-             "",
-             "**One package per feature.** Inside each module, every class goes in the package of the feature it "
-             "belongs to, `<base_package>.<feature package>` (sub-packages below it are fine), never directly in "
-             f"`<base_package>`. The domain's types several features use and none owns (entities, DAOs, DTOs) go in "
-             f"`<base_package>.{SHARED}`; stateless helpers several features use (formatters, mappers, validators: no "
-             f"business rules, no database access, no state) go in `<base_package>.{UTIL}`. Helpers of the monolith's "
-             "utility jars (`shared_code`, `utility_modules`) are not copied: the module depends on the jar. Code "
-             "this feature uses from another feature of the domain goes in THAT feature's package, which you create "
-             "if it doesn't exist yet, even when that feature's migration hasn't started; list those features in "
-             "`uses_features`. Each feature's SQL statements go in a SQL map beside its package. Declare the module's "
-             "`base_package` (the same one every feature of the domain uses).",
-             "Feature packages (key → package): " + (", ".join(f"{k} → {feature_segment(k)}" for k, _ in features)
-                                                     or "no features listed for the domain yet")
-             + f"; shared → {SHARED}; util → {UTIL}."]
+    modules: list[str] = []
     for m in mods.values():
         label = "Domain module" if m.kind == "domain" else "Orchestrator module"
         if not m.features:
-            lines.append(f"- {label}: none yet. The first feature creates it at `{m.path}/`.")
+            modules.append(f"- {label}: none yet. The first feature creates it at `{m.path}/`.")
             continue
-        lines.append(f"- {label}: `{m.path}/`" + (f" ({m.artifact})" if m.artifact else "")
-                     + f", built by {', '.join(m.features)}.")
+        modules.append(f"- {label}: `{m.path}/`" + (f" ({m.artifact})" if m.artifact else "")
+                       + f", built by {', '.join(m.features)}.")
         if not m.present:
-            lines.append(f"  NOT in this checkout: the earlier features' work isn't on this branch yet. Stop and ask "
-                         f"(ask_user) to commit and push {', '.join(m.features)} to the domain's branch first.")
+            modules.append(f"  NOT in this checkout: the earlier features' work isn't on this branch yet. Stop and ask "
+                           f"(ask_user) to commit and push {', '.join(m.features)} to the domain's branch first.")
         if m.base_package:
-            lines.append(f"  Base package: `{m.base_package}` (keep it).")
+            modules.append(f"  Base package: `{m.base_package}` (keep it).")
         if m.uses:
-            lines.append(f"  Feature interactions so far: {', '.join(m.uses)}.")
+            modules.append(f"  Feature interactions so far: {', '.join(m.uses)}.")
         if m.bridge:
-            lines.append(f"  Bridge package: `{m.bridge}/`.")
+            modules.append(f"  Bridge package: `{m.bridge}/`.")
         for r in m.routes:
-            lines.append(f"  Router route: bean `{r['bean']}` ({r['interface']}), toggle `{r['property']}` "
-                         f"({r['feature']}).")
+            modules.append(f"  Router route: bean `{r['bean']}` ({r['interface']}), toggle `{r['property']}` "
+                           f"({r['feature']}).")
         if m.operations:
-            lines.append(f"  Operations: {_listing(m.operations)}.")
+            modules.append(f"  Operations: {_listing(m.operations)}.")
         if m.ports:
-            lines.append(f"  Ports with mode switches: {_listing(m.ports)}.")
+            modules.append(f"  Ports with mode switches: {_listing(m.ports)}.")
         if m.events:
-            lines.append(f"  Events: {', '.join(m.events)}.")
+            modules.append(f"  Events: {', '.join(m.events)}.")
         if m.classes:
-            lines.append(f"  Classes already there (reuse them): {_listing(m.classes)}.")
+            modules.append(f"  Classes already there (reuse them): {_listing(m.classes)}.")
         if m.statements:
-            lines.append(f"  SQL statements already there (reuse them): {_listing(m.statements)}.")
+            modules.append(f"  SQL statements already there (reuse them): {_listing(m.statements)}.")
     repositories = {}
     try:
         from app import delivery
@@ -712,6 +695,24 @@ def brief(project: str, domain: str, run_id: str | None, ws: Path | None, stage:
         repositories["modern"] = repositories.get(modern)
     except Exception:  # noqa: BLE001 - the brief goes on without them
         pass
+    service_lines = []
+    for kind, label, repo in (("service", "Lifted service (the module's stack; Spring Boot microservice, Independent "
+                                          "tests)", LIFT_AGENT),
+                              ("service", "Modern service (Modernise, Service tests; the one the monolith calls)",
+                               "modern"),
+                              ("orchestrator_service", "Orchestrator service", "orchestrator_service")):
+        info = services(project, domain, run_id)[kind]
+        where = repositories.get(repo)
+        service_lines.append(f"- {label}: " + (f"`{where}`" if where else "repository not set in the domain's Agent "
+                                                                          "inputs yet")
+                             + (f", built by {', '.join(info['features'])}" if info["features"] else ", no feature yet")
+                             + (f"; base package `{info['base_package']}` (keep it)" if info["base_package"] else "")
+                             + (f"; interactions so far: {', '.join(info['uses'])}" if info["uses"] else "") + ".")
+    text = shared_texts.fill("domain_architecture", {
+        "domain": domain,
+        "feature_packages": (", ".join(f"{k} → {feature_segment(k)}" for k, _ in features)
+                             or "no features listed for the domain yet") + f"; shared → {SHARED}; util → {UTIL}",
+        "modules": "\n".join(modules), "services": "\n".join(service_lines)})
     if stage in MODERN_AGENTS and stage != "service_tests":
         own = _own_document(run_id, cs.MICROSERVICE_EXTRACTION_FILE) if run_id else None
         try:
@@ -721,27 +722,5 @@ def brief(project: str, domain: str, run_id: str | None, ws: Path | None, stage:
         lift = lift_brief(lifted(project, domain, run_id, ws), feature_of(run_id) or "this feature",
                           base or services(project, domain, run_id)["service"]["base_package"])
         if lift:
-            lines += ["", lift]
-    lines += ["", "## This domain's services",
-              "The domain has ONE domain service project and ONE orchestrator service project, each in the "
-              "repository the domain sets for its agent (Agent inputs), shared by all its features: every feature is added to the same "
-              "project, never a second project or repository. Inside it, everything of a feature (controllers, "
-              "request and response objects, DTOs, services, DAOs, JPA repositories and entities, its tests) goes in "
-              "`<base_package>.<feature package>` (the packages above); classes several features use (the exception "
-              f"handler, filters, header adapters, configuration, shared types) in `<base_package>.{SHARED}`; "
-              f"stateless helpers in `<base_package>.{UTIL}`; only the application's main class sits in "
-              "`<base_package>`. Each operation's controller and request/response objects go in the package of the "
-              "feature the operation belongs to. Functionality of another feature this feature uses goes in that "
-              "feature's package (create it if needed), called by method calls, and listed in `uses_features`."]
-    for kind, label, repo in (("service", "Lifted service (the module's stack; Spring Boot microservice, Independent "
-                                          "tests)", LIFT_AGENT),
-                              ("service", "Modern service (Modernise, Service tests; the one the monolith calls)",
-                               "modern"),
-                              ("orchestrator_service", "Orchestrator service", "orchestrator_service")):
-        info = services(project, domain, run_id)[kind]
-        where = repositories.get(repo)
-        lines.append(f"- {label}: " + (f"`{where}`" if where else "repository not set in the domain's Agent inputs yet")
-                     + (f", built by {', '.join(info['features'])}" if info["features"] else ", no feature yet")
-                     + (f"; base package `{info['base_package']}` (keep it)" if info["base_package"] else "")
-                     + (f"; interactions so far: {', '.join(info['uses'])}" if info["uses"] else "") + ".")
-    return "\n".join(lines)
+            text += "\n\n" + lift
+    return text

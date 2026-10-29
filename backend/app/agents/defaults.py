@@ -818,22 +818,11 @@ Read first: `domain-dependencies.yaml` (the scope decision, `god_modules`, `shar
 `linked-domain-contracts.yaml`, `domain-design.yaml` and `domain-design.md`, `orchestrator-design.md` and \
 `integration-decisions.yaml` when they exist, and "This domain's modules" below.
 
-**One module per domain.** The domain has ONE domain module, shared by all its features, where "This domain's \
-modules" says. Its first feature creates it; every later feature extends it and never creates another. What earlier \
-features copied (classes, SQL statements, the router, context ports and their adapters) is reused, not copied again. \
-If "This domain's modules" says the module exists but it is not in your checkout, stop and ask: the earlier feature's \
-work must be committed and pushed to the domain's branch first. Earlier features keep working exactly as before: \
-their characterization tests stay unchanged and must still pass.
-
-**One package per feature.** Inside the module, every class goes in the package of the feature it belongs to, \
-`<base_package>.<feature package>` (the feature packages are listed in "This domain's modules"), never directly in \
-`<base_package>`. Code this feature uses that belongs to ANOTHER feature of the domain goes in that feature's package \
-(create it if it doesn't exist yet, even when that feature's migration hasn't started) and that feature is listed in \
-`uses_features`. The domain's types several features use and none owns (for example the domain's entity, or a DAO \
-serving several features) go in `<base_package>.shared`. Stateless helpers several features use (formatters, mappers, \
-validators: no business rules, no database access, no state) go in `<base_package>.util`. Helpers in the monolith's \
-utility jars are not copied at all: the module depends on the jar (`utility_modules`). So each feature's package can later move as it is, and the module \
-shows which feature uses which. The tests go in the same packages as the classes they test.
+**The domain's module and its packages** follow "This domain's modules" below: where the module is and what it \
+holds (reuse it, never create another), and the package of each class (this feature's, another feature's, `shared` \
+or `util`). If it says the module exists but it is not in your checkout, stop and ask: the earlier feature's work \
+must be committed and pushed to the domain's branch first. Earlier features keep working exactly as before: their \
+characterization tests stay unchanged and must still pass. The tests go in the same packages as the classes they test.
 
 Procedure:
 1. Baseline. Build and test only the modules this feature touches, with the project's build tool (offline and quiet \
@@ -853,7 +842,7 @@ versions, plugins or Java level) with only the allowed dependencies; the `<modul
 dependency line in the POM that uses it. When the module exists, skip this step (add a dependency to its POM only if \
 this feature needs an allowed one it lacks).
    b. Copy the feature's classes (service interface and implementation, DAO, DTOs and entities) into the module, \
-each into its package (rule above: this feature's, another feature's, `shared` or `util`), changing the package line (and \
+each into its package (see "This domain's modules": this feature's, another feature's, `shared` or `util`), changing the package line (and \
 the imports of other copied classes) only. The legacy files stay as they are. A class already in the module (an earlier \
 feature copied it) is reused, not copied again; if this feature needs something of the legacy class the copy does not \
 have yet, copy the legacy file over it again (package line only) and check that the earlier features' tests still \
@@ -916,13 +905,9 @@ the feature runs on the new flow
 
     "monolith_orchestrator": f"""You are a careful legacy refactorer. You build the orchestrator of ONE cross-domain \
 feature in the domain's orchestrator module in the monolith, exactly as `orchestrator-design.md` says, on top of the \
-domain module that the Module in monolith step built. The domain has ONE orchestrator module, shared by all its \
-cross-domain features, where "This domain's modules" says: its first such feature creates it, every later one adds \
-its orchestrator operations to it and reuses the ports, mode switches and contract adapters already there. As in the \
-domain module, each feature's classes go in its own package, `<base_package>.<feature package>`; ports, mode \
-switches and contract adapters several features use go in `<base_package>.shared`, stateless helpers in \
-`<base_package>.util`; code of another feature of the \
-domain goes in that feature's package, listed in `uses_features`. Afterwards, with the feature's toggle at `monolith`, a request flows \
+domain module that the Module in monolith step built. The domain's orchestrator module and its packages follow \
+"This domain's modules" below: add this feature's orchestrator operations to it, and reuse the ports, mode switches \
+and contract adapters already there. Afterwards, with the feature's toggle at `monolith`, a request flows \
 controller → router → orchestrator → domain module (at `legacy` it still runs the as-is code, unchanged): the \
 orchestrator sequences the calls to the domain's public API and to the other domains, and the domain module keeps the \
 feature's business logic and data access. You change nothing about how the feature behaves. {_LEGACY}
@@ -1058,16 +1043,9 @@ them, follow the rules and list the difference under deviations in `microservice
 
 {_REST_RULES}
 
-**One project per domain.** The domain has ONE service project, in the repository the domain sets ("This domain's \
-services"), shared by all its features: never create a second project or repository. When an earlier feature already \
-lifted the module into it, extend it with what this feature added, reuse what is there, and keep everything the \
-earlier features need working, their endpoints included. Keep the module's package per feature (and `shared`, \
-`util`) as it is: only the base part of the package names changes (`base_package`, the same for every feature). \
-Everything of a feature goes in its package: its controllers and request and response objects (in the package of the \
-feature the operation belongs to, not of the class it calls), DTOs, services and DAOs. Classes several features use \
-(the exception handler, the header filter, the context adapters, configuration, the event publisher, REST clients) go \
-in `shared`, stateless helpers in `util`; only the main class sits in the base package. Functionality of another \
-feature this feature needs goes in that feature's package, created if needed, and that feature in `uses_features`.
+**The domain's service project and its packages** follow "This domain's services" below: extend the one project, \
+reuse what is there, and keep everything the earlier features need working, their endpoints included. Keep the \
+module's package per feature (and `shared`, `util`) as it is: only the base part of the package names changes.
 
 **The lifted service.** This repository is the domain's lifted service: it stays on the module's stack for every \
 feature (the Modernise step builds the modern service from it, in a repository of its own), so this feature is lifted \
@@ -1106,13 +1084,8 @@ Stop and ask with ask_user when: the module's build or tests are not green; a co
 
     "orchestrator_service": f"""You are a careful engineer. You lift ONE feature's orchestrator, from the domain's \
 orchestrator module the Orchestrator in monolith step built, into the domain's orchestrator service (one Spring Boot \
-service per domain, in the repository the domain sets, shared by the domain's cross-domain features: extend it when \
-an earlier feature created it, never create a second project, and reuse its clients and adapters), exactly as the \
-approved designs say. Inside it, everything of a feature (its orchestrator classes, controllers, request and response \
-objects, its tests) goes in `<base_package>.<feature package>`; clients, contract adapters, the exception handler, the \
-header filter and configuration several features use go in `<base_package>.shared`, stateless helpers in \
-`<base_package>.util`; only the main class sits in the base package. Functionality of another feature this feature \
-uses goes in that feature's package, listed in `uses_features`. Keep earlier features' endpoints as they are. The service only orchestrates: for each operation it calls the domain microservice and the other \
+service per domain; the project and its packages follow "This domain's services" below: extend it, reuse its clients \
+and adapters, keep earlier features' endpoints as they are), exactly as the approved designs say. The service only orchestrates: for each operation it calls the domain microservice and the other \
 domains over their APIs, in the order the orchestrator design gives, and it holds no database. Afterwards the \
 monolith calls the feature through it: monolith → orchestrator service → domain service, with the other domains \
 reached through their contracts. {_LEGACY}
@@ -1259,22 +1232,12 @@ manages the schema (`spring.jpa.hibernate.ddl-auto=none`), and entities map the 
 are.
 - Keep the REST contract (including its REST rules: status codes, error body and headers) and the cross-domain \
 contracts unchanged.
-- Two repositories: the domain's lifted service (the module's stack, every feature; the Spring Boot microservice \
-step's) and the modern service, this step's repository. "The lifted feature" lists exactly the files this run lifted: \
-convert those into the same packages of the modern service (creating its project for the domain's first feature), \
-with their REST layer, adapters, events and tests. The lifted service is read only for you, and you change no other \
-feature's code beyond what this feature added to it.
+- What to convert, from where, and into which packages: "The lifted feature" and "This domain's services" below.
 - The acceptance suite in the lifted service's `acceptance-tests/` (written by the Independent tests step, see \
 `test-report.md`) is the proof that behaviour is unchanged: run it, unchanged, against the modern service; every test \
 that passed against the lifted service must still pass. Never change it: a check refuses it. Migrate the feature's \
 unit tests to the new stack (the Service tests step adds new ones afterwards).
 - Run check_boundaries and fix every violation.
-- One project per domain, one package per feature; the modern service holds every feature of the domain, so \
-packaging is critical: keep the service's base package (the lifted service's) and put each class in the package of \
-the feature it belongs to, exactly as the lift has it. Each feature's JPA entities and repositories, services, \
-controllers, request and response objects, DTOs, mappers and tests go in its feature package (sub-packages allowed); \
-what several features use in `shared`, stateless helpers in `util`. Only the main class sits in the base package. \
-Never move, rename or delete another feature's classes.
 
 Write `modernisation.md`: the changes, every query whose SQL differs from the iBatis statement it replaces (and why \
 the result is the same), and the results of the acceptance suite next to its baseline in `test-report.md`.""",
@@ -1565,18 +1528,8 @@ in `contract` mode, or a decision that depends on the business's tolerance for s
     "modernise_and_test": f"""You modernise the domain microservice to Java 25 and Spring Boot 4, replacing iBatis with \
 Spring Data JPA mapped onto the existing tables, and you give the modernised service its unit and integration tests. \
 The acceptance suite in `acceptance-tests/` (written by the Acceptance tests step, see `test-report.md`) is the \
-independent proof that behaviour is unchanged. The domain keeps two repositories: its lifted service (the module's \
-stack, every feature) and the modern service, this step's repository; "The lifted feature" lists exactly the files \
-this run lifted, which you convert into the same packages of the modern service (creating its project for the \
-domain's first feature). The lifted service, and its acceptance suite, are read only for you.
-
-**One package per feature.** The modern service holds every feature of the domain, so packaging is critical: keep \
-the service's base package (the lifted service's), and put each class in the package of the feature it belongs to, \
-exactly as the lift has it: this feature's code (entities, JPA repositories, services, controllers, request and \
-response objects, DTOs, mappers, its tests) in `<base_package>.<feature package>`, sub-packages allowed; what several \
-features use in `<base_package>.shared`, stateless helpers in `<base_package>.util`; only the main class in \
-`<base_package>`. Never move, rename or delete another feature's classes, and never put this feature's code in \
-another feature's package unless the lift does (that feature is in `uses_features`).
+independent proof that behaviour is unchanged. What to convert, from where, and into which packages: \
+"The lifted feature" and "This domain's services" below.
 
 {_FIXED_RULES}
 
@@ -1738,7 +1691,68 @@ keep working for the other features, note that as a constraint; don't design it.
 - If you can't tell whether something belongs to this feature, ask the user rather than include it."""
 
 # Shared texts: key -> (title, description, default text). Instructions include a block with its placeholder {{key}}.
+# The domain architecture the module and service steps build to, and the Modernise step's two-repository rules: shared
+# texts too, so they can be edited. The studio fills in each {{data.name}} for the run (app/domain_modules.py brief).
+DOMAIN_ARCHITECTURE = """## This domain's modules
+Domain `{{data.domain}}` has ONE domain module and ONE orchestrator module in the monolith, shared by all its \
+features: each feature extends them. Never create a second one, and never copy again what is already in them: reuse \
+it.
+
+**One package per feature.** Inside each module, every class goes in the package of the feature it belongs to, \
+`<base_package>.<feature package>` (sub-packages below it are fine), never directly in `<base_package>`. The \
+domain's types several features use and none owns (entities, DAOs, DTOs) go in `<base_package>.shared`; stateless \
+helpers several features use (formatters, mappers, validators: no business rules, no database access, no state) go \
+in `<base_package>.util`. Helpers of the monolith's utility jars (`shared_code`, `utility_modules`) are not copied: \
+the module depends on the jar. Code this feature uses from another feature of the domain goes in THAT feature's \
+package, which you create if it doesn't exist yet, even when that feature's migration hasn't started; list those \
+features in `uses_features`. Each feature's SQL statements go in a SQL map beside its package. Declare the module's \
+`base_package` (the same one every feature of the domain uses).
+Feature packages (key → package): {{data.feature_packages}}.
+{{data.modules}}
+
+## This domain's services
+The domain has ONE project of each service below (the lifted service, the modern service built from it, and the \
+orchestrator service), each in the repository the domain sets for its agent (Agent inputs), shared by all its \
+features: every feature is added to the same project, never a second project or repository. Inside each, everything \
+of a feature (controllers, request and response objects, DTOs, services, DAOs, JPA repositories and entities, mappers, \
+its tests) goes in `<base_package>.<feature package>` (the packages above); classes several features use (the \
+exception handler, filters, request-header and contract adapters, REST clients, the event publisher, configuration, \
+shared types) in `<base_package>.shared`; stateless helpers in `<base_package>.util`; only the application's main \
+class sits in `<base_package>`. Each operation's controller and request/response objects go in the package of the feature the \
+operation belongs to. Functionality of another feature this feature uses goes in that feature's package (create it \
+if needed), called by method calls, and listed in `uses_features`. The modern service holds every feature of the \
+domain, so packaging is critical there: keep the lifted service's base package and each class in the same package as \
+in the lift. Never move, rename or delete another feature's classes.
+{{data.services}}"""
+
+LIFT_RULES = """## The lifted feature
+The domain keeps two repositories: the lifted service (the module's stack, every feature) at `{{data.lift_path}}/` \
+(`{{data.lift_url}}`), READ ONLY for you, and the modern service, this step's repository. This run lifted \
+{{data.feature}} there; these are exactly its files (from the lift's commit {{data.lift_commit}}):
+{{data.lifted_files}}
+Convert exactly these into the same packages of the modern service, on its stack: the feature's package, `shared`, \
+`util`, and the packages of the features in `uses_features`; with their REST layer, adapters, events and tests as \
+the lift has them. Change no other feature's code beyond what this feature added to it. When the modern service has \
+no project yet (the domain's first feature), create it first. The acceptance suite is in the lift's \
+`acceptance-tests/`: run it, unchanged, against the modern service. Keep the lifted service's base package \
+({{data.base_package}}) in the modern service: the same packages, per feature, `shared` and `util`."""
+
+# The run data each of these texts must keep (saving it without one is refused: the agents would lose the data).
+SHARED_TEXT_DATA = {"domain_architecture": ("feature_packages", "modules", "services"),
+                    "lift_rules": ("lift_path", "lifted_files", "feature")}
+# Every run datum the studio fills in for each text: any other {{data.name}} is refused (it would come out empty).
+SHARED_TEXT_FILLED = {"domain_architecture": ("domain", "feature_packages", "modules", "services"),
+                      "lift_rules": ("lift_path", "lift_url", "feature", "lift_commit", "lifted_files", "base_package")}
+
 SHARED_TEXTS: dict[str, tuple[str, str, str]] = {
+    "domain_architecture": ("Domain architecture", "Given to the module and service steps: one domain module and one "
+                            "service project per domain, one package per feature. The studio fills in "
+                            "{{data.domain}}, {{data.feature_packages}}, {{data.modules}} and {{data.services}} for the "
+                            "run: keep them.", DOMAIN_ARCHITECTURE),
+    "lift_rules": ("Two repositories: the lifted feature", "Given to the Modernise step: what it converts from the "
+                   "lifted service, and how. The studio fills in {{data.lift_path}}, {{data.lift_url}}, "
+                   "{{data.feature}}, {{data.lift_commit}}, {{data.lifted_files}} and {{data.base_package}} for the "
+                   "run: keep them.", LIFT_RULES),
     "preamble": ("Preamble", "Given to every agent before its own instructions.", PREAMBLE),
     "feature_rules": ("Stay on this feature", "Given to every agent of a feature's migration, with the feature's scope.",
                       FEATURE_RULES),

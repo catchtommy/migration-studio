@@ -417,9 +417,10 @@ def test_shared_texts_are_edited_reset_and_follow_new_defaults_until_edited(clie
     # A release changes a default: a text still holding an earlier default follows it; an edited one is kept.
     old = "Earlier REST rules."
     monkeypatch.setitem(shared_texts.PREVIOUS_DEFAULT_HASHES, "rest_rules", {hashlib.sha256(old.encode()).hexdigest()})
-    for value, expected in ((old, SHARED_TEXTS["rest_rules"][2]), ("Edited rules.", "Edited rules.")):
-        with session_scope() as s:
-            s.get(SharedText, (SHARED, "rest_rules")).text = value
+    for value, by, expected in ((old, None, SHARED_TEXTS["rest_rules"][2]), ("Edited rules.", "Ada", "Edited rules.")):
+        with session_scope() as s:  # an edit records who made it
+            row = s.get(SharedText, (SHARED, "rest_rules"))
+            row.text, row.updated_by = value, by
         shared_texts.seed()
         assert shared_texts.text("rest_rules") == expected
     client.post("/api/shared-texts/rest_rules/reset")

@@ -9,6 +9,7 @@ edited follows its default when a release changes it, and Reset puts one back.
 """
 
 import hashlib
+import logging
 import re
 from typing import Any
 
@@ -18,12 +19,14 @@ from app.agents.defaults import SHARED_TEXTS
 from app.db.models import GLOBAL, SHARED, Agent, Setting, SharedText
 from app.db.session import NotConfigured, session_scope
 
+log = logging.getLogger(__name__)
 PLACEHOLDER = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
 _TEMPLATED_MARKER = "_agents_use_shared_texts"  # existing agents' instructions were given placeholders once
 
 # SHA-256 of default texts from earlier releases. A shared text still holding one of these was never edited, so it is
 # safe to bring it up to the current default.
 PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
+    "domain_architecture": {"55ff46a6b067591ace014c742a3a90e1da82930518191db577ae0158c9284802"},
     "modulith_guardrails": {"cd47ed977ecce9c1a15de5b4984f282c89332c4f04a203af06941579dbf4bea5",
         "4dac012e5480a51b232adb345911da8b44362a2253ceb6110722cefcf2c0d8db"},
     "rest_rules": {"b54eabfb50dbc3fa6638c9e39678892b4304ff9da150d634520049bb3444ba98"},
@@ -48,18 +51,32 @@ def seed() -> None:
     for word, so later changes to the block reach them."""
     from app.agents.defaults import templated
 
+    added, upgraded, kept = [], [], []
     with session_scope() as s:
         have = {r.key: r for r in s.scalars(select(SharedText).where(SharedText.project == SHARED))}
         for key, (title, description, text) in SHARED_TEXTS.items():
             row = have.get(key)
             if row is None:
                 s.add(SharedText(project=SHARED, key=key, title=title, description=description, text=text))
-            elif hashlib.sha256((row.text or "").encode()).hexdigest() in PREVIOUS_DEFAULT_HASHES.get(key, ()):
+                added.append(title)
+            elif row.text == text:
+                if row.description != description:
+                    row.description = description
+            elif row.updated_by is None or \
+                    hashlib.sha256((row.text or "").encode()).hexdigest() in PREVIOUS_DEFAULT_HASHES.get(key, ()):
+                # nobody edited it (every edit records who), or it is a known earlier default: it follows the default
                 row.text, row.description = text, description
+                upgraded.append(title)
+            else:
+                kept.append(title)  # edited: a newer default is available (Reset takes it)
         if s.get(Setting, (GLOBAL, _TEMPLATED_MARKER)) is None:
             for agent in s.scalars(select(Agent)):
                 agent.instructions = templated(agent.instructions or "")
             s.add(Setting(key=_TEMPLATED_MARKER, value=True))
+    for what, titles in (("added", added), ("upgraded to this release's default", upgraded),
+                         ("kept as edited (a newer default is available; Reset takes it)", kept)):
+        if titles:
+            log.info("Shared texts %s: %s", what, ", ".join(titles))
 
 
 def texts() -> dict[str, str]:
@@ -104,9 +121,12 @@ def list_all() -> list[dict[str, Any]]:
         rows = list(s.scalars(select(SharedText).where(SharedText.project == SHARED)))
         out = [_as_dict(r) for r in sorted(rows, key=lambda r: (order.get(r.key, len(order)), r.key))]
         agents = list(s.scalars(select(Agent)))
+    from app import domain_modules
+    # Texts the studio adds to a step's prompt itself (not through a placeholder in the instructions)
+    given = {"domain_architecture": set(domain_modules.STEPS), "lift_rules": {"modernise", "modernise_and_test"}}
     for item in out:
         token = item["key"]
-        item["used_by"] = sorted({a.title for a in agents if any(
+        item["used_by"] = sorted({a.title for a in agents if a.key in given.get(token, ()) or any(
             m.group(1) == token for m in PLACEHOLDER.finditer(f"{a.instructions or ''}\n{a.guardrails or ''}"))})
     return out
 
@@ -118,9 +138,27 @@ def get(key: str) -> dict[str, Any]:
     return item
 
 
+DATA = re.compile(r"\{\{\s*data\.([a-z_]+)\s*\}\}")  # run data the studio fills in (not another shared text)
+
+
+def fill(key: str, data: dict[str, str]) -> str:
+    """A shared text with the run's data filled in ({{data.name}}); a name it doesn't know is left out."""
+    return DATA.sub(lambda m: str(data.get(m.group(1), "")), text(key))
+
+
 def update(key: str, value: str, by: str | None = None) -> dict[str, Any]:
     if PLACEHOLDER.search(value):
         raise ValueError("A shared text can't include another one ({{...}}); write its text out instead")
+    from app.agents.defaults import SHARED_TEXT_DATA, SHARED_TEXT_FILLED
+    lost = [k for k in SHARED_TEXT_DATA.get(key, ()) if k not in DATA.findall(value)]
+    if lost:
+        raise ValueError("Keep " + ", ".join("{{data.%s}}" % k for k in lost) + ": the studio fills in the run's data "
+                         "there, and the agents would go without it")
+    filled = SHARED_TEXT_FILLED.get(key, ())
+    unknown = sorted({k for k in DATA.findall(value) if k not in filled})
+    if unknown:
+        raise ValueError(", ".join("{{data.%s}}" % k for k in unknown) + ": the studio fills in no such data here ("
+                         + (", ".join("{{data.%s}}" % k for k in filled) if filled else "this text takes none") + ")")
     with session_scope() as s:
         row = s.get(SharedText, (SHARED, key))
         if row is None:
@@ -130,6 +168,10 @@ def update(key: str, value: str, by: str | None = None) -> dict[str, Any]:
 
 
 def reset(key: str, by: str | None = None) -> dict[str, Any]:
+    """Back to the default, and following the defaults again (as if never edited)."""
     if key not in SHARED_TEXTS:
         raise KeyError(key)
-    return update(key, SHARED_TEXTS[key][2], by)
+    update(key, SHARED_TEXTS[key][2], by)
+    with session_scope() as s:
+        s.get(SharedText, (SHARED, key)).updated_by = None
+    return get(key)

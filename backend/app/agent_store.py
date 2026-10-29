@@ -6,6 +6,7 @@ project = the project's key), which that project uses instead of the shared one 
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 from sqlalchemy import inspect, select, text
@@ -15,6 +16,8 @@ from app import projects
 from app.db.models import GLOBAL, SHARED, Agent, Run, Setting, WorkflowDef
 from app.db.session import get_engine, session_scope
 from app.orchestrator.stages import BUILTIN_STAGES, SUPERSEDED
+
+log = logging.getLogger(__name__)
 
 FIELDS = ("title", "description", "mode", "model", "effort", "jdk", "instructions", "tools", "outputs", "max_turns",
           "checks", "guardrails")
@@ -89,14 +92,16 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "7356c75d8d7aa56e00af010e64538773939c378a956da6fa58aada1ea347db38",
         "0c42c2258509f9ae8614d72c2986d867f5b7b15aaf6abad4b819fd43f24d24a5",
         "00c115ab87a501e11c920f31e31fae478abe33d069eaeb88c0d031965a252a17",
-        "8f9d717d388659e72ae0fe70fe89fd704a75dd65b2f9a9448df57f32e074f79a"},
+        "8f9d717d388659e72ae0fe70fe89fd704a75dd65b2f9a9448df57f32e074f79a",
+        "a1d026bc8b5619c5000bc18beea1da47643184820b8b845dfc80e6c1ba7c42ea"},
     "modernise": {"f5199989f39ae16646acbf79d9c246d424fb9d507aeadc12217647c63b70aa41",
                   "3a97d57409eb272a0311e1bc55d47da3fa1ccf655e303b135937d7e3f8734366",
                   "a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457",
         "5ac003eeae552c2dacdb8f2f3a72032f11e58c6bb440baa2f77090b03a51a6de",
         "ccd29214c9dee61ede975b3af6c32d21f35aa1c7c504e9fbe9a5162dbf1786b1",
         "3fdbd40d27cf56a744c4dcc0cc874d058243279094fb3aabf3f9ca725a0c492a",
-        "acf98d8971c8430231b71d5a41e44f92e9ffd9824bdd8500769936b7ae934cac"},
+        "acf98d8971c8430231b71d5a41e44f92e9ffd9824bdd8500769936b7ae934cac",
+        "b16faecb3264355335f347ecdff807fa3b96979e2f4f880e47a200e3a48982a5"},
     "modular_monolith": {"ae6adcee76691ce042b38a21231c497ea4ff3dcf880fa94905f5c0098571bfde",
                          "496c048b744624038c78d0318f8576b486700d5936d2a2b60215dde6e2bdab5a",
                          "07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee",
@@ -110,7 +115,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "018556caac91c817f3094eb211d8cf971a0d33e110f92bf2741b2a7cf922c134",
         "1ef74b0a61e385d549568080a9464b1330314e6957b8819114716b1d2cb4a52a",
         "5fa33af0b039ab07f2cb732abc0a97fad8bac30609f1aa366c42433f3900cb80",
-        "c606bd6e69de66270b01248c20cd160602c92fafc5d0682783ae5998c34c825f"},
+        "c606bd6e69de66270b01248c20cd160602c92fafc5d0682783ae5998c34c825f",
+        "0183c418952e37bbe42453d01ee323819fdaee85b694321e87a6bc36a4e6bc69"},
     "monolith_integration": {"b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
                              "29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
                              "11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
@@ -126,16 +132,19 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "74d58902f2f8850ab0f40a8ae931b69d0d12745d6b21071d848463d786cfe630",
         "f8d6c72fa43ec08d5245ad37fcd0be1e83d52c32ea37296345ef2751a6fd496b",
         "2e6d1a954a8a63a21f10dbd5bdeec4af00bea1ee01a10142ada6f57fca975129",
-        "5b1954381befa4b650c27376281f54dcdd5e53b1b8b844eb308f315dd59e632a"},
+        "5b1954381befa4b650c27376281f54dcdd5e53b1b8b844eb308f315dd59e632a",
+        "3179eeac8cf303ea388310a0c0c6c950c414a5aef1f1e9ed7101b39da4232903"},
     "orchestrator_service": {"84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee",
-        "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68"},
+        "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68",
+        "e9a0a4f846d21ff3e0b360c6acd0d6017f453bfe9dc5c5ea937669b2c49c9be9"},
     "service_tests": {"92748bd2b1cb6f490d603714dc95bd9067baead0f79409ac43927cf7a1f81149"},
     "modernise_and_test": {"f344e3a8168e60d7ce6aff5aaaafe61ef51c0687c994261490c708af0cb135cf",
-        "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f"},
+        "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f",
+        "a33d06bbba111d533ffd3973d9226f06ad3f072e13cf06e19ad366352edd7bdd"},
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v25"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v26"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
 GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails
@@ -186,6 +195,7 @@ def seed() -> None:
             _add_guardrails(s)
             _move_guardrails_to_agents(s)
             _move_guardrails_out_of_instructions(s)
+            _remember_untouched_guardrails(s)
             return
         for marker in [*LATER_BUILTINS, UPGRADE_MARKER, GUARDRAILS_MARKER]:  # a fresh database: the current built-ins
             s.add(Setting(key=marker, value=True))
@@ -295,22 +305,71 @@ def _add_later_builtins(s) -> None:
         s.add(Setting(key=marker, value=True))
 
 
+def _guardrails_key(key: str) -> str:
+    return f"_default_guardrails:{key}"
+
+
+def remember_default_guardrails(s, key: str, text: str) -> None:
+    """Note the default guardrails the studio gave a built-in agent: while they stay exactly these, a release may
+    bring them up to its default; once someone edits them, they are left alone."""
+    s.merge(Setting(project=GLOBAL, key=_guardrails_key(key), value=hashlib.sha256((text or "").encode()).hexdigest()))
+
+
 def _upgrade_untouched_builtins(s) -> None:
-    """Once: built-ins never edited since an earlier release get the current defaults. Mode, model, effort, JDK and
-    max turns are kept; edited agents are left alone."""
+    """Once per release: built-ins whose instructions nobody edited get the current defaults, without losing what
+    people added. Edited instructions: the agent is left alone. Otherwise the instructions and the documents they
+    require become the defaults; tools and checks get the new defaults added (never removed); the guardrails become the
+    default only while they are empty or still the default the studio gave (an edit keeps them as they are). Mode,
+    model, effort, JDK and max turns are kept. What happened to each agent is logged (startup report)."""
     if s.get(Setting, (GLOBAL, UPGRADE_MARKER)) is not None:
         return
+    upgraded, kept, guardrails_kept = [], [], []
     for key, hashes in PREVIOUS_DEFAULT_HASHES.items():
         row = s.get(Agent, (SHARED, key))
-        if row is not None and hashlib.sha256(row.instructions.encode()).hexdigest() in hashes:
-            current = default_config(key)
-            row.instructions, row.outputs = current["instructions"], current["outputs"]
-            if current["guardrails"].strip() not in (row.guardrails or ""):  # moved out of the instructions; never twice
-                row.guardrails = _joined(current["guardrails"], row.guardrails)
-            row.tools, row.checks = current["tools"], current["checks"]
-            if key in MORE_TURNS:
-                row.max_turns = max(row.max_turns, current["max_turns"])
+        if row is None:
+            continue
+        current = default_config(key)
+        if row.instructions == current["instructions"]:
+            continue  # already this release's
+        if hashlib.sha256(row.instructions.encode()).hexdigest() not in hashes:
+            kept.append(row.title)
+            continue
+        row.instructions, row.outputs = current["instructions"], current["outputs"]  # the documents they ask for
+        row.tools = [*row.tools, *(t for t in current["tools"] if t not in row.tools)]
+        row.checks = [*(row.checks or []), *(c for c in current["checks"] if c not in (row.checks or []))]
+        stored = row.guardrails or ""
+        known = s.get(Setting, (GLOBAL, _guardrails_key(key)))
+        untouched = (not stored.strip() or stored == current["guardrails"]
+                     or (known is not None and hashlib.sha256(stored.encode()).hexdigest() == known.value))
+        if untouched:
+            row.guardrails = current["guardrails"]
+            remember_default_guardrails(s, key, row.guardrails)
+        elif stored != current["guardrails"]:
+            guardrails_kept.append(row.title)
+        if key in MORE_TURNS:
+            row.max_turns = max(row.max_turns, current["max_turns"])
+        upgraded.append(row.title)
     s.add(Setting(key=UPGRADE_MARKER, value=True))
+    if upgraded:
+        log.info("Built-in agents upgraded to this release's instructions: %s", ", ".join(upgraded))
+    if kept:
+        log.info("Built-in agents kept as they are (their instructions were edited; the defaults changed): %s",
+                 ", ".join(kept))
+    if guardrails_kept:
+        log.info("Guardrails kept as edited (a newer default is available; Reset on the agent's page takes it): %s",
+                 ", ".join(guardrails_kept))
+
+
+def _remember_untouched_guardrails(s) -> None:
+    """Each start: a built-in whose guardrails are exactly the current default (new, reset, or never edited) has that
+    default noted, so the next release can bring them up to its own."""
+    for key in BUILTIN:
+        row = s.get(Agent, (SHARED, key))
+        if row is not None and row.guardrails and row.guardrails == default_config(key)["guardrails"]:
+            known = s.get(Setting, (GLOBAL, _guardrails_key(key)))
+            digest = hashlib.sha256(row.guardrails.encode()).hexdigest()
+            if known is None or known.value != digest:
+                remember_default_guardrails(s, key, row.guardrails)
 
 
 def _add_guardrails(s) -> None:
