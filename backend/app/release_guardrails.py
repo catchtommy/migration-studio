@@ -202,8 +202,11 @@ def for_context(ctx, checks: list[str]) -> list[str]:
             problems.append(blocker("This step must change code in the domain service's repository (the step's Changes code "
                             "setting: In another repository), never in the monolith"))
         else:
+            from app import domain_modules
             monolith = ctx.workspace if mg.head(ctx.workspace) is not None else None
             problems += modernise(code, ctx.base_sha, monolith, getattr(ctx, "monolith_sha", None))
+            problems += domain_modules.for_service(ctx, "service", None)  # the feature packages, kept
+            problems += domain_modules.modern_problems(ctx)  # the lifted feature, converted; the lift untouched
     if "integration_guardrails" in wanted:
         target, why = cs.routing_target(ctx.output_dir)
         if target is None:  # known before the agent writes anything: which service it calls is the earlier steps'

@@ -293,6 +293,7 @@ def parse_microservice_extraction(text: str) -> dict:
     data = _load(text, MICROSERVICE_EXTRACTION_FILE)
     where = MICROSERVICE_EXTRACTION_FILE
     _require(data, ("feature", "domain", "module_commit"), where)
+    _feature_packages(data, where)
     ops = data.get("operations")
     if not isinstance(ops, list) or not ops:
         raise InvalidDocument(f"{where}: list the operations the service exposes (method and operation_id)")
@@ -475,6 +476,7 @@ def parse_orchestrator_service(text: str) -> dict:
             raise InvalidDocument(f"{where}: orchestrator is none, so list no operations or domain_api")
         return data
     _require(data, ("module_commit", "openapi"), where)
+    _feature_packages(data, where)
     for field, needs in (("operations", ("method", "operation_id")), ("domain_api", ("method", "operation_id")),
                          ("replaced", ("file", "reason"))):
         value = data.get(field)

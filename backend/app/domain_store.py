@@ -21,12 +21,18 @@ def seed() -> None:
 
 
 def normalize_inputs(raw: dict | None) -> dict:
-    """{"paths": [...], "notes": "..."} with blank paths dropped."""
+    """{"paths": [...], "notes": "...", "repository"?, "base_branch"?} with blank paths dropped; the repository and
+    base branch (an agent whose step changes code) only when set."""
     raw = raw or {}
-    return {
+    out = {
         "paths": [p.strip() for p in raw.get("paths") or [] if p and p.strip()],
         "notes": (raw.get("notes") or "").strip(),
     }
+    for field in ("repository", "base_branch"):
+        value = str(raw.get(field) or "").strip()
+        if value:
+            out[field] = value
+    return out
 
 
 class DomainBusy(RuntimeError):

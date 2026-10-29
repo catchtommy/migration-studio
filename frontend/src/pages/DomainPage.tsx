@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, FEATURES_OP, type Agent, type AgentInputs, type Dependency, type Domain } from "../lib/api";
+import { api, FEATURES_OP, getCurrentProject, type Agent, type AgentInputs, type Dependency, type Domain } from "../lib/api";
 import { PatternChip } from "../components/Chips";
 import { useAgents, useCan, useDomains, useWorkflows } from "../lib/hooks";
 import { ArtifactViewer } from "../components/ArtifactViewer";
@@ -235,14 +235,55 @@ function Documentation({ domain }: { domain: Domain }) {
   );
 }
 
-function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Agent[] }) {
+export function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Agent[] }) {
   const queryClient = useQueryClient();
+  // The workflows this domain uses (its new runs', then its earlier runs'): their agents are the ones to configure, and
+  // those whose step changes code need the domain's repository (mandatory).
+  const domainWorkflows = domain.workflows ?? [];
+  const used = [...new Set(domainWorkflows.flatMap((w) => w.agents))];
+  const codeAgents = new Set(domainWorkflows.flatMap((w) => w.code_agents));
+  // Skipped for domain-only features (the orchestrator): their repository is only needed for a cross-domain feature
+  const whenNeeded = new Set(domainWorkflows.flatMap((w) => w.when_needed ?? []));
+  // Which repository an agent works in, relative to the others (e.g. the modern service is not the lifted one)
+  const hints: Record<string, string> = Object.assign({}, ...domainWorkflows.map((w) => w.hints ?? {}));
+  const hasInputs = (key: string) => {
+    const i = domain.agent_inputs[key];
+    return !!i && (i.paths.length > 0 || !!i.notes || !!i.repository || !!i.base_branch);
+  };
+  const ordered = [...agents].sort((a, b) => (used.indexOf(a.key) + 1 || 1e9) - (used.indexOf(b.key) + 1 || 1e9));
+  const own = domainWorkflows.length ? ordered.filter((a) => used.includes(a.key) || hasInputs(a.key)) : ordered;
+  const others = ordered.filter((a) => !own.includes(a));
+  // Which agents to show: this domain's workflows (the default), one migration workflow of the project, or all.
+  const { data: allWorkflows = [] } = useWorkflows();
+  const projectWorkflows = allWorkflows.filter((w) => w.scope === "operation");
+  // A domain using one workflow: that workflow's option is its view; using several: a combined option first.
+  const single = domainWorkflows.length === 1 ? domainWorkflows[0].key : null;
+  const [filter, setFilter] = useState<string>(single ?? (domainWorkflows.length ? "domain" : "all"));
+  const picked = projectWorkflows.find((w) => w.key === filter);
+  const visible =
+    filter === "all"
+      ? [...own, ...others]
+      : filter === "domain" || filter === single
+        ? own // the domain's view: its workflows' agents, and any with saved inputs
+        : picked
+          ? picked.steps.filter((st) => st.kind === "agent").flatMap((st) => agents.filter((a) => a.key === st.key))
+          : own;
+  const usedBy = new Set(domainWorkflows.map((w) => w.key));
+  const { data: project } = useQuery({ queryKey: ["project", getCurrentProject()], queryFn: () => api.project(getCurrentProject()!) });
+  const monolith = (project?.settings.monolith_repo as string | undefined) ?? "";
   const initial = () => ({
     context: domain.context,
     inputs: Object.fromEntries(agents.map((s) => [s.key, domain.agent_inputs[s.key] ?? EMPTY_INPUTS])) as Record<string, AgentInputs>,
   });
   const [form, setForm] = useState(initial);
-  const clean = (i: AgentInputs) => ({ paths: i.paths.map((p) => p.trim()).filter(Boolean), notes: i.notes.trim() });
+  const clean = (i: AgentInputs) => ({
+    paths: i.paths.map((p) => p.trim()).filter(Boolean),
+    notes: i.notes.trim(),
+    ...(i.repository?.trim() ? { repository: i.repository.trim() } : {}),
+    ...(i.base_branch?.trim() ? { base_branch: i.base_branch.trim() } : {}),
+  });
+  // Mandatory where the project has a monolith repository (a project without one works in a blank workspace).
+  const missing = monolith ? agents.filter((s) => codeAgents.has(s.key) && !whenNeeded.has(s.key) && !form.inputs[s.key]?.repository?.trim()) : [];
   const payload = { context: form.context, agent_inputs: Object.fromEntries(Object.entries(form.inputs).map(([k, v]) => [k, clean(v)])) };
   const saved = { context: domain.context, agent_inputs: Object.fromEntries(agents.map((s) => [s.key, clean(domain.agent_inputs[s.key] ?? EMPTY_INPUTS)])) };
   const dirty = JSON.stringify(payload) !== JSON.stringify(saved);
@@ -273,12 +314,70 @@ function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Agent[] }
             <textarea rows={4} className={inputClass} value={form.context} onChange={(e) => setForm({ ...form, context: e.target.value })} />
           </Field>
         </section>
-        {agents.map((s, i) => (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <label className="flex items-center gap-2">
+            <span className="text-subtle">Show agents of</span>
+            <select aria-label="Show agents of" value={filter} onChange={(e) => setFilter(e.target.value)} className="rounded-md border border-border bg-bg px-2 py-1.5">
+              {domainWorkflows.length > 1 && <option value="domain">{domain.name}'s workflows ({domainWorkflows.map((w) => w.name).join(", ")})</option>}
+              {projectWorkflows.map((w) => (
+                <option key={w.key} value={w.key}>
+                  {w.name}
+                  {usedBy.has(w.key) ? ` (used by ${domain.name})` : ""}
+                </option>
+              ))}
+              <option value="all">All agents</option>
+            </select>
+          </label>
+          <span className="text-xs text-subtle">
+            {visible.length} agent{visible.length === 1 ? "" : "s"}
+            {(filter === "domain" || filter === single) && own.length > used.length ? " (including agents with saved inputs)" : ""}
+          </span>
+        </div>
+        {visible.map((s, i) => (
           <section key={s.key} className="space-y-3 card p-4">
             <h3 className="font-semibold">
               <span className="mr-2 text-xs tabular-nums text-subtle">{i + 1}</span>
               {s.title}
             </h3>
+            {codeAgents.has(s.key) && (
+              <div className="grid gap-2 sm:grid-cols-[1fr_12rem]">
+                <Field
+                  label={whenNeeded.has(s.key) ? "Repository (only needed for cross-domain features)" : "Repository"}
+                  hint={
+                    whenNeeded.has(s.key)
+                      ? `${s.title} is skipped for features that only use ${domain.name}; a cross-domain feature asks for it when it gets here.`
+                      : hints[s.key] ?? `Where ${s.title} changes code for ${domain.name}: any git URL or path, the monolith included.`
+                  }
+                >
+                  <div className="flex gap-2">
+                    <input
+                      aria-label={`${s.title} repository`}
+                      className={`${inputClass} font-mono text-xs`}
+                      value={form.inputs[s.key]?.repository ?? ""}
+                      placeholder="https://github.com/acme/…"
+                      onChange={(e) => setForm({ ...form, inputs: { ...form.inputs, [s.key]: { ...form.inputs[s.key], repository: e.target.value } } })}
+                    />
+                    {monolith && (
+                      <button
+                        type="button"
+                        className="shrink-0 rounded-md border border-border px-2 text-xs hover:bg-muted"
+                        onClick={() => setForm({ ...form, inputs: { ...form.inputs, [s.key]: { ...form.inputs[s.key], repository: monolith } } })}
+                      >
+                        Use the monolith
+                      </button>
+                    )}
+                  </div>
+                </Field>
+                <Field label="Base branch" hint="Empty: the repository's default (the monolith: the project's base branch).">
+                  <input
+                    aria-label={`${s.title} base branch`}
+                    className={`${inputClass} font-mono text-xs`}
+                    value={form.inputs[s.key]?.base_branch ?? ""}
+                    onChange={(e) => setForm({ ...form, inputs: { ...form.inputs, [s.key]: { ...form.inputs[s.key], base_branch: e.target.value } } })}
+                  />
+                </Field>
+              </div>
+            )}
             <InputsEditor
               value={form.inputs[s.key]}
               onChange={(v) => setForm({ ...form, inputs: { ...form.inputs, [s.key]: v } })}
@@ -287,9 +386,10 @@ function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Agent[] }
           </section>
         ))}
         <div className="sticky bottom-0 flex items-center gap-3 border-t border-border bg-bg py-3">
-          <button type="submit" disabled={!dirty || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
+          <button type="submit" disabled={!dirty || save.isPending || missing.length > 0} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
             Save inputs
           </button>
+          {missing.length > 0 && <span className="text-sm text-bad">Set the repository of {missing.map((s) => s.title).join(", ")}</span>}
           {dirty && <span className="text-sm text-warn">Unsaved changes</span>}
           {save.isSuccess && !dirty && <span className="text-sm text-ok">Saved</span>}
           {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}

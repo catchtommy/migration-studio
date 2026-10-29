@@ -25,7 +25,7 @@ from sqlalchemy import func, select
 
 from app import git_auth, repos, settings_store, workspace
 from app.agents.base_agent import DOCS_ROOT
-from app.db.models import Run, StageExecution, User
+from app.db.models import Domain, Run, StageExecution, User
 from app.db.session import emit, session_scope
 from app.text import decode
 from app.tools import git_ops
@@ -110,21 +110,106 @@ def _repo_key(url: str, taken: set[str]) -> str:
     return key
 
 
-def code_repositories(stages: list[dict], domain: str) -> list[dict]:
-    """The repositories other than the monolith that a workflow's steps change code in, for a domain:
-    [{"key", "url", "base_branch", "steps": [titles]}] in workflow order."""
+def domain_inputs(project: str, domain: str) -> dict[str, dict]:
+    """The domain's Agent inputs, by agent: where an agent whose step changes code works ("repository",
+    "base_branch")."""
+    with session_scope() as s:
+        row = s.get(Domain, (project, domain))
+        return dict(row.agent_inputs or {}) if row else {}
+
+
+MONOLITH = "<monolith>"  # a step from before steps were a flag that named the monolith, when the project has none
+
+
+def _same(a: str | None, b: str | None) -> bool:
+    """Whether two repository URLs or paths name the same repository: a trailing slash or .git aside, and for a local
+    Windows path (C:\\repos\\x, \\\\server\\share\\x) backslashes and letter case aside too."""
+    def norm(u: str | None) -> str:
+        u = (u or "").strip()
+        local = bool(re.match(r"^[A-Za-z]:[\\/]|^\\\\|^//", u))  # a drive, or a UNC share (either slash)
+        u = u.replace("\\", "/") if local else u
+        u = u.rstrip("/").removesuffix(".git").rstrip("/")
+        return u.casefold() if local else u
+    return bool(a and b) and norm(a) == norm(b)
+
+
+def _is_root(url: str | None, monolith: str | None) -> bool:
+    """Whether a step's repository is the monolith: the workspace root."""
+    return url == MONOLITH or _same(url, monolith)
+
+
+def stage_repository(stage: dict, domain: str, inputs: dict, monolith: str | None) -> tuple[str | None, str]:
+    """Where a step changes code, for a domain: (repository, base branch) from the domain's Agent inputs for the
+    step's agent. A step from before steps were a flag (a run's snapshot) keeps what it named: "" the monolith, a URL
+    or {domain} template. (None, "") when the step changes no code, or the domain hasn't set the repository."""
+    code = stage.get("code") or {}
+    if stage.get("kind") != "agent" or not code:
+        return None, ""
+    own = inputs.get(stage["key"]) or {}
+    if own.get("repository"):
+        return own["repository"], own.get("base_branch") or ""
+    if "changes_code" in code:  # the domain must set it; a project with no monolith works in a blank workspace
+        return (None, "") if monolith else (MONOLITH, "")
+    named = code.get("repository") or ""
+    if not named:
+        return monolith or MONOLITH, ""
+    if named.startswith("@"):  # a kind (earlier today): the domain's setting, gone
+        return None, ""
+    return named.replace("{domain}", domain), code.get("base_branch") or ""
+
+
+def _monolith_repo(project: str) -> str | None:
+    return settings_store.get_project(project).get("monolith_repo") or None
+
+
+def code_repositories(stages: list[dict], domain: str, project: str | None = None,
+                      monolith: str | None = None) -> list[dict]:
+    """The repositories other than the monolith that a workflow's steps change code in, for a domain (each step's
+    agent's repository in the domain's Agent inputs): [{"key", "url", "base_branch", "steps": [titles]}] in workflow
+    order. A repository equal to the monolith is the workspace root, not listed."""
+    from app import projects
+    project = project or projects.current()
+    monolith = monolith or _monolith_repo(project)
+    inputs = domain_inputs(project, domain)
     found: dict[str, dict] = {}
     for st in stages:
-        code = st.get("code") or {}
-        template = code.get("repository") or ""
-        if st.get("kind") != "agent" or not template:
+        url, base = stage_repository(st, domain, inputs, monolith)
+        if not url or _is_root(url, monolith):
             continue
-        url = template.replace("{domain}", domain)
         if url not in found:
             found[url] = {"key": _repo_key(url, {ROOT, *(r["key"] for r in found.values())}), "url": url,
-                          "base_branch": code.get("base_branch") or "", "steps": []}
+                          "base_branch": base, "steps": []}
         found[url]["steps"].append(st["title"])
     return list(found.values())
+
+
+def monolith_steps(stages: list[dict], domain: str, project: str, monolith: str | None = None) -> list[str]:
+    """The steps whose repository is the monolith (the workspace root)."""
+    monolith = monolith or _monolith_repo(project)
+    inputs = domain_inputs(project, domain)
+    out = []
+    for st in stages:
+        url = stage_repository(st, domain, inputs, monolith)[0]
+        if _is_root(url, monolith):
+            out.append(st["title"])
+    return out
+
+
+def missing_repositories(stages: list[dict], domain: str, project: str, when_needed: bool = False) -> str | None:
+    """Why a run can't start: steps that change code whose agent has no repository in the domain's Agent inputs. A step
+    skipped for domain-only features (the orchestrator) isn't asked for here: it stops the run itself, with this
+    message, if a cross-domain feature reaches it without one (`when_needed`: count those steps too)."""
+    from app.modulith_scope import SKIPPABLE
+    inputs, monolith = domain_inputs(project, domain), _monolith_repo(project)
+    titles = list(dict.fromkeys(st["title"] for st in stages if st.get("kind") == "agent" and st.get("code")
+                                and (when_needed or st["key"] not in SKIPPABLE)
+                                and stage_repository(st, domain, inputs, monolith)[0] is None))
+    if not titles:
+        return None
+    with session_scope() as s:
+        row = s.get(Domain, (project, domain))
+        name = row.name if row else domain
+    return f"Set the repository of {', '.join(titles)} in {name}'s Agent inputs"
 
 
 def plan(project: str, workflow: dict, domain: str, feature: str, base_branches: dict | None = None,
@@ -135,17 +220,16 @@ def plan(project: str, workflow: dict, domain: str, feature: str, base_branches:
     cfg = git_settings(workflow)
     project_cfg = settings_store.get_project(project)
     stages = workflow.get("stages") or []
-    monolith_steps = [st["title"] for st in stages if st.get("kind") == "agent" and st.get("code")
-                      and not st["code"].get("repository")]
     listed = []
     if project_cfg["monolith_repo"]:
         listed.append({"key": ROOT, "name": "Monolith", "url": project_cfg["monolith_repo"], "root": True,
                        "base_branch": (base_branches.get(ROOT) or "").strip() or project_cfg["monolith_branch"],
-                       "steps": monolith_steps})
-    for r in code_repositories(stages, domain):
+                       "steps": monolith_steps(stages, domain, project, project_cfg["monolith_repo"])})
+    for r in code_repositories(stages, domain, project):
         listed.append({**r, "name": r["key"], "root": False,
                        "base_branch": (base_branches.get(r["key"]) or "").strip() or r["base_branch"]})
     out = {"commit": cfg["commit"] and bool(listed), "domain": domain, "branch_per": cfg["branch_per"],
+           "missing": missing_repositories(stages, domain, project),
            "feature_branch": (feature_branch or "").strip() or branch_name(cfg["branch_pattern"], domain, feature),
            "repositories": []}
     for r in listed:
@@ -165,6 +249,8 @@ def check_branches(project: str, info: dict) -> None:
     feature = info["feature_branch"]
     if not git_ops.valid_branch(feature):
         raise ValueError("The feature branch must be a valid git branch name, e.g. migration/loan/approve")
+    if info.get("missing"):
+        raise ValueError(info["missing"])
     with session_scope() as s:
         # The domain's own runs share its branch (one per domain); another domain's never.
         unfinished = s.scalars(select(Run).where(Run.project == project, Run.branch == feature,
@@ -183,16 +269,17 @@ def check_branches(project: str, info: dict) -> None:
             raise ValueError(f"Another unfinished run works on branch {feature} in {where}; choose another name")
 
 
-def changes_monolith(stages: list[dict]) -> bool:
-    """Whether any step of a workflow changes the monolith's code (so a run needs its own checkout of it)."""
-    return any(st.get("kind") == "agent" and st.get("code") and not st["code"].get("repository") for st in stages)
+def changes_monolith(stages: list[dict], domain: str, project: str, monolith: str | None = None) -> bool:
+    """Whether any step of a workflow changes the monolith's code, for a domain (so a run needs its own checkout)."""
+    return bool(monolith_steps(stages, domain, project, monolith))
 
 
 def _monolith_url(run: Run) -> str | None:
     """The monolith, when the run changes its code: checked out already, or to be when its first such step starts."""
     if run.repository:
         return run.repository
-    return run.legacy["url"] if workspace.monolith_pending(run) and changes_monolith(run.stage_defs) else None
+    return run.legacy["url"] if workspace.monolith_pending(run) and changes_monolith(
+        run.stage_defs, run.domain, run.project, run.legacy["url"]) else None
 
 
 def run_repository(run: Run) -> str | None:
@@ -277,13 +364,24 @@ def repositories(run_id: str) -> list[dict]:
 
 def _step_target(run: Run, stage: dict) -> str | None:
     """The key of the repository a step changes code in (None: it writes documents only, or there's nowhere)."""
-    code = stage.get("code") or {}
-    if stage.get("kind") != "agent" or not code:
+    monolith = run_repository(run) or (run.legacy or {}).get("url")
+    url, _base = stage_repository(stage, run.domain, domain_inputs(run.project, run.domain), monolith)
+    if url is None:
         return None
-    if not code.get("repository"):
+    if _is_root(url, monolith):
         return ROOT
-    url = code["repository"].replace("{domain}", run.domain)
-    return next((r["key"] for r in run.repositories or [] if r["url"] == url), None)
+    return next((r["key"] for r in run.repositories or [] if _same(r["url"], url)), None)
+
+
+def step_checkout(stage: dict, nested: list[dict], domain: str, project: str, monolith: str | None) -> str | None:
+    """Where a step changes code, relative to the workspace: "." (the monolith) or the run's checkout of its
+    repository; None when the run hasn't checked it out (or the domain hasn't set it)."""
+    url, _base = stage_repository(stage, domain, domain_inputs(project, domain), monolith)
+    if url is None:
+        return None
+    if _is_root(url, monolith):
+        return "."
+    return next((r["path"] for r in nested if _same(r["url"], url)), None)
 
 
 def confirmation_needed(run_id: str, stage_key: str) -> dict | None:
@@ -525,7 +623,8 @@ def refresh_code_settings(run_id: str) -> None:
         code = {st["key"]: st.get("code") for st in current["stages"] if st["kind"] == "agent"}
         stages = [{**d, "code": code.get(d["key"], d.get("code"))} if d["kind"] == "agent" else d
                   for d in run.stage_defs]
-        wanted = {r["url"]: r for r in code_repositories(stages, run.domain)}
+        wanted = {r["url"]: r for r in code_repositories(stages, run.domain, run.project,
+                                                         run_repository(run) or (run.legacy or {}).get("url"))}
         nested = []
         for r in run.repositories or []:
             if r.get("base_sha"):  # checked out: its branches are set

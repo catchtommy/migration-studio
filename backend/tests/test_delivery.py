@@ -19,6 +19,17 @@ def git(repo, *args) -> str:
                           capture_output=True, text=True).stdout.strip()
 
 
+def domain_repo(proj, url, agent, domain="loan", base_branch="", also: dict | None = None) -> str:
+    """Set the repository (and base branch) the domain gives an agent in its Agent inputs (and, in the same save, the
+    agents in `also`: agent -> url); returns the step's repository value, "" (a step only says it changes code)."""
+    inputs = dict(proj.get(f"/api/domains/{domain}").json()["agent_inputs"])
+    for key, value, base in ((agent, url, base_branch), *((k, v, "") for k, v in (also or {}).items())):
+        inputs[key] = {**(inputs.get(key) or {"paths": [], "notes": ""}), "repository": str(value), "base_branch": base}
+    r = proj.put(f"/api/domains/{domain}", json={"agent_inputs": inputs})
+    assert r.status_code == 200, r.text
+    return ""
+
+
 def finish_workflow(client, run_id, confirm=None) -> dict:
     """Approve every gate, confirm the proposed branches (or what `confirm(pending)` returns) and go on without
     committing right after code steps, until the workflow is done."""
@@ -54,6 +65,7 @@ def setup_project(client, tmp_path, monolith_step=True):
     if monolith_step:
         wf = proj.get("/api/workflows/standard").json()
         first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
+        domain_repo(proj, upstream, first)  # the monolith, set on the domain for the step's agent
         steps = [{**st, "code": {"repository": ""}} if st.get("key") == first else st for st in wf["steps"]]
         assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     return upstream, key, proj
@@ -179,9 +191,9 @@ def test_each_code_step_works_in_its_own_repository_on_the_same_feature_branch(c
         make_monolith(tmp_path / name)
     wf = proj.get("/api/workflows").json()[0]
     agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
-    code = {agents[0]: {"repository": ""},  # the monolith
-            agents[1]: {"repository": str(tmp_path / "{domain}-service"), "base_branch": "release/2.4"},
-            agents[2]: {"repository": str(tmp_path / "orchestrator")}}
+    code = {agents[0]: {"repository": domain_repo(proj, upstream, agents[0])},  # the monolith
+            agents[1]: {"repository": domain_repo(proj, tmp_path / "loan-service", agents[1], base_branch="release/2.4")},
+            agents[2]: {"repository": domain_repo(proj, tmp_path / "orchestrator", agents[2])}}
     steps = [{**st, "code": code.get(st.get("key"))} if st["kind"] == "agent" else st for st in wf["steps"]]
     r = proj.put(f"/api/workflows/{wf['key']}?library=project",
                  json={"steps": steps, "git": {"commit": True, "branch_pattern": "mig/{domain}-{feature}"}})
@@ -300,8 +312,8 @@ def test_restarting_an_older_run_picks_up_the_steps_code_settings(client, tmp_pa
     run = finish_workflow(proj, proj.post("/api/runs", json={"domain": "loan", "operation": "approve",
                                                              "workflow": wf["key"]}).json()["id"])
     agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
-    steps = [{**st, "code": {"repository": str(tmp_path / "{domain}-service")}} if st.get("key") == agents[1] else st
-             for st in wf["steps"]]
+    steps = [{**st, "code": {"repository": domain_repo(proj, tmp_path / "loan-service", agents[1])}} if st.get("key") == agents[1]
+             else st for st in wf["steps"]]
     assert proj.put(f"/api/workflows/{wf['key']}?library=project", json={"steps": steps}).status_code == 200
     assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": agents[1]}).status_code == 200
     paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
@@ -325,8 +337,8 @@ def test_an_older_run_approved_at_a_gate_asks_for_branches_before_a_later_code_s
         r.workflow, r.repositories, r.delivery = None, None, None
     wf = proj.get("/api/workflows/standard").json()
     later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]  # the first step after the first gate
-    steps = [{**st, "code": {"repository": str(tmp_path / "{domain}-service")}} if st.get("key") == later else st
-             for st in wf["steps"]]
+    steps = [{**st, "code": {"repository": domain_repo(proj, tmp_path / "loan-service", later)}} if st.get("key") == later
+             else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     assert proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
     wait_for(proj, run["id"], {"awaiting_publish"}, timeout=60)  # the approved AS-IS documents come first
@@ -393,9 +405,9 @@ def test_a_finished_runs_workspace_is_removed_and_a_rerun_starts_from_the_pushed
 
 
 def test_a_run_waiting_for_branches_follows_the_workflows_current_code_settings(client, tmp_path):
-    """The workflow's repository or base branch for a step changes while a run waits to confirm that step's branches:
-    the question shows the new settings at once, a repository no step uses any more is dropped, and confirming
-    works on the new one."""
+    """The domain's repository, or the workflow's base branch for a step, changes while a run waits to confirm that
+    step's branches: the question shows the new settings at once, a repository no step uses any more is dropped, and
+    confirming works on the new one."""
     upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
     service = tmp_path / "loan-service"
     make_monolith(service)
@@ -405,7 +417,8 @@ def test_a_run_waiting_for_branches_follows_the_workflows_current_code_settings(
     first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
 
     def code(repository, base_branch=""):
-        steps = [{**st, "code": {"repository": repository, "base_branch": base_branch}} if st.get("key") == first else st
+        domain_repo(proj, repository, first, base_branch=base_branch)  # the domain's inputs for the step's agent
+        steps = [{**st, "code": {"repository": ""}} if st.get("key") == first else st
                  for st in wf["steps"]]
         r = proj.put("/api/workflows/standard?library=project", json={"steps": steps})
         assert r.status_code == 200, r.text
@@ -415,7 +428,7 @@ def test_a_run_waiting_for_branches_follows_the_workflows_current_code_settings(
     paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
     assert paused["pending_branches"]["repository"]["url"] == str(tmp_path / "old-service")
 
-    code(str(service), "develop")  # fixed in the workflow while the run waits
+    code(str(service), "develop")  # fixed on the domain (and the branch in the workflow) while the run waits
     paused = proj.get(f"/api/runs/{run['id']}").json()
     assert paused["pending_branches"]["repository"]["url"] == str(service)
     assert paused["pending_branches"]["repository"]["base_branch"] == "develop"
@@ -430,14 +443,35 @@ def test_a_run_waiting_for_branches_follows_the_workflows_current_code_settings(
     assert repos[str(service)]["changed"]
 
 
-def test_a_workflow_step_needs_a_complete_repository_url(client):
+def test_a_workflow_step_only_says_it_changes_code_and_each_domain_sets_the_repository(client):
+    """A workflow serves every domain: a step says it changes code; each domain sets the repository and base branch
+    of the step's agent in its Agent inputs (any URL), and can't save them without one while a step changes code."""
+    client = as_project(client, new_project(client, monolith_repo="https://github.com/acme/mono.git"))
     wf = client.get("/api/workflows/standard").json()
     first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
-    for bad in ("https://", "https://github.com", "https://github.com/"):
-        steps = [{**st, "code": {"repository": bad}} if st.get("key") == first else st for st in wf["steps"]]
+    for code in ({"repository": "https://github.com/acme/broker-service.git"}, {"repository": "@service"},
+                 {"base_branch": "release/2.4"}):
+        steps = [{**st, "code": code} if st.get("key") == first else st for st in wf["steps"]]
         r = client.put("/api/workflows/standard?library=project", json={"steps": steps})
-        assert r.status_code == 422 and "isn't a complete repository URL" in r.text, bad
+        assert r.status_code == 422 and "set in each domain's Agent inputs" in r.text, code
+    steps = [{**st, "code": {"changes_code": True}} if st.get("key") == first else st for st in wf["steps"]]
+    assert client.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    saved = client.get("/api/workflows/standard").json()
+    code = next(st for st in saved["steps"] if st.get("key") == first)["code"]
+    assert code["changes_code"] and not code.get("repository") and not code.get("base_branch")
 
+    client.post("/api/domains", json={"key": "repo", "name": "Repo", "description": ""})
+    r = client.put("/api/domains/repo", json={"agent_inputs": {first: {"paths": [], "notes": "x"}}})
+    assert r.status_code == 422 and "Set the repository of" in r.text  # mandatory for a code-changing agent
+    for bad in ("https://", "https://github.com", "https://github.com/"):
+        r = client.put("/api/domains/repo", json={"agent_inputs": {first: {"repository": bad}}})
+        assert r.status_code == 422 and "isn't a complete repository URL" in r.text, bad
+    r = client.put("/api/domains/repo", json={"agent_inputs": {first: {"repository": "https://github.com/acme/any.git",
+                                                                       "base_branch": "develop"}}})
+    assert r.status_code == 200 and r.json()["agent_inputs"][first]["repository"].endswith("any.git")
+    steps = [{**st, "code": None} for st in wf["steps"]]  # no step changes code: the repository is optional again
+    assert client.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    assert client.put("/api/domains/repo", json={"agent_inputs": {first: {"notes": "x"}}}).status_code == 200
 
 def test_a_run_started_before_any_step_changed_code_reviews_its_commits_once_one_does(client, tmp_path):
     """A run created while no step changed code had nothing to commit. When a step changes code later (the workflow's
@@ -453,7 +487,7 @@ def test_a_run_started_before_any_step_changed_code_reviews_its_commits_once_one
         r.repository, r.legacy, r.base_sha, r.delivery = "", None, None, {"commit": False}  # as such a run was made
     wf = proj.get("/api/workflows/standard").json()
     later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]  # the first step after the first gate
-    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == later else st for st in wf["steps"]]
+    steps = [{**st, "code": {"repository": domain_repo(proj, service, later)}} if st.get("key") == later else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
 
     reviewed = []
@@ -484,7 +518,7 @@ def test_a_later_step_cuts_the_feature_branch_in_its_own_repository_after_an_ear
     make_monolith(service)
     wf = proj.get("/api/workflows/standard").json()
     later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]  # after the first gate
-    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == later else st for st in wf["steps"]]
+    steps = [{**st, "code": {"repository": domain_repo(proj, service, later)}} if st.get("key") == later else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
 
     run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
@@ -523,6 +557,8 @@ def test_every_code_step_asks_for_its_branches_and_says_when_the_branch_exists(c
     git(upstream, "branch", "taken")
     wf = proj.get("/api/workflows/standard").json()
     agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
+    for agent in agents[:2]:
+        domain_repo(proj, upstream, agent)  # both change the monolith
     steps = [{**st, "code": {"repository": ""}} if st.get("key") in agents[:2] else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
 
@@ -551,7 +587,7 @@ def test_an_existing_branch_in_a_repository_not_checked_out_yet_is_continued_on(
     make_monolith(service)
     wf = proj.get("/api/workflows/standard").json()
     first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
-    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == first else st for st in wf["steps"]]
+    steps = [{**st, "code": {"repository": domain_repo(proj, service, first)}} if st.get("key") == first else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     git(service, "checkout", "-q", "-b", "migration/loan/modules")
     (service / "EARLIER.md").write_text("work from an earlier attempt\n")
@@ -588,7 +624,7 @@ def test_a_step_set_to_change_code_while_the_run_waits_at_a_commit_review_uses_i
 
     wf = proj.get("/api/workflows/standard").json()
     following = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][1]  # the very next step
-    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == following else st for st in wf["steps"]]
+    steps = [{**st, "code": {"repository": domain_repo(proj, service, following)}} if st.get("key") == following else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
 
     assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204  # go on without committing yet
@@ -607,6 +643,9 @@ def test_a_step_never_falls_back_to_the_monolith_for_a_repository_the_run_has_no
     assert _code_dir(stage, checked_out, "loan") == ".studio/repos/orch"
     assert _code_dir(stage, [], "loan") is None  # not the monolith (".")
     assert _code_dir(StageDef("modular_monolith", "Module", "agent", "", code={"repository": ""}), [], "loan") == "."
+    flagged = StageDef("orchestrator_service", "Orchestrator microservice", "agent", "", code={"changes_code": True})
+    monolith = "https://git.example.com/acme/mono.git"
+    assert _code_dir(flagged, [], "loan", "default", monolith) is None  # the domain hasn't set it: not the monolith
 
 
 def test_an_existing_branch_in_the_monolith_is_shown_and_continued_on(client, tmp_path):
@@ -669,7 +708,7 @@ def test_a_step_changing_another_repository_reads_the_latest_of_the_monolith_bra
     make_monolith(service)
     wf = proj.get("/api/workflows/standard").json()
     later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]
-    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == later else st for st in wf["steps"]]
+    steps = [{**st, "code": {"repository": domain_repo(proj, service, later)}} if st.get("key") == later else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
 
     run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
@@ -806,6 +845,8 @@ def _two_monolith_steps(client, tmp_path):
     upstream, key, proj = setup_project(client, tmp_path)
     wf = proj.get("/api/workflows/standard").json()
     agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
+    for agent in agents[:2]:
+        domain_repo(proj, upstream, agent)  # both change the monolith
     steps = [{**st, "code": {"repository": ""}} if st.get("key") in agents[:2] else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
@@ -868,6 +909,8 @@ def test_a_rebuilt_checkout_keeps_what_the_run_brought_in_from_git(client, tmp_p
     upstream, key, proj = setup_project(client, tmp_path)
     wf = proj.get("/api/workflows/standard").json()
     agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
+    for agent in agents[:2]:
+        domain_repo(proj, upstream, agent)  # both change the monolith
     steps = [{**st, "code": {"repository": ""}} if st.get("key") in agents[:2] else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
@@ -969,6 +1012,7 @@ def test_the_features_of_a_domain_share_its_branch_and_build_on_each_others_push
 
     proj.post("/api/domains", json={"key": "card", "name": "Card", "description": ""})
     proj.post("/api/domains/card/features", json={"key": "issue", "name": "issue"})
+    domain_repo(proj, upstream, step, domain="card")
     other = proj.post("/api/runs", json={"domain": "card", "operation": "issue", "feature_branch": "migration/loan/modules"})
     assert other.status_code == 422 and "Another unfinished run" in other.json()["detail"]
 
@@ -984,3 +1028,132 @@ def test_a_branch_shared_by_the_domains_features_cant_name_the_feature(client, t
         "migration/loan/approve"
     assert put({"commit": True, "branch_pattern": "mig/{domain}-{feature}"}).status_code == 200  # inferred: per feature
     assert proj.get("/api/workflows/standard").json()["git"]["branch_per"] == "feature"
+
+
+def test_each_domain_sets_its_agents_repositories_whatever_their_names(client, tmp_path):
+    """One workflow, two domains running at once: each run works in the repository its own domain sets for the step's
+    agent. A domain without one is refused before the run starts; domains may share a repository."""
+    upstream, key, proj = setup_project(client, tmp_path)
+    first = next(st["key"] for st in proj.get("/api/workflows/standard").json()["steps"] if st["kind"] == "agent")
+    proj.post("/api/domains", json={"key": "card", "name": "Card", "description": ""})
+    proj.post("/api/domains/card/features", json={"key": "issue", "name": "issue"})
+    proj.post("/api/domains/card/features", json={"key": "renew", "name": "renew"})
+    for name in ("lending-api", "plastic-flows"):
+        make_monolith(tmp_path / name)
+    wf = proj.get("/api/workflows/standard").json()
+    later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]
+    steps = [{**st, "code": {"changes_code": True}} if st.get("key") == later else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+
+    title = next(st["title"] for st in proj.get("/api/workflows/standard").json()["stages"] if st["key"] == later)
+    r = proj.post("/api/runs", json={"domain": "card", "operation": "issue"})
+    assert r.status_code == 422 and "in Card's Agent inputs" in r.json()["detail"] and title in r.json()["detail"]
+    domain_repo(proj, tmp_path / "lending-api", later)
+    domain_repo(proj, tmp_path / "plastic-flows", later, domain="card", base_branch="release/2.4", also={first: upstream})
+
+    loan = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    card = proj.post("/api/runs", json={"domain": "card", "operation": "issue"}).json()
+    assert [(r["url"], r["base_branch"]) for r in loan["repositories"]] == [(str(tmp_path / "lending-api"), None)]
+    assert [(r["url"], r["base_branch"]) for r in card["repositories"]] == [(str(tmp_path / "plastic-flows"), "release/2.4")]
+    domain_repo(proj, tmp_path / "lending-api", later, domain="card")  # domains may share a repository
+    assert proj.post("/api/runs", json={"domain": "card", "operation": "renew"}).status_code == 201
+
+def test_workflows_saved_with_repositories_become_flags_after_the_upgrade(client):
+    from app import workflow_store
+    from app.db.models import GLOBAL, SHARED, Setting, WorkflowDef
+
+    with session_scope() as s:
+        s.add(WorkflowDef(project=SHARED, key="old-urls", name="Old", description="", steps=[
+            {"kind": "agent", "key": "as_is_doc"},
+            {"kind": "agent", "key": "modular_monolith", "code": {"repository": "", "base_branch": ""}},
+            {"kind": "agent", "key": "microservice_scaffold",
+             "code": {"repository": "https://github.com/acme/springboot-test.git", "base_branch": "main"}},
+            {"kind": "agent", "key": "orchestrator_service", "code": {"repository": "@orchestrator", "base_branch": ""}}]))
+        s.query(Setting).filter(Setting.project == GLOBAL, Setting.key == "_step_code_flags").delete()
+    workflow_store.seed()
+    with session_scope() as s:
+        row = s.get(WorkflowDef, (SHARED, "old-urls"))
+        steps = row.steps
+        s.delete(row)  # shared by every project: don't leave its code steps behind
+    assert [st.get("code") for st in steps] == [None, {"changes_code": True}, {"changes_code": True},
+                                                {"changes_code": True}]
+
+
+def test_a_domain_configures_the_agents_of_the_workflows_it_uses(client, tmp_path):
+    """The domain page shows the workflows a domain uses (its new runs', then its earlier runs'); a repository is
+    mandatory only for the code-changing agents of those workflows."""
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    lean = proj.get("/api/workflows/lean").json()
+    service = next(st["key"] for st in lean["steps"] if st.get("key") == "microservice_scaffold")
+    steps = [{**st, "code": {"changes_code": True}} if st.get("key") == service else st for st in lean["steps"]]
+    assert proj.put("/api/workflows/lean?library=project", json={"steps": steps}).status_code == 200
+
+    domain = proj.get("/api/domains/loan").json()  # uses the standard workflow: lean's code step isn't its concern
+    assert [w["key"] for w in domain["workflows"]] == ["standard"]
+    assert proj.put("/api/domains/loan", json={"agent_inputs": {"as_is_doc": {"notes": "x"}}}).status_code == 200
+
+    assert proj.put("/api/domains/loan", json={"default_workflow": "lean"}).status_code == 200
+    domain = proj.get("/api/domains/loan").json()
+    assert [w["key"] for w in domain["workflows"]] == ["lean"]
+    assert domain["workflows"][0]["code_agents"] == [service] and service in domain["workflows"][0]["agents"]
+    r = proj.put("/api/domains/loan", json={"agent_inputs": {"as_is_doc": {"notes": "x"}}})
+    assert r.status_code == 422 and "Set the repository of" in r.text  # now its own workflow's
+
+
+def test_a_domain_whose_runs_used_another_workflow_doesnt_list_the_standard(client, tmp_path):
+    """No default of its own or the project's: the domain uses the workflows its runs used, not the built-in fallback."""
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    assert [w["key"] for w in proj.get("/api/domains/loan").json()["workflows"]] == ["standard"]  # no runs yet
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve", "workflow": "lean"})
+    assert run.status_code == 201, run.text
+    assert [w["key"] for w in proj.get("/api/domains/loan").json()["workflows"]] == ["lean"]
+    proj.put("/api/domains/loan", json={"default_workflow": "standard"})  # an explicit default comes first
+    assert [w["key"] for w in proj.get("/api/domains/loan").json()["workflows"]] == ["standard", "lean"]
+
+
+def test_the_orchestrators_repository_is_only_needed_when_a_cross_domain_feature_runs_it(client, tmp_path):
+    """Steps skipped for domain-only features (the orchestrator) don't make a domain set their repository up front:
+    saving and starting work without it; the step asks for it if a cross-domain feature reaches it."""
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    make_monolith(tmp_path / "loan-api")
+    lean = proj.get("/api/workflows/lean").json()
+    steps = [{**st, "code": {"changes_code": True}} if st.get("key") in ("microservice_scaffold", "orchestrator_service")
+             else st for st in lean["steps"]]
+    assert proj.put("/api/workflows/lean?library=project", json={"steps": steps}).status_code == 200
+    assert proj.put("/api/domains/loan", json={"default_workflow": "lean"}).status_code == 200
+    workflow = proj.get("/api/domains/loan").json()["workflows"][0]
+    assert workflow["when_needed"] == ["orchestrator_service"]
+
+    domain_repo(proj, tmp_path / "loan-api", "microservice_scaffold")  # no orchestrator repository: saved
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"})
+    assert run.status_code == 201, run.text  # and the run starts
+
+    from app import delivery
+    stages = proj.get("/api/workflows/lean").json()["stages"]
+    orchestrator = [st for st in stages if st["key"] == "orchestrator_service"]
+    assert "Orchestrator microservice" in delivery.missing_repositories(orchestrator, "loan", key, when_needed=True)
+
+
+def test_a_rerun_waiting_to_confirm_its_branches_no_longer_says_its_agent_changed(client, tmp_path):
+    """Update and re-run from a code step whose agent changed: the run waits to confirm the step's branches before the
+    new attempt exists. That step uses the current agent, so the run doesn't offer the re-run again meanwhile."""
+    upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
+    first = next(st["key"] for st in proj.get("/api/workflows/standard").json()["steps"] if st["kind"] == "agent")
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204  # go on without committing
+    wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)
+
+    agent = proj.get(f"/api/agents/{first}").json()
+    assert proj.put(f"/api/agents/{first}", json={**agent, "guardrails": "Name every table."}).status_code == 200
+    try:
+        update = proj.get(f"/api/runs/{run['id']}").json()["workflow_update"]
+        assert update and update["agents_changed"] and update["rerun"]["from"] == first
+        assert proj.post(f"/api/runs/{run['id']}/update-workflow", json={"rerun": True}).status_code == 200
+        paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+        assert paused["current_stage"] == first
+        assert paused["workflow_update"] is None  # the step about to run uses the current agent
+    finally:
+        proj.put(f"/api/agents/{first}", json=agent)

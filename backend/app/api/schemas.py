@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
 
 from app.agents.defaults import CHECKS, EFFORTS, TOOLS
 from app.contracts_store import CONTRACT_STATUSES
@@ -32,6 +32,14 @@ class AgentInputsIn(BaseModel):
 
     paths: list[str] = []
     notes: str = ""
+    # Domain inputs of an agent whose step changes code: where (any git URL or path, the monolith included) and from
+    # which branch ("" the repository's default; the monolith's is the project's base branch)
+    repository: str = Field(default="", max_length=1000)
+    base_branch: str = Field(default="", max_length=255)
+
+    @model_serializer(mode="wrap")
+    def _without_empty(self, handler):  # an agent that changes no code shows no repository
+        return {k: v for k, v in handler(self).items() if v or k not in ("repository", "base_branch")}
 
 
 class RunCreate(BaseModel):
@@ -272,6 +280,8 @@ class DomainOut(ORM):
     default_workflow: str | None
     owned_tables: list[str] | None
     owned_packages: list[str] | None
+    # The migration workflows this domain uses (its new runs', then its earlier runs'): which agents to configure
+    workflows: list[dict] = []
     created_at: datetime
     updated_at: datetime
 
@@ -288,8 +298,14 @@ class OperationDocs(BaseModel):
 
 
 class StepCode(BaseModel):
-    repository: str = Field(default="", max_length=1000)  # empty: the project's monolith; {domain} is filled in
-    base_branch: str = Field(default="", max_length=255)  # for other repositories; empty: their default branch
+    """The step changes code. The repository and its base branch are each domain's (Agent inputs)."""
+    changes_code: bool = True
+    repository: str = Field(default="", max_length=1000)  # refused when set: kept for older clients sending ""
+    base_branch: str = Field(default="", max_length=255)  # refused when set
+
+    @model_serializer(mode="wrap")
+    def _without_empty(self, handler):  # {"changes_code": true}; a step saved before the flag shows what it named
+        return {k: v for k, v in handler(self).items() if v or k not in ("repository", "base_branch")}
 
 
 class WorkflowStep(BaseModel):

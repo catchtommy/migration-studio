@@ -55,6 +55,18 @@ def openapi_operation_ids(text: str) -> tuple[set[str], list[str]]:
     return ids, missing
 
 
+def openapi_paths(text: str) -> list[tuple[str, str, str | None]]:
+    """(METHOD, path, operationId) of every operation of an OpenAPI document."""
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        return []
+    return [(verb.upper(), path, op.get("operationId")) for path, item in (data.get("paths") or {}).items()
+            for verb, op in (item or {}).items()
+            if verb.lower() in ("get", "put", "post", "delete", "patch") and isinstance(op, dict)
+            and not str(op.get("operationId") or "").lower().startswith("health")]
+
+
 def check(service: Path, base: str, monolith: Path | None, monolith_base: str | None, module_decl: dict,
           service_decl: dict | None, design: dict | None, openapi_text: str | None, ownership: dict[str, dict],
           domain: str, god_modules: list[str] | None = None) -> list[str]:
@@ -245,10 +257,11 @@ def for_context(ctx) -> list[str]:
     module_decl = {**module_decl, "modules": [m for m in module_decl["modules"] if m.get("kind") != "orchestrator"]}
     openapi = out / "openapi.yaml"
     root_is_git = mg.head(ctx.workspace) is not None
+    from app import domain_modules
     return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, ctx.workspace if root_is_git else None,
                  getattr(ctx, "monolith_sha", None), module_decl, service_decl, design,
                  openapi.read_text(encoding="utf-8") if openapi.is_file() else None, ctx.ownership, ctx.domain,
-                 (finder or {}).get("god_modules"))
+                 (finder or {}).get("god_modules")) + domain_modules.for_service(ctx, "service", service_decl or {})
 
 
 def report(problems: list[str]) -> str:

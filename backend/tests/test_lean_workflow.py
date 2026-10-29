@@ -98,6 +98,7 @@ def test_an_existing_database_gets_the_lean_workflow_with_the_standard_repositor
     with session_scope() as s:
         standard = s.get(WorkflowDef, (SHARED, workflow_store.STANDARD_KEY))
         before = standard.steps
+        lean_before = s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)).steps
         standard.steps = [{**st, "code": repo} if st.get("key") in ("modernise", "microservice_scaffold") else st
                           for st in before]
         s.delete(s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)))
@@ -111,8 +112,9 @@ def test_an_existing_database_gets_the_lean_workflow_with_the_standard_repositor
         assert steps["modernise_and_test"]["code"] == repo  # the merged step: the settings of the step it replaces
         assert not steps["analysis"].get("code")
     finally:
-        with session_scope() as s:
+        with session_scope() as s:  # shared by every test: as it was (its steps changing code would ask every domain)
             s.get(WorkflowDef, (SHARED, workflow_store.STANDARD_KEY)).steps = before
+            s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)).steps = lean_before
 
 
 def test_lean_agents_get_the_domain_guidance_given_to_the_agents_they_replace(client, monkeypatch):

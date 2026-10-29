@@ -353,6 +353,8 @@ def test_a_run_gets_its_own_checkout_of_the_monolith_only_when_a_step_changes_it
     proj.post("/api/domains/d/features", json={"key": "f", "name": "f"})
     wf = proj.get("/api/workflows/standard").json()
     second = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][1]
+    from tests.test_delivery import domain_repo
+    domain_repo(proj, upstream, second, domain="d")  # the monolith
     steps = [{**st, "code": {"repository": ""}} if st.get("key") == second else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     run = proj.post("/api/runs", json={"domain": "d", "operation": "f", "base_branch": "release/2.4"}).json()

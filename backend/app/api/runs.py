@@ -84,8 +84,9 @@ def _create_run(db: Session, domain: str, operation: str, scope: str, workflow_k
         branch = git["feature_branch"]
         root = next((r for r in git["repositories"] if r["root"]), None)
         repository, base_branch = (root["url"], root["base_branch"] or None) if root else ("", None)
-        nested = [{"key": r["key"], "name": r["name"], "url": r["url"], "base_branch": r["base_branch"] or None,
-                   "path": f"{delivery.NESTED_DIR}/{r['key']}", "base_sha": None}
+        nested = [{"key": r["key"], "name": r["name"], "url": r["url"], "kind": r.get("kind"),
+                   "base_branch": r["base_branch"] or None, "path": f"{delivery.NESTED_DIR}/{r['key']}",
+                   "base_sha": None}
                   for r in git["repositories"] if not r["root"]]
         commit = git["commit"]
     else:

@@ -165,7 +165,9 @@ def for_context(ctx, checks: list[str] | None = None) -> list[str]:
         if "acceptance_suite_unchanged" in wanted:
             problems += suite_unchanged(service, ctx.base_sha)
         if "service_test_guardrails" in wanted:
+            from app import domain_modules
             problems += service_tests(service, ctx.base_sha, monolith, monolith_base)
+            problems += domain_modules.for_service(ctx, "service", None, one_project=False)
     except (RuntimeError, OSError) as e:
         return [blocker(f"Could not compare with the starting commit: {e}")]
     return problems

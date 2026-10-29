@@ -212,6 +212,8 @@ def test_a_stub_run_puts_its_placeholder_class_in_the_features_package_of_the_do
 
     upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
     wf = proj.get("/api/workflows/standard").json()
+    from tests.test_delivery import domain_repo
+    domain_repo(proj, upstream, "modular_monolith")
     steps = [{**st, "code": {"repository": ""}} if st.get("key") == "modular_monolith" else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
@@ -221,3 +223,233 @@ def test_a_stub_run_puts_its_placeholder_class_in_the_features_package_of_the_do
     assert java.read_text().startswith("package com.example.loan.domain.approve;")
     assert (ws / "loan-domain/pom.xml").exists()
     assert "loan-domain/src/main/java/com/example/loan/domain/approve/ApproveStub.java" in git(ws, "ls-files")
+
+
+def _service_java(ws: Path, package: str, name: str, body: str = "", folder: str = "src/main/java") -> None:
+    path = ws / folder / package.replace(".", "/")
+    path.mkdir(parents=True, exist_ok=True)
+    (path / f"{name}.java").write_text(f"package {package};\n{body}\npublic class {name} {{}}\n")
+
+
+def test_the_domain_service_keeps_one_project_and_a_package_per_feature(client, tmp_path):
+    project = _features(client, "create-loan", "view-loan")
+    ws, base = _repo(tmp_path)
+    svc = "com.acme.loan.service"
+    _service_java(ws, svc, "LoanServiceApplication", "public static void main(String[] a) {}")  # the main class: root OK
+    _service_java(ws, f"{svc}.createloan.web", "CreateLoanController")
+    _service_java(ws, f"{svc}.createloan.web", "CreateLoanRequest")
+    _service_java(ws, f"{svc}.shared.web", "RestExceptionHandler")
+    _service_java(ws, f"{svc}.util", "Dates")
+    _service_java(ws, f"{svc}.createloan", "CreateLoanServiceTest", folder="src/test/java")
+    decl = {"base_package": svc, "uses_features": []}
+    check = lambda d=decl: domain_modules.service_problems(project, "loan", "create-loan", None, ws, base,  # noqa: E731
+                                                            "service", d)
+    assert check() == []
+
+    _service_java(ws, svc, "LoanConfig")  # not a main class: not at the root
+    (ws / "loan-api").mkdir()
+    (ws / "loan-api/pom.xml").write_text("<project/>")  # a second project
+    problems = check()
+    assert any("LoanConfig.java is in package com.acme.loan.service:" in p for p in problems)
+    assert any("loan-api/pom.xml: a second project" in p for p in problems)
+    assert "Add base_package" in check({})[0]
+    # Modernise / Service tests: no declaration of their own; this run's microservice-extraction.yaml gives the package
+    assert domain_modules.service_problems(project, "loan", "create-loan", None, ws, base, "service", None,
+                                           one_project=False, base_hint=svc) != []
+
+
+def test_a_later_feature_keeps_the_services_base_package(client, tmp_path):
+    project = _features(client, "approve", "reject")
+    with session_scope() as s:
+        run = Run(project=project, domain="loan", operation="approve", status="completed")
+        s.add(run)
+        s.flush()
+        s.add(Artifact(run_id=run.id, stage="microservice_scaffold", attempt=1, name="microservice-extraction.yaml",
+                       path="x", kind="yaml", content=(
+                           "feature: approve\ndomain: loan\nmodule_commit: abc\nbase_package: com.acme.loan.service\n"
+                           "uses_features: [reject]\noperations:\n  - {method: LoanService#approve, operation_id: approve}\n"
+                           "replaced: []\nopen_decisions: []\nevents: []\n")))
+    ws, base = _repo(tmp_path)
+    problems = domain_modules.service_problems(project, "loan", "reject", "this-run", ws, base, "service",
+                                               {"base_package": "com.acme.loans", "uses_features": []})
+    assert any("the service's is com.acme.loan.service" in p for p in problems)
+    brief = domain_modules.brief(project, "loan", "this-run", ws)
+    assert "## This domain's services" in brief and "built by approve; base package `com.acme.loan.service`" in brief
+    assert "approve → reject" in brief and "repository not set in the domain's Agent inputs yet" in brief
+
+
+def test_a_stub_run_adds_its_placeholder_to_the_domains_service_in_the_features_package(client, tmp_path):
+    from tests.test_delivery import domain_repo, finish_workflow, setup_project
+    from tests.test_projects import make_monolith
+
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    make_monolith(tmp_path / "anything-lending")  # any name: the domain says which repository
+    wf = proj.get("/api/workflows/standard").json()
+    steps = [{**st, "code": {"repository": domain_repo(proj, tmp_path / "anything-lending", "microservice_scaffold")}}
+             if st.get("key") == "microservice_scaffold" else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    run = finish_workflow(proj, proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()["id"])
+    detail = proj.get(f"/api/runs/{run['id']}").json()
+    service = next(r for r in detail["repositories"] if r["url"] == str(tmp_path / "anything-lending"))
+    assert service["url"] == str(tmp_path / "anything-lending")
+    java = Path(detail["workspace"]) / service["path"] / "src/main/java/com/example/loan/service/approve/ApproveServiceStub.java"
+    assert java.read_text().startswith("package com.example.loan.service.approve;")
+
+
+def test_two_repositories_modernise_is_told_the_lifted_files_and_checked_against_them(client, tmp_path):
+    """The lifted service (Microservice step, old stack) and the modern service (Modernise) are two repositories of
+    the domain. Modernise gets exactly the files this run lifted, may not touch the lift, and must convert them."""
+    import subprocess
+    from types import SimpleNamespace
+
+    from tests.test_delivery import domain_repo, finish_workflow, git, setup_project
+    from tests.test_projects import make_monolith
+
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    for name in ("loan-lift", "loan-modern"):
+        make_monolith(tmp_path / name)
+    r = proj.put("/api/domains/loan", json={"agent_inputs": {"microservice_scaffold": {"repository": str(tmp_path / "loan-lift")},
+                                                             "modernise": {"repository": str(tmp_path / "loan-lift")}}})
+    assert r.status_code == 422 and "needs a repository of its own" in r.text  # old and new stack: never one project
+    r = proj.put("/api/domains/loan", json={"agent_inputs": {"microservice_scaffold": {"repository": str(tmp_path / "loan-lift")},
+                                                             "independent_tests": {"repository": str(tmp_path / "loan-modern")}}})
+    assert r.status_code == 422 and "where its baseline is taken" in r.text  # the suite goes with the lifted service
+    domain_repo(proj, tmp_path / "loan-lift", "microservice_scaffold", also={"modernise": tmp_path / "loan-modern"})
+    wf = proj.get("/api/workflows/standard").json()
+    steps = [{**st, "code": {"changes_code": True}} if st.get("key") in ("microservice_scaffold", "modernise") else st
+             for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    run = finish_workflow(proj, proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()["id"])
+    detail = proj.get(f"/api/runs/{run['id']}").json()
+    ws = Path(detail["workspace"])
+
+    info = domain_modules.lifted(key, "loan", run["id"], ws)
+    assert info["url"] == str(tmp_path / "loan-lift")
+    assert "src/main/java/com/example/loan/service/approve/ApproveServiceStub.java" in info["files"]
+    brief = domain_modules.brief(key, "loan", run["id"], ws, "modernise")
+    assert "## The lifted feature" in brief and "ApproveServiceStub.java" in brief and "READ ONLY" in brief
+    assert "Keep the lifted service's base package, `com.example.loan.service`" in brief
+    assert f"Lifted service (the module's stack" in brief and f"`{tmp_path / 'loan-lift'}`" in brief
+    assert f"Modern service (Modernise, Service tests; the one the monolith calls): `{tmp_path / 'loan-modern'}`" in brief
+
+    # Another feature's lift, pushed to the domain branch and merged into this run's checkout: not this run's to convert
+    lift_root = ws / info["path"]
+    other_file = lift_root / "src/main/java/com/example/loan/service/reject/RejectServiceStub.java"
+    other_file.parent.mkdir(parents=True)
+    other_file.write_text("package com.example.loan.service.reject;\npublic class RejectServiceStub {}\n")
+    git(lift_root, "add", "-A")
+    git(lift_root, "commit", "-qm", "reject's lift, merged in")
+    assert not any("reject" in f for f in domain_modules.lifted(key, "loan", run["id"], ws)["files"])
+
+    modern = next(r for r in detail["repositories"] if r["url"] == str(tmp_path / "loan-modern"))
+    ctx = SimpleNamespace(run_id=run["id"], domain="loan", operation="approve", stage="modernise", workspace=ws,
+                          code_dir=modern["path"], base_sha=modern["base_sha"], output_dir=tmp_path / "docs")
+    assert any("Nothing converted for approve" in p for p in domain_modules.modern_problems(ctx))  # the stub converts nothing
+    target = ws / modern["path"] / "src/main/java/com/example/loan/service/approve/ApproveService.java"
+    target.parent.mkdir(parents=True)
+    target.write_text("package com.example.loan.service.approve;\npublic class ApproveService {}\n")
+    other = ws / modern["path"] / "src/main/java/com/example/loan/service/reject/RejectService.java"
+    other.parent.mkdir(parents=True)
+    other.write_text("package com.example.loan.service.reject;\npublic class RejectService {}\n")
+    problems = domain_modules.modern_problems(ctx)
+    assert not any("Nothing converted" in p for p in problems)
+    assert any("RejectService.java is in another feature's package (reject)" in p for p in problems)
+    from app import service_guardrails as sg
+    operations = sg.openapi_paths(domain_modules._own_document(run["id"], "openapi.yaml"))
+    assert operations and any("No controller of the modern service maps" in p for p in problems)  # REST layer missing
+    controller = ws / modern["path"] / "src/main/java/com/example/loan/service/approve/web/ApproveController.java"
+    controller.parent.mkdir(parents=True)
+    controller.write_text("package com.example.loan.service.approve.web;\n@RestController\npublic class ApproveController {\n"
+                          + "".join(f'  @{v.capitalize()}Mapping("{p}")\n  public void op{i}() {{}}\n'
+                                    for i, (v, p, _id) in enumerate(operations)) + "}\n")
+    assert not any("No controller" in p for p in domain_modules.modern_problems(ctx))
+    lift_file = lift_root / "App.java"
+    lift_file.write_text("changed by modernise")
+    assert any("the lifted service is read only" in p for p in domain_modules.modern_problems(ctx))
+    git(lift_root, "checkout", "--", "App.java")
+
+    # Another feature's class, already in the modern service: deleting (or moving) it is refused
+    other.unlink()
+    modern_root = ws / modern["path"]
+    kept = modern_root / "src/main/java/com/example/loan/service/view/ViewService.java"
+    kept.parent.mkdir(parents=True)
+    kept.write_text("package com.example.loan.service.view;\npublic class ViewService {}\n")
+    git(modern_root, "add", "-A")
+    git(modern_root, "commit", "-qm", "an earlier feature's modern code")
+    ctx.base_sha = git(modern_root, "rev-parse", "HEAD")
+    kept.unlink()
+    assert any("ViewService.java of another feature (view) was deleted or moved" in p
+               for p in domain_modules.modern_problems(ctx))
+    git(modern_root, "checkout", "--", str(kept.relative_to(modern_root)))
+
+    # This feature's package using another feature's without uses_features: refused for Modernise too
+    using = modern_root / "src/main/java/com/example/loan/service/approve/ApproveFlow.java"
+    using.write_text("package com.example.loan.service.approve;\nimport com.example.loan.service.view.ViewService;\n"
+                     "public class ApproveFlow {}\n")
+    ctx.ownership, ctx.config = {}, {}
+    proj.post("/api/domains/loan/features", json={"key": "view", "name": "view"})
+    problems = domain_modules.for_service(ctx, "service", None)
+    assert any("uses view: list it in uses_features" in p for p in problems)
+    del subprocess, git
+
+
+def test_controller_mappings_read_constants_generated_interfaces_and_stay_lenient_on_what_they_cant_resolve(tmp_path):
+    from types import SimpleNamespace
+
+    def put(rel, text):
+        f = tmp_path / "svc" / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+
+    put("src/main/java/a/Paths.java", 'public final class Paths {\n  public static final String BASE = "/api/broker";\n'
+                                      '  public static final String ONE = "/brokers/{brokerId}";\n}\n')
+    put("src/main/java/a/BrokerController.java",
+        '@RestController\n@RequestMapping(Paths.BASE)\npublic class BrokerController {\n'
+        '  @GetMapping(value = Paths.ONE, produces = "application/json") X get() {}\n'
+        '  @PostMapping(path = {"/brokers"}, consumes = "application/json") X create() {}\n'
+        '  @DeleteMapping(Elsewhere.UNKNOWN) X remove() {}\n}\n')
+    put("target/generated-sources/openapi/a/BrokersApi.java",
+        'public interface BrokersApi {\n  @PutMapping("/api/broker/brokers/{id}") default X update() { return null; }\n}\n')
+    mapped = domain_modules.controller_mappings(tmp_path / "svc")
+    assert ("GET", "/api/broker/brokers/{}") in mapped and ("POST", "/api/broker/brokers") in mapped
+    assert ("PUT", "/api/broker/brokers/{}") in mapped  # a generated API interface counts
+    assert ("DELETE", None) in mapped  # unresolved: assumed to serve, not reported missing
+    assert not any(p == "/application/json" for _v, p in mapped)  # produces/consumes aren't paths
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "openapi.yaml").write_text(
+        "paths:\n  /brokers/{brokerId}:\n    get: {operationId: getBroker}\n    put: {operationId: updateBroker}\n"
+        "    delete: {operationId: removeBroker}\n  /brokers:\n    post: {operationId: createBroker}\n"
+        "  /brokers/{brokerId}/close:\n    post: {operationId: closeBroker}\n")
+    ctx = SimpleNamespace(output_dir=docs, run_id=None)
+    problems = domain_modules._unmapped_operations(ctx, tmp_path / "svc")
+    assert problems == [p for p in problems if "closeBroker" in p] and len(problems) == 1  # only the one really missing
+
+
+def test_paths_and_repositories_work_the_same_on_windows(client, tmp_path):
+    """Agents and people on Windows write backslashes, drive letters and paths with spaces; git writes forward
+    slashes, and its diffs can end lines with CRLF there. They all name the same things."""
+    from app import delivery, settings_store, workflow_store
+
+    # Repositories: a local Windows path in another spelling is the same repository; URLs keep their case
+    assert delivery._same(r"C:\Repos\Broker-Lift.git", "c:/repos/broker-lift/")
+    assert delivery._same(r"\\server\share\broker", "//SERVER/share/broker")
+    assert not delivery._same("https://github.com/Acme/Broker.git", "https://github.com/acme/other.git")
+    assert delivery._same("https://github.com/acme/broker.git", "https://github.com/acme/broker")
+
+    # A local path may have spaces; a URL can't
+    assert workflow_store.repository_error(r"C:\Users\Jo Doe\repos\broker-lift") is None
+    assert workflow_store.repository_error("https://github.com/acme/broker lift.git") is not None
+
+    # Folder settings: backslashes are fine, climbing out isn't (either separator)
+    project = new_project(client)
+    assert settings_store._relative_folder(r"modules\{domain}") and not settings_store._relative_folder(r"..\x")
+    assert domain_modules.posix(r"modules\loan\\") == "modules/loan"
+
+    # A declaration written on Windows names the same module
+    assert domain_modules.problems(project, "loan", None, tmp_path, "domain", "loan-domain\\") == []
+
+    # A step's recorded diff with CRLF line endings still names its files
+    diff = "diff --git a/src/A.java b/src/A.java\r\n--- a/src/A.java\r\n+++ b/src/A.java\r\n@@ -1 +1 @@\r\n-x\r\n+y\r\n"
+    assert domain_modules.DIFF_TARGET.findall(diff) == ["src/A.java"]

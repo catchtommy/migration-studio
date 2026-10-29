@@ -170,7 +170,8 @@ def test_the_standard_workflow_gives_the_test_steps_their_repository(client):
     steps = {st["key"]: st for st in client.get("/api/workflows/standard").json()["steps"]}
     keys = list(steps)
     assert keys[keys.index("modernise") + 1] == "service_tests"
-    assert steps["independent_tests"]["code"] == service and steps["service_tests"]["code"] == service
+    expected = {"changes_code": True, **service}  # the settings as saved then (each domain's Agent inputs now)
+    assert steps["independent_tests"]["code"] == expected and steps["service_tests"]["code"] == expected
     assert "service_tests" in steps["gate_release"]["reviews"]
     with session_scope() as s:
         s.get(WorkflowDef, (SHARED, "standard")).steps = original

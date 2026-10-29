@@ -1,4 +1,5 @@
 import itertools
+import time
 
 from tests.conftest import start_run, wait_for
 
@@ -267,7 +268,11 @@ def test_a_gate_checklist_must_be_ticked_before_approving(client):
 
     # Rejecting doesn't need the checklist; the gate reached again starts with nothing ticked.
     client.post(f"/api/runs/{run['id']}/decision", json={"decision": "reject", "comments": "More"})
-    run = wait_for(client, run["id"], {"awaiting_approval"})
+    for _ in range(200):  # the gate reached again: its second attempt (not the rejected one, still shown at first)
+        run = wait_for(client, run["id"], {"awaiting_approval"})
+        if sum(1 for s in run["stages"] if s["stage"] == "gate_check_docs") == 2:
+            break
+        time.sleep(0.05)
     assert [c["done"] for c in run["pending_gate"]["checklist"]] == [False, False]
     rejected = [s for s in run["stages"] if s["stage"] == "gate_check_docs"][0]
     assert [t["item"] for t in rejected["checklist"]] == ["Checked the SQL"]  # what that attempt had ticked

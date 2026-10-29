@@ -137,7 +137,8 @@ exceptions: []
                 pass
         files["microservice-extraction.yaml"] = "\n".join([
             "# [stub] sample microservice declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
-            "module_commit: \"0000000000000000000000000000000000000000\"", "operations:",
+            "module_commit: \"0000000000000000000000000000000000000000\"",
+            f"base_package: com.example.{_ident(ctx.domain).lower()}.service", "uses_features: []", "operations:",
             f"  - {{method: {ctx.domain.title()}Service#{ctx.operation.replace('-', '_')}, operation_id: {ctx.operation}}}",
             "replaced: []", "open_decisions: []", f"events: [{', '.join(events)}]"]) + "\n"
     if "module-extraction.yaml" in outputs:
@@ -200,6 +201,8 @@ exceptions: []
             methods = [*taken, *(f"{name}Orchestrator#{verb}" for verb in ("list", "get", "delete"))]
             ids = [f"{verb}{resource}" for verb in ("create", "list", "get", "delete")]
             lines += ["orchestrator: service", "module_commit: \"0000000000000000000000000000000000000000\"",
+                      f"base_package: com.example.{_ident(ctx.domain).lower()}.orchestrator.service",
+                      "uses_features: []",
                       "openapi: orchestrator-openapi.yaml", "operations:",
                       *(f"  - {{method: '{m}', operation_id: {i}}}" for m, i in zip(methods, ids)),
                       "domain_api:", f"  - {{method: '{name}Service#create', operation_id: create{name}}}",
@@ -684,6 +687,23 @@ def _sample_code_change(ctx: AgentContext, stage: StageDef) -> None:
     code.write_text(f"{stage.title} for {ctx.domain}/{ctx.operation} (stub agent, attempt {ctx.attempt})\n", encoding="utf-8")
     ctx.log(f"[stub] changed code: {ctx.rel(code)}")
     _sample_module(ctx)
+    _sample_service(ctx)
+
+
+def _sample_service(ctx: AgentContext) -> None:
+    """The service steps add a placeholder class to the domain's service project (the repository the domain sets), in
+    this feature's package under the base package their declarations name (app/domain_modules.py)."""
+    kind = {"microservice_scaffold": "service", "orchestrator_service": "orchestrator.service"}.get(ctx.stage)
+    if kind is None or ctx.code_dir in (".", "") or (kind != "service" and _scope(ctx) != "cross-domain"):
+        return
+    from app import domain_modules
+    package = f"com.example.{_ident(ctx.domain).lower()}.{kind}.{domain_modules.feature_segment(ctx.operation)}"
+    name = f"{_ident(ctx.operation)}{'Orchestration' if kind != 'service' else 'Service'}Stub"
+    java = ctx.workspace / ctx.code_dir / "src/main/java" / package.replace(".", "/") / f"{name}.java"
+    java.parent.mkdir(parents=True, exist_ok=True)
+    java.write_text(f"package {package};\n\n/** [stub] {ctx.operation}'s code in the {ctx.domain} {kind.replace('.', ' ')}. */\n"
+                    f"public class {name} {{\n}}\n", encoding="utf-8")
+    ctx.log(f"[stub] changed code: {ctx.rel(java)}")
 
 
 def _sample_module(ctx: AgentContext) -> None:

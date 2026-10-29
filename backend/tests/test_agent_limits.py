@@ -14,7 +14,7 @@ from app.orchestrator.stages import StageDef
 from app.tools import git_ops
 from tests.conftest import wait_for
 from tests.test_agents_domains import ctx  # noqa: F401
-from tests.test_delivery import git, setup_project
+from tests.test_delivery import domain_repo, git, setup_project
 from tests.test_projects import make_monolith
 
 
@@ -196,7 +196,7 @@ def test_a_step_that_moves_its_branch_fails_and_changes_elsewhere_are_undone(cli
     make_monolith(service)
     wf = proj.get("/api/workflows/standard").json()
     agents = [st["key"] for st in wf["steps"] if st["kind"] == "agent"]
-    steps = [{**st, "code": {"repository": str(service)}} if st.get("key") == agents[1] else st for st in wf["steps"]]
+    steps = [{**st, "code": {"repository": domain_repo(proj, service, agents[1])}} if st.get("key") == agents[1] else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     original, mode = stub.StubAgent.run, {"bad": "branch"}
 

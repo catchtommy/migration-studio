@@ -120,7 +120,10 @@ def plan(run) -> dict | None:
     # Only steps up to the point the run has reached: those after it run again when the run gets there (after a
     # re-run from an earlier step, the later ones are upcoming too), with their agents as they are then. Offering to
     # re-run from one of them would drop the approval the run is waiting for on the way.
-    changed = {k: why for k, why in agents_changed(run).items() if k in keys[:cut + 1]}
+    # A step the run is about to run (waiting to confirm its branches, or for an answer) or running uses the current
+    # agent already: only steps whose output stays as it was count as changed.
+    upcoming = run.current_stage if run.status in ("pending", "running", "awaiting_branches", "awaiting_input") else None
+    changed = {k: why for k, why in agents_changed(run).items() if k in keys[:cut + 1] and k != upcoming}
     rerun = _rerun(old, cut, current, changed)
     if rerun:
         out.update(rerun=rerun, rerun_stages=current)

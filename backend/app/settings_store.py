@@ -80,7 +80,7 @@ def get(key: str, project: str | None = None) -> Any:
 
 
 def _relative_folder(value: Any) -> bool:
-    return (isinstance(value, str) and bool(value.strip("/")) and ".." not in value.split("/")
+    return (isinstance(value, str) and bool(value.strip("/\\")) and ".." not in re.split(r"[\\/]", value)
             and not value.startswith(("/", "\\", "-")) and ":" not in value)
 
 

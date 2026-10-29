@@ -36,7 +36,7 @@ export interface Run {
   branch: string | null; // the feature branch
   base_branch: string | null; // the branch it was cut from (null: the repository's default branch)
   repository: string | null; // the monolith's, at the workspace root
-  repositories: { key: string; name: string; url: string; base_branch: string | null; path: string }[] | null; // the others
+  repositories: { key: string; name: string; url: string; kind?: string | null; base_branch: string | null; path: string }[] | null; // the others
   legacy: { url: string; branch: string; sha: string; subject?: string } | null; // the shared read-only monolith it reads
   delivery: Delivery | null;
   error: string | null;
@@ -216,6 +216,8 @@ export interface Approval {
 export interface AgentInputs {
   paths: string[];
   notes: string;
+  repository?: string; // a domain's input for an agent whose step changes code: where (the monolith included)
+  base_branch?: string; // and from which branch ("" the repository's default)
 }
 
 export interface RunDetail extends Run {
@@ -397,8 +399,7 @@ export interface WorkflowStep {
 /** Where an agent step changes code: the project's monolith (repository ""), or another repository whose URL can
  * contain {domain} (e.g. each domain's microservice), from its base branch. */
 export interface StepCode {
-  repository: string;
-  base_branch: string;
+  changes_code: boolean; // the repository and its base branch are each domain's (Agent inputs)
 }
 
 export interface Workflow {
@@ -440,6 +441,7 @@ export interface Domain {
   default_workflow: string | null;
   owned_tables: string[] | null;
   owned_packages: string[] | null;
+  workflows?: { key: string; name: string; agents: string[]; code_agents: string[]; when_needed?: string[]; hints?: Record<string, string> }[]; // the workflows this domain uses; when_needed: code agents skipped for domain-only features; hints: which repository an agent's is
   created_at: string;
   updated_at: string;
 }

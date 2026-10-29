@@ -322,7 +322,7 @@ def test_standard_workflow_gains_the_orchestrator_step_keeping_its_settings(clie
     assert keys[keys.index("modular_monolith") + 1] == "monolith_orchestrator"
     by_key = {st["key"]: st for st in steps}
     assert by_key["monolith_orchestrator"]["code"] == by_key["modular_monolith"]["code"] == \
-        {"repository": "", "base_branch": "develop"}  # it changes the same code as the module step
+        {"changes_code": True, "base_branch": "develop"}  # it changes the same code as the module step (as saved then)
     assert by_key["as_is_doc"]["publish_docs"] and "monolith_orchestrator" in by_key["gate_tests"]["reviews"]
     with session_scope() as s:
         s.get(WorkflowDef, (SHARED, "standard")).steps = original

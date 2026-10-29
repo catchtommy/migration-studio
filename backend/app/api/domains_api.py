@@ -59,9 +59,15 @@ def create_domain(body: DomainCreate, db: Session = Depends(get_db)):
     return domain
 
 
+def _out(domain: Domain) -> DomainOut:
+    out = DomainOut.model_validate(domain)
+    out.workflows = workflow_store.domain_workflows(domain)
+    return out
+
+
 @router.get("/{key}", response_model=DomainOut)
 def get_domain(key: str, db: Session = Depends(get_db)):
-    return _domain_or_404(db, key)
+    return _out(_domain_or_404(db, key))
 
 
 @router.put("/{key}", response_model=DomainOut, dependencies=[Depends(require("domains.manage"))])
@@ -85,9 +91,55 @@ def update_domain(key: str, body: DomainUpdate, db: Session = Depends(get_db)):
         unknown = set(body.agent_inputs) - set(agent_store.titles())
         if unknown:
             raise HTTPException(422, f"Unknown agents: {', '.join(sorted(unknown))}")
-        domain.agent_inputs = {stage: normalize_inputs(i.model_dump()) for stage, i in body.agent_inputs.items()}
+        inputs = {stage: normalize_inputs(i.model_dump()) for stage, i in body.agent_inputs.items()}
+        problem = _repository_problem(inputs, domain)
+        if problem:
+            raise HTTPException(422, problem)
+        domain.agent_inputs = inputs
     db.commit()
-    return domain
+    return _out(domain)
+
+
+def _repository_problem(inputs: dict[str, dict], domain: Domain) -> str | None:
+    """Every agent whose step changes code in one of the domain's workflows has a valid repository, and agents sharing
+    a repository use the same base branch (they share its checkout)."""
+    from app.tools.git_ops import valid_branch
+    titles = {k: t for k, (t, _d) in agent_store.titles().items()}
+    from app import settings_store
+    from app.modulith_scope import SKIPPABLE
+    used = [w["key"] for w in workflow_store.domain_workflows(domain)]
+    required = workflow_store.code_agents(workflows=used) if settings_store.get("monolith_repo") else {}  # blank: none
+    required = {k: v for k, v in required.items() if k not in SKIPPABLE}  # asked for when a cross-domain feature runs it
+    for key, workflows in required.items():
+        repository = (inputs.get(key) or {}).get("repository", "")
+        if not repository:
+            return (f"Set the repository of {titles.get(key, key)}: it changes code in "
+                    f"{', '.join(dict.fromkeys(workflows))}")
+    from app import delivery, domain_modules
+    lift = (inputs.get(domain_modules.LIFT_AGENT) or {}).get("repository", "")
+    same = [k for k in domain_modules.MODERN_AGENTS if delivery._same((inputs.get(k) or {}).get("repository"), lift)]
+    if same:  # the old stack and the new one can't share a project
+        return (f"{titles.get(same[0], same[0])} builds the modern service from the lifted one "
+                f"({titles.get(domain_modules.LIFT_AGENT)}), so it needs a repository of its own, not {lift}")
+    suite = (inputs.get("independent_tests") or {}).get("repository", "")
+    if suite and lift and not delivery._same(suite, lift):  # its baseline is taken against the lifted service
+        return (f"{titles.get('independent_tests', 'Independent tests')} writes the acceptance suite in the lifted "
+                f"service's repository ({lift}), where its baseline is taken")
+    bases: dict[str, tuple[str, str]] = {}
+    for key, i in inputs.items():
+        repository, base = i.get("repository", ""), i.get("base_branch", "")
+        if not repository:
+            continue
+        error = workflow_store.repository_error(repository)
+        if error:
+            return f"{titles.get(key, key)}: {error}"
+        if base and not valid_branch(base):
+            return f"{titles.get(key, key)}: {base!r} isn't a valid branch name"
+        other = bases.setdefault(repository, (key, base))
+        if other[1] != base:
+            return (f"{titles.get(key, key)} and {titles.get(other[0], other[0])} work in {repository}, so they need "
+                    "the same base branch")
+    return None
 
 
 @router.delete("/{key}", status_code=204, dependencies=[Depends(require("domains.manage"))])

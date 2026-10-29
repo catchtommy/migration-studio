@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, getCurrentProject, SCOPE_LABELS, type Agent, type Scope, type StepCode, type Workflow, type WorkflowGit, type WorkflowStep } from "../lib/api";
+import { api, getCurrentProject, SCOPE_LABELS, type Agent, type Scope, type Workflow, type WorkflowGit, type WorkflowStep } from "../lib/api";
 import { useAgents, useDomains, useIsAdmin, useProjects, useWorkflows } from "../lib/hooks";
 import { useSwitchProject } from "../lib/projectContext";
 import { DangerDialog } from "../components/DangerDialog";
@@ -17,7 +17,7 @@ const editable = (steps: WorkflowStep[]): EditableStep[] => steps.map((s) => ({ 
 const toSteps = (steps: EditableStep[]): WorkflowStep[] =>
   steps.map(({ uid: _uid, ...s }) =>
     s.kind === "agent"
-      ? { kind: "agent", key: s.key, uses: s.uses ?? null, include_content: s.include_content ?? false, code: s.code ?? null, publish_docs: s.publish_docs ?? false }
+      ? { kind: "agent", key: s.key, uses: s.uses ?? null, include_content: s.include_content ?? false, code: s.code ? { changes_code: true } : null, publish_docs: s.publish_docs ?? false }
       : {
           kind: "gate",
           key: s.key,
@@ -228,63 +228,20 @@ function StepInputs({ label, step, earlierAgents, title, onChange }: {
   );
 }
 
-/** Whether an agent step changes code, and where: the project's monolith, or another repository (e.g. each domain's
- * microservice, with {domain} in its URL, or the orchestrator) from its base branch. */
+/** Whether an agent step changes code. Which repository, and its base branch, differ per domain: each domain sets them
+ * for the step's agent in its Agent inputs. */
 function StepCodeSettings({ label, step, onChange }: { label: string; step: EditableStep; onChange: (step: EditableStep) => void }) {
-  const code = step.code ?? null;
-  const other = code !== null && code.repository !== "";
-  const [otherUrl, setOtherUrl] = useState(other ? code!.repository : "");
-  const set = (next: Partial<StepCode> | null) => onChange({ ...step, code: next === null ? null : { repository: "", base_branch: "", ...code, ...next } });
+  const changes = !!step.code;
   return (
     <fieldset className="w-full rounded-md border border-dashed border-border p-2 text-sm" aria-label={label}>
       <legend className="sr-only">{label}</legend>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        <label className="flex items-center gap-1.5">
-          <input type="checkbox" checked={code !== null} onChange={(e) => set(e.target.checked ? { repository: "", base_branch: "" } : null)} />
-          <span className="font-medium">Changes code</span>
-        </label>
-        {code !== null && (
-          <>
-            <label className="flex items-center gap-1.5">
-              <input type="radio" checked={!other} onChange={() => set({ repository: "", base_branch: "" })} />
-              In the project's monolith
-            </label>
-            <label className="flex items-center gap-1.5">
-              <input type="radio" checked={other} onChange={() => set({ repository: otherUrl || "https://", base_branch: code.base_branch })} />
-              In another repository
-            </label>
-          </>
-        )}
-        {code === null && <span className="text-xs text-subtle">Writes documents only.</span>}
-      </div>
-      {other && (
-        <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_12rem]">
-          <label className="text-xs">
-            <span className="mb-0.5 block font-medium text-subtle">Repository</span>
-            <input
-              aria-label={`${label} repository`}
-              className={`${inputClass} font-mono text-xs`}
-              placeholder="https://github.com/acme/{domain}-service.git"
-              value={code!.repository}
-              onChange={(e) => {
-                setOtherUrl(e.target.value.trim());
-                set({ repository: e.target.value.trim() });
-              }}
-            />
-            <span className="mt-0.5 block text-subtle">{"{domain}"} is filled in per run, so one step serves each domain's own repository.</span>
-          </label>
-          <label className="text-xs">
-            <span className="mb-0.5 block font-medium text-subtle">Base branch</span>
-            <input
-              aria-label={`${label} base branch`}
-              className={`${inputClass} font-mono text-xs`}
-              placeholder="default branch"
-              value={code!.base_branch}
-              onChange={(e) => set({ base_branch: e.target.value.trim() })}
-            />
-          </label>
-        </div>
-      )}
+      <label className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <input type="checkbox" checked={changes} onChange={(e) => onChange({ ...step, code: e.target.checked ? { changes_code: true } : null })} />
+        <span className="font-medium">Changes code</span>
+        <span className="text-xs text-subtle">
+          {changes ? "Each domain sets this agent's repository and base branch in its Agent inputs." : "Writes documents only."}
+        </span>
+      </label>
     </fieldset>
   );
 }
@@ -428,7 +385,7 @@ export function GitSettings({ value, onChange }: { value: WorkflowGit; onChange:
         </span>
       </label>
       <p className="text-sm text-subtle">
-        Which repository each step changes is set on the step (<em>Changes code</em>). A run cuts the same feature branch in every repository its steps change, each from
+        A step says whether it changes code (<em>Changes code</em>); each domain sets the repository and base branch of that step's agent in its Agent inputs. A run cuts the same feature branch in every repository its steps change, each from
         that repository's base branch (the monolith's is the project's base branch).
       </p>
       <fieldset className="space-y-1 text-sm">

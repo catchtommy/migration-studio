@@ -87,10 +87,16 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                               "c2ad8fdcb1f1c9011741b780496fed42b80971e5d67bd0ba1c8a1d1402270ba1",
         "9159384ab952c67a5c905e0f23f2c42d52c30c8e859b4eabe8a3e41090442b56",
         "7356c75d8d7aa56e00af010e64538773939c378a956da6fa58aada1ea347db38",
-        "0c42c2258509f9ae8614d72c2986d867f5b7b15aaf6abad4b819fd43f24d24a5"},
+        "0c42c2258509f9ae8614d72c2986d867f5b7b15aaf6abad4b819fd43f24d24a5",
+        "00c115ab87a501e11c920f31e31fae478abe33d069eaeb88c0d031965a252a17",
+        "8f9d717d388659e72ae0fe70fe89fd704a75dd65b2f9a9448df57f32e074f79a"},
     "modernise": {"f5199989f39ae16646acbf79d9c246d424fb9d507aeadc12217647c63b70aa41",
                   "3a97d57409eb272a0311e1bc55d47da3fa1ccf655e303b135937d7e3f8734366",
-                  "a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457"},
+                  "a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457",
+        "5ac003eeae552c2dacdb8f2f3a72032f11e58c6bb440baa2f77090b03a51a6de",
+        "ccd29214c9dee61ede975b3af6c32d21f35aa1c7c504e9fbe9a5162dbf1786b1",
+        "3fdbd40d27cf56a744c4dcc0cc874d058243279094fb3aabf3f9ca725a0c492a",
+        "acf98d8971c8430231b71d5a41e44f92e9ffd9824bdd8500769936b7ae934cac"},
     "modular_monolith": {"ae6adcee76691ce042b38a21231c497ea4ff3dcf880fa94905f5c0098571bfde",
                          "496c048b744624038c78d0318f8576b486700d5936d2a2b60215dde6e2bdab5a",
                          "07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee",
@@ -111,7 +117,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                              "686fec3600f472af2216b6e1805795367b9dd761933e094e3bf424dfbbf8d6b1",
                              "08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791",
         "b82822208202ff2dfd10ff0e77918503973178a46c10673641e4a95fad988f2c",
-        "e031ab929248d9c9b40ade7b6f9b782f099ad0daefaa39db19e50624a7722887"},
+        "e031ab929248d9c9b40ade7b6f9b782f099ad0daefaa39db19e50624a7722887",
+        "7a7e4b31d4c37c57d308e9d6e371dc89808055ec284cadc51ad698532f23945e"},
     "as_is_doc": {"9fb0392d1747e6a478a3e0cd6d77ea8cd4564fd9e815959b5baf2f48ee52c892"},
     "bounded_contexts": {"0fe37358d0947d3a11a0fc7d5440eb9ebaa72ec9171caff82a4612112c073294"},
     "monolith_orchestrator": {"35a24835d71b95dc27b3516c23305bb5ba7eb9525e031f7931aa5d1fb4af382e",
@@ -120,11 +127,15 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "f8d6c72fa43ec08d5245ad37fcd0be1e83d52c32ea37296345ef2751a6fd496b",
         "2e6d1a954a8a63a21f10dbd5bdeec4af00bea1ee01a10142ada6f57fca975129",
         "5b1954381befa4b650c27376281f54dcdd5e53b1b8b844eb308f315dd59e632a"},
-    "orchestrator_service": {"84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee"},
+    "orchestrator_service": {"84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee",
+        "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68"},
+    "service_tests": {"92748bd2b1cb6f490d603714dc95bd9067baead0f79409ac43927cf7a1f81149"},
+    "modernise_and_test": {"f344e3a8168e60d7ce6aff5aaaafe61ef51c0687c994261490c708af0cb135cf",
+        "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f"},
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v20"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v25"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
 GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails
@@ -294,7 +305,8 @@ def _upgrade_untouched_builtins(s) -> None:
         if row is not None and hashlib.sha256(row.instructions.encode()).hexdigest() in hashes:
             current = default_config(key)
             row.instructions, row.outputs = current["instructions"], current["outputs"]
-            row.guardrails = _joined(current["guardrails"], row.guardrails)  # moved out of the instructions
+            if current["guardrails"].strip() not in (row.guardrails or ""):  # moved out of the instructions; never twice
+                row.guardrails = _joined(current["guardrails"], row.guardrails)
             row.tools, row.checks = current["tools"], current["checks"]
             if key in MORE_TURNS:
                 row.max_turns = max(row.max_turns, current["max_turns"])

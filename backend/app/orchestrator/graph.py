@@ -268,15 +268,25 @@ def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
     return [ArtifactOut(name=note.name, path=ctx.rel(note), kind="markdown")]
 
 
-def _code_dir(stage: StageDef, nested: list[dict], domain: str) -> str | None:
-    """Where the step changes code, relative to the workspace: the root (the monolith), or the run's checkout of the
-    repository the step names (see app/delivery.py). None when the step names a repository the run has not checked
-    out: it must not change the monolith instead."""
-    repository = (stage.code or {}).get("repository")
-    if not repository:
+def _code_dir(stage: StageDef | dict, nested: list[dict], domain: str, project: str | None = None,
+              monolith: str | None = None) -> str | None:
+    """Where the step changes code, relative to the workspace: the root (the monolith; also a step that writes
+    documents only), or the run's checkout of the repository the domain sets for the step's agent (see
+    app/delivery.py). None when the run has not checked it out, or the domain hasn't set it: it must not change the
+    monolith instead."""
+    from app import delivery, projects
+    d = stage if isinstance(stage, dict) else stage.to_dict()
+    if not d.get("code"):
         return "."
-    url = repository.replace("{domain}", domain)
-    return next((r["path"] for r in nested if r["url"] == url), None)
+    return delivery.step_checkout(d, nested, domain, project or projects.current(), monolith)
+
+
+def _missing_repository(run_id: str, stage: dict, domain: str, monolith: str | None) -> str:
+    """What to say when the step's repository isn't checked out: the domain hasn't set it, or it changed since."""
+    from app import delivery
+    project = _project_of(run_id)
+    url, _base = delivery.stage_repository(stage, domain, delivery.domain_inputs(project, domain), monolith)
+    return url or delivery.missing_repositories([stage], domain, project, when_needed=True) or "its repository"
 
 
 def _repository_notes(nested: list[dict]) -> list[dict]:
@@ -334,6 +344,10 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             )
             run_row = s.get(Run, run_id)
             nested = [dict(r) for r in run_row.repositories or [] if r.get("base_sha")]
+            # The step as the run has it now (its code setting follows the workflow), and the monolith it works on
+            stage_now = next((d for d in run_row.stage_defs if d["key"] == stage.key), stage.to_dict())
+            from app import delivery as _delivery
+            monolith = _delivery.run_repository(run_row) or (run_row.legacy or {}).get("url")
             legacy_info, started_by = run_row.legacy, run_row.started_by
             start_sha = git_ops.head(ws)
             nested_starts = workspace.nested_heads(ws, nested)  # the run's other repositories, for rollbacks
@@ -359,8 +373,8 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         except KeyError:
             config = None
         domain = state["domain"]
-        code_dir = _code_dir(stage, nested, domain)
-        missing = None if code_dir is not None else (stage.code or {}).get("repository", "").replace("{domain}", domain)
+        code_dir = _code_dir(stage_now, nested, domain, _project_of(run_id), monolith)
+        missing = None if code_dir is not None else _missing_repository(run_id, stage_now, domain, monolith)
         code_dir = code_dir or "."
         discovery = domain == discovery_store.MONOLITH or state["operation"] == discovery_store.FEATURES_OP
         workspace.materialize_documents(run_id, ws)  # the documents in effect, from the database, for this step
@@ -398,7 +412,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             catalogue=(discovery_store.domains_brief(domain) if discovery else
                        contracts_store.catalogue_brief(domain, settings)),
             ownership=_ownership(),
-            domain_modules=(domain_modules.brief(_project_of(run_id), state["domain"], run_id, ws)
+            domain_modules=(domain_modules.brief(_project_of(run_id), state["domain"], run_id, ws, stage.key)
                             if stage.key in domain_modules.STEPS and not discovery else ""),
             service_dir=code_dir if code_dir != "." else settings["service_dir_pattern"].format(domain=domain),
             code_dir=code_dir, repositories=_repository_notes(nested),
@@ -415,6 +429,9 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             skipped = modulith_scope.skip_reason(stage.key, ctx.output_dir)
             if skipped:
                 outputs = _skip(ctx, stage, skipped)
+            elif missing and missing.startswith("Set "):  # the domain has no repository of that kind yet
+                raise RuntimeError(f"{stage.title} changes code in the domain's own repository. {missing}, then retry "
+                                   "the run")
             elif missing:
                 raise RuntimeError(f"{stage.title} changes code in {missing}, but this run has not checked it out, so "
                                    "it would change the wrong repository. Retry the run: it picks up the workflow's "

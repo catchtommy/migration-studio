@@ -24,10 +24,12 @@ from sqlalchemy import select
 
 from app import contracts_store as cs
 from app import settings_store
-from app.db.models import Artifact, Feature, Run
+from app.db.models import Artifact, Feature, Run, StageExecution
 from app.db.session import session_scope
+from app.tools import git_ops
 
-STEPS = ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service")
+STEPS = ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service", "modernise",
+         "modernise_and_test", "service_tests")
 STATEMENT = re.compile(r"<\s*(?:select|insert|update|delete|statement|procedure)\b[^>]*\bid\s*=\s*\"([^\"]+)\"",
                        re.IGNORECASE)
 MAX_LISTED = 80
@@ -72,10 +74,16 @@ class Module:
     statements: list[str] = field(default_factory=list)  # SQL statement ids in the module's SQL maps
 
 
+def posix(path) -> str:
+    """A repository-relative path as git writes it (forward slashes, no leading or trailing one), whatever the
+    machine: an agent on Windows may write `loan-domain\\src` in its declaration."""
+    return str(path or "").replace("\\", "/").strip("/")
+
+
 def pattern_path(project: str, kind: str, domain: str) -> str:
     key = "domain_module_dir_pattern" if kind == "domain" else "orchestrator_module_dir_pattern"
     pattern = settings_store.get_project(project).get(key) or settings_store.PROJECT_DEFAULTS[key]
-    return pattern.format(domain=domain).strip("/")
+    return posix(pattern.format(domain=domain))
 
 
 def _declarations(project: str, domain: str, run_id: str | None, name: str) -> list[tuple[str, str]]:
@@ -127,13 +135,13 @@ def existing(project: str, domain: str, run_id: str | None = None, ws: Path | No
         m = out["domain"]
         dm = next(x for x in data["modules"] if x["kind"] == "domain")
         if not declared_domain:  # the first feature that built it says where it is
-            m.path, m.artifact, declared_domain = str(dm["path"]).strip("/"), str(dm["artifact"]), True
+            m.path, m.artifact, declared_domain = posix(dm["path"]), str(dm["artifact"]), True
         if feature not in m.features:
             m.features.append(feature)
-        m.bridge = m.bridge or str(data["bridge_dir"]).strip("/")
+        m.bridge = m.bridge or posix(data["bridge_dir"])
         routing = data["routing"]
         m.routes += [{"bean": r["bean"], "interface": r["interface"], "property": routing["property"],
-                      "router": str(routing["router"]).strip("/"), "feature": feature} for r in routing["routes"]]
+                      "router": posix(routing["router"]), "feature": feature} for r in routing["routes"]]
         m.events += [e for e in data.get("events") or [] if e not in m.events]
         m.base_package = m.base_package or data.get("base_package")
         m.uses += [f"{feature} → {u}" for u in data.get("uses_features") or [] if f"{feature} → {u}" not in m.uses]
@@ -147,7 +155,7 @@ def existing(project: str, domain: str, run_id: str | None = None, ws: Path | No
             continue
         m = out["orchestrator"]
         if not declared_orchestrator:
-            m.path, m.artifact = str(data["module"]["path"]).strip("/"), str(data["module"]["artifact"])
+            m.path, m.artifact = posix(data["module"]["path"]), str(data["module"]["artifact"])
             declared_orchestrator = True
         if feature not in m.features:
             m.features.append(feature)
@@ -168,7 +176,7 @@ def problems(project: str, domain: str, run_id: str | None, root: Path, kind: st
     from app.guardrail_problems import blocker
 
     m = existing(project, domain, run_id, root)[kind]
-    declared = declared.strip("/")
+    declared = posix(declared)
     label = "domain module" if kind == "domain" else "orchestrator module"
     out = []
     if m.features:
@@ -190,13 +198,75 @@ def problems(project: str, domain: str, run_id: str | None, root: Path, kind: st
     return out
 
 
-def package_problems(project: str, domain: str, feature: str, run_id: str | None, root: Path, base: str,
-                     kind: str, module_path: str, declaration: dict) -> list[str]:
-    """One package per feature in the `kind` module: every Java file this step added or changed sits in
-    `<base_package>.<a feature of the domain>` or `<base_package>.shared`, the base package is the one earlier
-    features declared, and the features this feature's package uses are listed in `uses_features`."""
+MAIN_CLASS = re.compile(r"public\s+static\s+void\s+main\s*\(|@SpringBootApplication\b")
+SERVICE_FILES = {"service": cs.MICROSERVICE_EXTRACTION_FILE, "orchestrator_service": cs.ORCHESTRATOR_SERVICE_FILE}
+
+
+def layout_problems(root: Path, base: str, prefix: str, base_package: str, feature: str,
+                    segments: dict[str, str], declared_uses: list | None, *, app_root_ok: bool = False) -> list[str]:
+    """Every Java file this step added or changed under `prefix` (main and test) sits in `<base_package>.<a feature
+    of the domain>`, `.shared` or `.util` (sub-packages too); the base package itself holds only the application's
+    main class, where `app_root_ok`. With `declared_uses`, this feature's package may use another feature's only when
+    that feature is listed there."""
     from app.module_guardrails import changes
 
+    own = feature_segment(feature)
+    prefix = posix(prefix)
+    under = (lambda path: path.startswith(prefix + "/")) if prefix else (lambda path: True)  # noqa: E731
+    out = []
+    for c in changes(root, base):
+        if c.status == "D" or not c.path.endswith(".java") or not under(c.path):
+            continue
+        text = (root / c.path).read_text(encoding="utf-8", errors="replace") if (root / c.path).is_file() else ""
+        m = PACKAGE.search(text)
+        pkg = m.group(1) if m else ""
+        if pkg == base_package and app_root_ok and MAIN_CLASS.search(text):
+            continue  # the application's main class: Spring scans the packages below it
+        if pkg == base_package or not pkg.startswith(base_package + "."):
+            out.append(f"{c.path} is in package {pkg or '(none)'}: put it in its feature's package "
+                       f"{base_package}.<feature> (this feature's: {base_package}.{own}), {base_package}.{SHARED} for "
+                       f"what several features use, or {base_package}.{UTIL} for stateless helpers"
+                       + (" (only the main class sits in the base package)" if app_root_ok else ""))
+            continue
+        seg = pkg[len(base_package) + 1:].split(".")[0]
+        if seg not in COMMON and seg not in segments:
+            out.append(f"{c.path} is in package {pkg}, which is no feature of the domain ({', '.join(sorted(segments))}"
+                       f") nor {SHARED} or {UTIL}. If it belongs to a feature not listed yet, stop and ask")
+    if declared_uses is None:
+        return out
+    used = set()
+    folder = root / prefix if prefix else root
+    for f in folder.rglob("*.java") if folder.is_dir() else []:
+        parts = f.relative_to(folder).parts
+        if ".git" in parts or ".studio" in parts:  # inside this repository: a run's other checkouts live in .studio
+            continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        m = PACKAGE.search(text)
+        if not m or not m.group(1).startswith(f"{base_package}.") or \
+                m.group(1)[len(base_package) + 1:].split(".")[0] != own:
+            continue
+        for imp in IMPORT.findall(text):
+            if imp.startswith(base_package + "."):
+                seg = imp[len(base_package) + 1:].split(".")[0]
+                if seg != own and seg not in COMMON and seg in segments:
+                    used.add(segments[seg])
+    missing = sorted(used - {str(u) for u in declared_uses})
+    if missing:
+        out.append(f"This feature's package uses {', '.join(missing)}: list {'it' if len(missing) == 1 else 'them'} "
+                   "in uses_features, so the features' interactions are known")
+    return out
+
+
+def _segments(project: str, domain: str, feature: str) -> dict[str, str]:
+    segments = {feature_segment(k): k for k, _ in domain_features(project, domain)}
+    segments.setdefault(feature_segment(feature), feature)
+    return segments
+
+
+def package_problems(project: str, domain: str, feature: str, run_id: str | None, root: Path, base: str,
+                     kind: str, module_path: str, declaration: dict) -> list[str]:
+    """One package per feature in the domain's `kind` module (layout_problems), with the base package earlier
+    features declared."""
     base_package = str(declaration.get("base_package") or "").strip()
     if not base_package:
         return ["Add base_package to the declaration: the module's package, e.g. com.acme.broker.domain; every "
@@ -206,44 +276,98 @@ def package_problems(project: str, domain: str, feature: str, run_id: str | None
     if earlier and earlier != base_package:
         out.append(f"base_package is {base_package}, but the module's is {earlier} (earlier features): keep it")
         base_package = earlier
-    segments = {feature_segment(k): k for k, _ in domain_features(project, domain)}
-    segments.setdefault(feature_segment(feature), feature)
-    own = feature_segment(feature)
-    module_path = module_path.strip("/")
-    for c in changes(root, base):
-        if c.status == "D" or not c.path.endswith(".java") or not c.path.startswith(module_path + "/"):
-            continue
-        text = (root / c.path).read_text(encoding="utf-8", errors="replace") if (root / c.path).is_file() else ""
-        m = PACKAGE.search(text)
-        pkg = m.group(1) if m else ""
-        if pkg == base_package or not pkg.startswith(base_package + "."):
-            out.append(f"{c.path} is in package {pkg or '(none)'}: put it in its feature's package "
-                       f"{base_package}.<feature> (this feature's: {base_package}.{own}), {base_package}.{SHARED} for "
-                       f"the domain's types several features use, or {base_package}.{UTIL} for stateless helpers")
-            continue
-        seg = pkg[len(base_package) + 1:].split(".")[0]
-        if seg not in COMMON and seg not in segments:
-            out.append(f"{c.path} is in package {pkg}, which is no feature of the domain ({', '.join(sorted(segments))}"
-                       f") nor {SHARED} or {UTIL}. If it belongs to a feature not listed yet, stop and ask")
-    used = set()
-    pkg_dir = root / module_path
-    for f in pkg_dir.rglob("*.java") if pkg_dir.is_dir() else []:
-        text = f.read_text(encoding="utf-8", errors="replace")
-        m = PACKAGE.search(text)
-        if not m or not m.group(1).startswith(f"{base_package}.{own}") or \
-                m.group(1)[len(base_package) + 1:].split(".")[0] != own:
-            continue
-        for imp in IMPORT.findall(text):
-            if imp.startswith(base_package + "."):
-                seg = imp[len(base_package) + 1:].split(".")[0]
-                if seg != own and seg not in COMMON and seg in segments:
-                    used.add(segments[seg])
-    declared = {str(u) for u in declaration.get("uses_features") or []}
-    missing = sorted(used - declared)
-    if missing:
-        out.append(f"This feature's package uses {', '.join(missing)}: list {'it' if len(missing) == 1 else 'them'} "
-                   "in uses_features, so the features' interactions are known")
+    return out + layout_problems(root, base, module_path, base_package, feature, _segments(project, domain, feature),
+                                 declaration.get("uses_features") or [])
+
+
+def services(project: str, domain: str, run_id: str | None) -> dict[str, dict]:
+    """What earlier features declared about the domain's two services: {"service" | "orchestrator_service":
+    {"base_package", "features", "uses"}}."""
+    out = {}
+    for kind, name in SERVICE_FILES.items():
+        info = {"base_package": None, "features": [], "uses": [], "module_commit": None}
+        for feature, text in _declarations(project, domain, run_id, name):
+            try:
+                data = (cs.parse_microservice_extraction if kind == "service" else cs.parse_orchestrator_service)(text)
+            except cs.InvalidDocument:
+                continue
+            if data.get("orchestrator") == "none":
+                continue
+            info["base_package"] = info["base_package"] or data.get("base_package")
+            info["module_commit"] = data.get("module_commit") or info["module_commit"]  # the latest lift's
+            if feature not in info["features"]:
+                info["features"].append(feature)
+            info["uses"] += [f"{feature} → {u}" for u in data.get("uses_features") or []
+                             if f"{feature} → {u}" not in info["uses"]]
+        out[kind] = info
     return out
+
+
+def service_problems(project: str, domain: str, feature: str, run_id: str | None, root: Path, base: str,
+                     kind: str, declaration: dict | None, *, one_project: bool = True,
+                     base_hint: str | None = None, uses: list | None = None) -> list[str]:
+    """The domain's one `kind` service ("service" or "orchestrator_service") in the checked-out repository `root`:
+    one project (no second POM), and one package per feature under the service's base package. `declaration` is the
+    step's (Microservice, Orchestrator microservice); the steps after it (Modernise, Service tests) pass None and keep
+    the service's base package (`base_hint`: this run's Microservice declaration's) and the features it declared this
+    feature uses (`uses`): this feature's package may use another feature's only when that feature is listed."""
+    from app.module_guardrails import changes
+
+    earlier = services(project, domain, run_id)[kind]["base_package"]
+    out = []
+    base_package = str((declaration or {}).get("base_package") or "").strip() or None
+    if declaration is not None and not base_package:
+        out.append("Add base_package to the declaration: the service's package, e.g. com.acme.broker.service; every "
+                   "feature's classes go in <base_package>.<feature>, shared ones in <base_package>.shared")
+    if base_package and earlier and earlier != base_package:
+        out.append(f"base_package is {base_package}, but the service's is {earlier} (earlier features): keep it")
+    base_package = earlier or base_package or base_hint
+    if one_project:
+        out += [f"{c.path}: a second project in the service's repository. The domain has one project: add this "
+                "feature to it, in its package" for c in changes(root, base)
+                if c.status == "A" and Path(c.path).name == "pom.xml" and c.path != "pom.xml"]
+    if base_package:
+        out += layout_problems(root, base, "", base_package, feature, _segments(project, domain, feature),
+                               uses if declaration is None else declaration.get("uses_features") or [],
+                               app_root_ok=True)
+    return out
+
+
+def feature_of(run_id: str | None) -> str | None:
+    if not run_id:
+        return None
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        return run.operation if run is not None else None
+
+
+def project_of(run_id: str | None) -> str | None:
+    if not run_id:
+        return None
+    try:
+        with session_scope() as s:
+            run = s.get(Run, run_id)
+            return run.project if run is not None else None
+    except Exception:  # noqa: BLE001 - without the database there are no earlier features to know
+        return None
+
+
+def for_service(ctx, kind: str, declaration: dict | None, *, one_project: bool = True) -> list[str]:
+    """service_problems for an agent's run: its project, feature and checked-out service repository."""
+    project = project_of(ctx.run_id)
+    if project is None or not ctx.base_sha:
+        return []
+    hint, uses = None, None
+    if declaration is None:  # Modernise, Service tests: the package and feature uses this run's Microservice declared
+        f = ctx.output_dir / cs.MICROSERVICE_EXTRACTION_FILE
+        text = f.read_text(encoding="utf-8") if f.is_file() else _own_document(ctx.run_id, cs.MICROSERVICE_EXTRACTION_FILE)
+        try:
+            lifted_decl = cs.parse_microservice_extraction(text) if text else {}
+        except cs.InvalidDocument:
+            lifted_decl = {}
+        hint, uses = lifted_decl.get("base_package"), list(lifted_decl.get("uses_features") or [])
+    return service_problems(project, ctx.domain, ctx.operation, ctx.run_id, (ctx.workspace / ctx.code_dir).resolve(),
+                            ctx.base_sha, kind, declaration, one_project=one_project, base_hint=hint, uses=uses)
 
 
 def missing_from_checkout(project: str, domain: str, run_id: str | None, ws: Path) -> list[Module]:
@@ -256,7 +380,278 @@ def _listing(items: list[str]) -> str:
     return shown + (f" and {len(items) - MAX_LISTED} more" if len(items) > MAX_LISTED else "")
 
 
-def brief(project: str, domain: str, run_id: str | None, ws: Path | None) -> str:
+# Two repositories per domain service: the lifted service (the module's stack, every feature, built and tested by the
+# Microservice step; the acceptance suite's baseline is taken against it) and the modern service the Modernise step
+# builds from it. Each domain sets both in its Agent inputs.
+LIFT_AGENT = "microservice_scaffold"
+REPOSITORY_HINTS = {
+    "microservice_scaffold": "The lifted service: the module's stack, every feature. Not the modern service's repository.",
+    "independent_tests": "The lifted service's repository (Spring Boot microservice's): the suite's baseline is taken "
+                         "against it.",
+    "modernise": "The modern service: its own repository, built from the lifted service (Spring Boot microservice's).",
+    "modernise_and_test": "The modern service: its own repository, built from the lifted service (Spring Boot "
+                          "microservice's).",
+    "service_tests": "The modern service's repository (Modernise's).",
+}
+MODERN_AGENTS = ("modernise", "modernise_and_test", "service_tests")
+SUITE = "acceptance-tests/"
+
+
+def lifted(project: str, domain: str, run_id: str | None, ws: Path | None) -> dict | None:
+    """The lift repository for this run: {"url", "key", "path" (its checkout, None when the run hasn't checked it out),
+    "base" (where this run started there), "files" (what this run changed there, the acceptance suite aside)}.
+    None when the domain sets no repository for the Microservice step."""
+    from app import delivery
+    from app.module_guardrails import changes
+
+    url = (delivery.domain_inputs(project, domain).get(LIFT_AGENT) or {}).get("repository")
+    if not url:
+        return None
+    entry = None
+    if run_id:
+        with session_scope() as s:
+            run = s.get(Run, run_id)
+            entry = next((dict(r) for r in (run.repositories or []) if run and delivery._same(r["url"], url)
+                          and r.get("base_sha")), None) if run else None
+    if entry is None or ws is None or not (ws / entry["path"] / ".git").exists():
+        return {"url": url, "key": entry["key"] if entry else None, "path": None, "base": None, "files": []}
+    recorded = _run_changes(run_id, entry["key"])
+    if recorded is None:  # a run from before steps recorded their changes: what changed since it started there
+        recorded = [c.path for c in changes(ws / entry["path"], entry["base_sha"]) if c.status != "D"]
+    files = sorted(f for f in recorded if not f.startswith(SUITE))
+    return {"url": url, "key": entry["key"], "path": entry["path"], "base": entry["base_sha"], "files": files}
+
+
+DIFF_TARGET = re.compile(r"^\+\+\+ b/(.+?)\r?$", re.MULTILINE)  # CRLF too (git on Windows)
+
+
+def _run_changes(run_id: str | None, key: str) -> list[str] | None:
+    """The files this run's own steps changed (and kept) in its repository `key`, from each step's latest attempt's
+    recorded change. Work other runs pushed to the branch and merged into this run's checkout is not in them. None when
+    no step recorded a change there."""
+    if not run_id:
+        return None
+    with session_scope() as s:
+        rows = s.scalars(select(StageExecution).where(StageExecution.run_id == run_id)
+                         .order_by(StageExecution.id)).all()
+        latest = {}
+        for ex in rows:  # each step's latest attempt that recorded this repository
+            if ex.status != "failed" and key in (ex.repos or {}):
+                latest[ex.stage] = (ex.repos or {})[key]
+    diffs = [r.get("diff") for r in latest.values() if r.get("diff")]
+    if not latest:
+        return None
+    return list(dict.fromkeys(f for d in diffs for f in DIFF_TARGET.findall(d)))
+
+
+def _own_document(run_id: str, name: str) -> str | None:
+    """This run's latest stored document `name` (the documents folder is only on disk while a step runs)."""
+    with session_scope() as s:
+        row = s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.name == name)
+                        .order_by(Artifact.id.desc())).first()
+        return row.content if row else None
+
+
+def lift_brief(info: dict | None, feature: str, base_package: str | None = None) -> str:
+    """For the Modernise step: where the lifted feature is, and exactly which of its files to convert."""
+    if info is None:
+        return ""
+    if info["path"] is None:
+        return ("## The lifted feature\nThe domain's lifted service is " + f"`{info['url']}`" + ", but this run has not "
+                "checked it out (the Spring Boot microservice step didn't run in it). Stop and ask (ask_user).")
+    listing = "\n".join(f"- `{info['path']}/{f}`" for f in info["files"][:200]) or "- (no file changed)"
+    return (f"## The lifted feature\nThe domain keeps two repositories: the lifted service (the module's stack, every "
+            f"feature) at `{info['path']}/` (`{info['url']}`), READ ONLY for you, and the modern service, this step's "
+            f"repository. This run lifted {feature} there; these are exactly its files (from the lift's commit "
+            f"{info['base'][:10]}):\n{listing}\n"
+            "Convert exactly these into the same packages of the modern service, on its stack: the feature's package, "
+            f"`{SHARED}`, `{UTIL}`, and the packages of the features in `uses_features`; with their REST layer, "
+            "adapters, events and tests as the lift has them. Change no other feature's code beyond what this feature "
+            "added to it. When the modern service has no project yet (the domain's first feature), create it first. "
+            f"The acceptance suite is in the lift's `{SUITE}`: run it, unchanged, against the modern service."
+            + (f" Keep the lifted service's base package, `{base_package}`, in the modern service: the same packages, "
+               "per feature, `shared` and `util`." if base_package else ""))
+
+
+def modern_problems(ctx) -> list[str]:
+    """The Modernise step, two repositories: the lift is unchanged by this step, every package this run lifted has
+    converted code in the modern service, and the modern service changes nothing outside this feature's packages,
+    `shared`, `util` and those of `uses_features` (and the main class)."""
+    from app.module_guardrails import changes
+
+    project = project_of(ctx.run_id)
+    if project is None or not ctx.base_sha:
+        return []
+    info = lifted(project, ctx.domain, ctx.run_id, ctx.workspace)
+    if info is None or info["path"] is None or info["path"] == ctx.code_dir:
+        return []  # one repository (or none): nothing to compare
+    out = []
+    with session_scope() as s:
+        ex = s.scalars(select(StageExecution).where(StageExecution.run_id == ctx.run_id,
+                                                    StageExecution.stage == ctx.stage)
+                       .order_by(StageExecution.id.desc())).first()
+        start = ((ex.repos or {}).get(info["key"]) or {}).get("start") if ex else None
+    lift_root = ctx.workspace / info["path"]
+    if start:
+        touched = changes(lift_root, start)
+        out += [f"{c.path}: the lifted service is read only for this step; convert into the modern service instead"
+                for c in touched[:5]]
+    decl_file = ctx.output_dir / cs.MICROSERVICE_EXTRACTION_FILE
+    text = decl_file.read_text(encoding="utf-8") if decl_file.is_file() else _own_document(ctx.run_id,
+                                                                                         cs.MICROSERVICE_EXTRACTION_FILE)
+    try:
+        decl = cs.parse_microservice_extraction(text) if text else {}
+    except cs.InvalidDocument:
+        decl = {}
+    base_package = decl.get("base_package") or services(project, ctx.domain, ctx.run_id)["service"]["base_package"]
+    if not base_package:
+        return out
+    allowed = {feature_segment(ctx.operation), *COMMON} | {feature_segment(u) for u in decl.get("uses_features") or []}
+
+    def rel(root: Path, path: str) -> str | None:
+        text = (root / path).read_text(encoding="utf-8", errors="replace") if (root / path).is_file() else ""
+        m = PACKAGE.search(text)
+        if not m or not m.group(1).startswith(base_package + "."):
+            return None
+        return m.group(1)[len(base_package) + 1:]
+
+    lifted_pkgs = {r for f in info["files"] if f.endswith(".java") for r in [rel(lift_root, f)] if r}
+    modern_root = (ctx.workspace / ctx.code_dir).resolve()
+    every = changes(modern_root, ctx.base_sha)
+    for c in every:  # a class of another feature deleted or moved away: that feature loses its code
+        if c.status == "D" and c.path.endswith(".java"):
+            try:
+                old = git_ops.git(modern_root, "show", f"{ctx.base_sha}:{c.path}")
+            except git_ops.GitError:
+                continue
+            m = PACKAGE.search(old)
+            seg = m.group(1)[len(base_package) + 1:].split(".")[0] if m and m.group(1).startswith(base_package + ".") \
+                else None
+            if seg and seg not in allowed:
+                out.append(f"{c.path} of another feature ({seg}) was deleted or moved: keep every feature's code in "
+                           "its own package")
+    modern = [c for c in every if c.status != "D" and c.path.endswith(".java")]
+    modern_pkgs = set()
+    for c in modern:
+        r = rel(modern_root, c.path)
+        if r is None:
+            continue
+        modern_pkgs.add(r)
+        if r.split(".")[0] not in allowed:
+            out.append(f"{c.path} is in another feature's package ({r.split('.')[0]}): convert only this feature's "
+                       f"code ({', '.join(sorted(allowed))})")
+    out += _unmapped_operations(ctx, modern_root)
+    # Sub-packages may be renamed by the new stack (e.g. dao → repository): what must exist is the converted code under
+    # each lifted package's feature, shared or util package.
+    tops = {p.split(".")[0] for p in modern_pkgs}
+    out += [f"Nothing converted for {p} (lifted this run): convert it into the modern service"
+            for p in sorted({p.split(".")[0] for p in lifted_pkgs} - tops)]
+    return out
+
+
+MAPPING = re.compile(r"@(Get|Post|Put|Delete|Patch|Request)Mapping\b\s*(?:\(((?:[^()]|\([^()]*\))*)\))?")
+VERB = re.compile(r"RequestMethod\.(GET|POST|PUT|DELETE|PATCH)")
+TYPE = re.compile(r"\b(?:class|interface|enum|record)\s+(\w+)")
+CONSTANT = re.compile(r"\bString\s+(\w+)\s*=\s*([^;]+);")
+PATH_ATTR = re.compile(r"\b(?:value|path)\s*=\s*(\{[^}]*\}|[^,]+)")
+# Where a service's controllers can be: its own sources, and API interfaces generated from its OpenAPI document
+SOURCE_DIRS = ("src/main/", "target/generated-sources/", "build/generated/")
+
+
+def _norm(path: str) -> str:
+    path = re.sub(r"/+", "/", path).strip("/")
+    return re.sub(r"\{[^}]*\}", "{}", "/" + path) if path else "/"
+
+
+def _value(expr: str, constants: dict[str, str], depth: int = 0) -> str | None:
+    """A Java string expression of literals and constants joined by +, or None when it can't be resolved."""
+    out = ""
+    for part in re.split(r"\+(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", expr):
+        part = part.strip()
+        if part.startswith('"') and part.endswith('"') and len(part) >= 2:
+            out += part[1:-1]
+        elif re.fullmatch(r"[\w.]+", part) and depth < 5:
+            ref = constants.get(part) or constants.get(part.rsplit(".", 1)[-1])
+            resolved = _value(ref, constants, depth + 1) if ref is not None else None
+            if resolved is None:
+                return None
+            out += resolved
+        else:
+            return None
+    return out
+
+
+def _paths(args: str, constants: dict[str, str]) -> list[str | None]:
+    """The paths an annotation's arguments give: its value or path attribute (or its only argument); None for one
+    that can't be resolved."""
+    if not args.strip():
+        return [""]
+    m = PATH_ATTR.search(args)
+    if m:
+        expr = m.group(1)
+    elif "=" in args:
+        return [""]  # attributes, but no value or path (e.g. only produces): the class or method path is ""
+    else:
+        expr = args
+    expr = expr.strip()
+    items = [i for i in expr[1:-1].split(",") if i.strip()] if expr.startswith("{") else [expr]
+    return [_value(i, constants) for i in items] or [""]
+
+
+def controller_mappings(root: Path) -> set[tuple[str | None, str | None]]:
+    """(verb, path) of every Spring MVC mapping in the service under `root`: its sources and generated API interfaces;
+    paths given as constants are resolved from the service's String constants. A verb None: any method; a path None:
+    one that couldn't be resolved (it is assumed to serve the operation rather than reporting it missing)."""
+    files = [f for f in root.rglob("*.java") if (rel := f.relative_to(root).as_posix())
+             and any(d in rel for d in SOURCE_DIRS) and not rel.startswith((".studio/", ".git/"))]
+    texts = {f: f.read_text(encoding="utf-8", errors="replace") for f in files}
+    constants: dict[str, str] = {}
+    for f, text in texts.items():
+        owner = (TYPE.findall(text) or [f.stem])[0]
+        for name, expr in CONSTANT.findall(text):
+            constants.setdefault(name, expr.strip())
+            constants[f"{owner}.{name}"] = expr.strip()
+    out = set()
+    for text in texts.values():
+        m = TYPE.search(text)
+        if not m:
+            continue
+        head, body = text[:m.start()], text[m.end():]
+        prefixes = [""]
+        for kind, args in MAPPING.findall(head):
+            if kind == "Request":
+                prefixes = _paths(args or "", constants)
+        for kind, args in MAPPING.findall(body):
+            verbs = [kind.upper()] if kind != "Request" else (VERB.findall(args or "") or [None])
+            for prefix in prefixes:
+                for path in _paths(args or "", constants):
+                    full = None if prefix is None or path is None else _norm(f"{prefix}/{path}")
+                    out |= {(v, full) for v in verbs}
+    return out
+
+
+def _unmapped_operations(ctx, modern_root: Path) -> list[str]:
+    """Every operation of this feature's OpenAPI document is served by a controller of the modern service (a mapping
+    for its method and path; a prefix such as the servlet's context path is allowed either side)."""
+    from app.service_guardrails import openapi_paths
+
+    f = ctx.output_dir / "openapi.yaml"
+    text = f.read_text(encoding="utf-8") if f.is_file() else _own_document(ctx.run_id, "openapi.yaml")
+    if not text:
+        return []
+    mapped = controller_mappings(modern_root)
+    out = []
+    for verb, path, op_id in openapi_paths(text):
+        want = _norm(path)
+        if not any((v is None or v == verb) and (p is None or p == want or p.endswith(want)
+                                                  or (want.endswith(p) and p != "/"))
+                   for v, p in mapped):
+            out.append(f"No controller of the modern service maps {verb} {path} ({op_id or 'no operationId'}): convert "
+                       "the lifted feature's REST layer too")
+    return out
+
+
+def brief(project: str, domain: str, run_id: str | None, ws: Path | None, stage: str | None = None) -> str:
     """What the module and service steps must know: the domain's modules, and that they extend them."""
     mods = existing(project, domain, run_id, ws)
     features = domain_features(project, domain)
@@ -307,4 +702,46 @@ def brief(project: str, domain: str, run_id: str | None, ws: Path | None) -> str
             lines.append(f"  Classes already there (reuse them): {_listing(m.classes)}.")
         if m.statements:
             lines.append(f"  SQL statements already there (reuse them): {_listing(m.statements)}.")
+    repositories = {}
+    try:
+        from app import delivery
+        inputs = delivery.domain_inputs(project, domain)
+        modern = next((k for k in ("modernise", "modernise_and_test", "service_tests")
+                       if (inputs.get(k) or {}).get("repository")), "modernise")
+        repositories = {k: (inputs.get(k) or {}).get("repository") for k in (LIFT_AGENT, "orchestrator_service", modern)}
+        repositories["modern"] = repositories.get(modern)
+    except Exception:  # noqa: BLE001 - the brief goes on without them
+        pass
+    if stage in MODERN_AGENTS and stage != "service_tests":
+        own = _own_document(run_id, cs.MICROSERVICE_EXTRACTION_FILE) if run_id else None
+        try:
+            base = cs.parse_microservice_extraction(own).get("base_package") if own else None
+        except cs.InvalidDocument:
+            base = None
+        lift = lift_brief(lifted(project, domain, run_id, ws), feature_of(run_id) or "this feature",
+                          base or services(project, domain, run_id)["service"]["base_package"])
+        if lift:
+            lines += ["", lift]
+    lines += ["", "## This domain's services",
+              "The domain has ONE domain service project and ONE orchestrator service project, each in the "
+              "repository the domain sets for its agent (Agent inputs), shared by all its features: every feature is added to the same "
+              "project, never a second project or repository. Inside it, everything of a feature (controllers, "
+              "request and response objects, DTOs, services, DAOs, JPA repositories and entities, its tests) goes in "
+              "`<base_package>.<feature package>` (the packages above); classes several features use (the exception "
+              f"handler, filters, header adapters, configuration, shared types) in `<base_package>.{SHARED}`; "
+              f"stateless helpers in `<base_package>.{UTIL}`; only the application's main class sits in "
+              "`<base_package>`. Each operation's controller and request/response objects go in the package of the "
+              "feature the operation belongs to. Functionality of another feature this feature uses goes in that "
+              "feature's package (create it if needed), called by method calls, and listed in `uses_features`."]
+    for kind, label, repo in (("service", "Lifted service (the module's stack; Spring Boot microservice, Independent "
+                                          "tests)", LIFT_AGENT),
+                              ("service", "Modern service (Modernise, Service tests; the one the monolith calls)",
+                               "modern"),
+                              ("orchestrator_service", "Orchestrator service", "orchestrator_service")):
+        info = services(project, domain, run_id)[kind]
+        where = repositories.get(repo)
+        lines.append(f"- {label}: " + (f"`{where}`" if where else "repository not set in the domain's Agent inputs yet")
+                     + (f", built by {', '.join(info['features'])}" if info["features"] else ", no feature yet")
+                     + (f"; base package `{info['base_package']}` (keep it)" if info["base_package"] else "")
+                     + (f"; interactions so far: {', '.join(info['uses'])}" if info["uses"] else "") + ".")
     return "\n".join(lines)

@@ -218,3 +218,4 @@ def test_the_agent_tool_and_finish_check_use_the_service_repository(repo, tmp_pa
     assert any(p.startswith("Guardrail: UI file in the service") for p in common.verify(ctx))
     ctx.code_dir = "."
     assert "own repository" in sg.for_context(ctx)[0]
+

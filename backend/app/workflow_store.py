@@ -171,6 +171,15 @@ def seed() -> None:
                     s.add(WorkflowDef(project=SHARED, key=key, name=name, description=description,
                                       steps=steps_of(workflow), scope=scope))
             s.add(Setting(key="_added_discovery_workflows", value=True))
+        if s.get(Setting, (GLOBAL, "_step_code_flags")) is None:
+            # Steps named a repository (a URL, a {domain} template or a kind) and a base branch; now they only say
+            # they change code, and each domain sets the repository and branch per agent (Agent inputs). The URLs
+            # aren't copied onto domains: a fixed one may not be every domain's.
+            for row in s.scalars(select(WorkflowDef)):
+                flags = _flags(row.steps or [])
+                if flags != row.steps:
+                    row.steps = flags
+            s.add(Setting(key="_step_code_flags", value=True))
         if s.get(Setting, (GLOBAL, "_added_lean_workflow")) is None:
             if s.get(WorkflowDef, (SHARED, LEAN_KEY)) is None:
                 standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
@@ -256,35 +265,53 @@ def validate(steps: list[dict]) -> list[dict]:
             raise WorkflowInvalid(f"Step {i}: kind must be 'agent' or 'gate'")
     if not agents_so_far:
         raise WorkflowInvalid("A workflow needs at least one agent step")
-    bases: dict[str, str] = {}
-    for step in out:  # steps sharing a repository share its checkout, so they need the same base branch
-        code = step.get("code")
-        if code and code["repository"]:
-            if bases.setdefault(code["repository"], code["base_branch"]) != code["base_branch"]:
-                raise WorkflowInvalid(f"Steps working in {code['repository']} must use the same base branch")
     return out
 
 
-def _code(code: dict | None, i: int, title: str) -> dict | None:
-    """A step's code settings, cleaned: None (documents only) or {"repository", "base_branch"}."""
-    if not code:
-        return None
-    from app.tools.git_ops import valid_branch
-    repository = str(code.get("repository") or "").strip()
-    base = str(code.get("base_branch") or "").strip()
-    if repository.startswith("-") or any(c.isspace() for c in repository):
-        raise WorkflowInvalid(f"Step {i}: {title!r} needs a git URL or path for its repository")
+# A step only says whether it changes code: which repository, and its base branch, differ per domain and are set in
+# each domain's Agent inputs, for the step's agent (app/delivery.py step_repository).
+CHANGES_CODE = {"changes_code": True}
+
+
+def repository_error(repository: str) -> str | None:
+    """Why a git URL or path can't be a repository, or None."""
+    if not repository or repository.startswith("-") or ("://" in repository and any(c.isspace() for c in repository)):
+        return "Give a git URL or path for the repository"  # a local path may have spaces (Windows user folders)
     if "://" in repository:
         parts = urlsplit(repository)
         if not parts.netloc or parts.path.strip("/") == "":
-            raise WorkflowInvalid(f"Step {i}: {title!r}: {repository!r} isn't a complete repository URL; give the "
-                                  "host and the repository, e.g. https://github.com/acme/broker-service.git")
-    unknown = set(re.findall(r"{(\w+)}", repository)) - {"domain"}
-    if unknown:
-        raise WorkflowInvalid(f"Step {i}: unknown placeholder {{{sorted(unknown)[0]}}} in the repository; use {{domain}}")
-    if base and not valid_branch(base):
-        raise WorkflowInvalid(f"Step {i}: {base!r} isn't a valid base branch name")
-    return {"repository": repository, "base_branch": base if repository else ""}
+            return (f"{repository!r} isn't a complete repository URL; give the host and the repository, e.g. "
+                    "https://github.com/acme/broker-service.git")
+    return None
+
+
+def _code(code: dict | None, i: int, title: str) -> dict | None:
+    """A step's code setting, cleaned: None (documents only) or CHANGES_CODE."""
+    if not code:
+        return None
+    if str(code.get("repository") or "").strip() or str(code.get("base_branch") or "").strip():
+        raise WorkflowInvalid(f"Step {i}: {title!r}: a step only says it changes code; the repository and its base "
+                              "branch are set in each domain's Agent inputs")
+    return dict(CHANGES_CODE)
+
+
+def _flags(steps: list[dict]) -> list[dict]:
+    """Steps saved when they named a repository (a URL, a {domain} template or a kind) and a base branch: the flag."""
+    return [{**st, "code": dict(CHANGES_CODE)} if st.get("kind") == "agent" and st.get("code") else st for st in steps]
+
+
+def code_agents(project: str | None = None, workflows: list[str] | None = None) -> dict[str, list[str]]:
+    """The agents whose step changes code in one of the project's migration workflows (only `workflows`, when given):
+    agent key -> workflow names. Each domain sets their repository (Agent inputs)."""
+    out: dict[str, list[str]] = {}
+    with session_scope() as s:
+        for row, _custom in _effective_rows(s, project or projects.current_or_none()):
+            if (row.scope or "operation") != "operation" or (workflows is not None and row.key not in workflows):
+                continue
+            for st in row.steps or []:
+                if st.get("kind") == "agent" and st.get("code"):
+                    out.setdefault(st["key"], []).append(row.name)
+    return out
 
 
 def resolve(steps: list[dict]) -> Workflow:
@@ -498,6 +525,42 @@ def scope_of(key: str) -> str | None:
     with session_scope() as s:
         row = _effective(s, key, projects.current_or_none())
         return None if row is None else row.scope or "operation"
+
+
+def domain_workflows(domain: Domain) -> list[dict]:
+    """The migration workflows a domain uses: its default (the domain's, else the project's), then those of its earlier
+    runs, latest first. The built-in fallback (the standard) only counts when nothing else says: a domain whose runs
+    all used another workflow doesn't use the standard. [{"key", "name", "agents": [agent keys, in order],
+    "code_agents": [those whose step changes code]}]."""
+    explicit = domain.default_workflow or _project_default(domain.project)
+    with session_scope() as s:
+        ran = [w for w in s.scalars(select(Run.workflow).where(Run.project == domain.project, Run.domain == domain.key,
+                                                              (Run.scope.is_(None)) | (Run.scope == "operation"))
+                                    .order_by(Run.created_at.desc())) if w]
+    keys = ([default_for(domain)] if explicit or not ran else []) + ran
+    keys = [k for k in keys if k]
+    out = []
+    for key in dict.fromkeys(keys):
+        try:
+            wf = get(key)
+        except KeyError:
+            continue  # deleted since
+        agents = [st["key"] for st in wf["steps"] if st.get("kind") == "agent"]
+        from app.modulith_scope import SKIPPABLE
+        code = [st["key"] for st in wf["steps"] if st.get("kind") == "agent" and st.get("code")]
+        # A step skipped for domain-only features (the orchestrator, linked contracts) needs its repository only when
+        # a cross-domain feature runs it: optional on the domain, asked for by the step itself.
+        from app.domain_modules import REPOSITORY_HINTS
+        out.append({"key": key, "name": wf["name"], "agents": agents, "code_agents": code,
+                    "when_needed": [k for k in code if k in SKIPPABLE],
+                    "hints": {k: REPOSITORY_HINTS[k] for k in code if k in REPOSITORY_HINTS}})
+    return out
+
+
+def _project_default(project: str) -> str | None:
+    with session_scope() as s:
+        stored = s.get(Setting, (project, PROJECT_DEFAULT))
+        return stored.value if stored is not None and stored.value else None
 
 
 def default_for(domain: Domain | None, scope: str = "operation") -> str | None:

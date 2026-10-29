@@ -204,10 +204,14 @@ def for_context(ctx) -> list[str]:
                 "module, so there is nothing to lift")]
     api = out / str(declaration.get("openapi") or "")
     root_is_git = mg.head(ctx.workspace) is not None
-    return check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, ctx.workspace if root_is_git else None,
-                 getattr(ctx, "monolith_sha", None), declaration, module_path,
-                 api.read_text(encoding="utf-8") if declaration.get("openapi") and api.is_file() else None,
-                 ctx.ownership, ctx.domain)
+    from app import domain_modules
+    problems = check((ctx.workspace / ctx.code_dir).resolve(), ctx.base_sha, ctx.workspace if root_is_git else None,
+                     getattr(ctx, "monolith_sha", None), declaration, module_path,
+                     api.read_text(encoding="utf-8") if declaration.get("openapi") and api.is_file() else None,
+                     ctx.ownership, ctx.domain)
+    if declaration["orchestrator"] == "service":  # the domain's one orchestrator service, one package per feature
+        problems += domain_modules.for_service(ctx, "orchestrator_service", declaration)
+    return problems
 
 
 def report(problems: list[str]) -> str:

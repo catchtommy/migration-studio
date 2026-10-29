@@ -287,7 +287,10 @@ SERVICE_EXTRACTION_SCHEMA = """```yaml
 feature: create-broker
 domain: broker
 module_commit: 3f2a9c1             # the monolith commit the code was copied from
-operations:                        # one per public method of the module's API, none more (besides health)
+base_package: com.acme.broker.service   # the service's package, the same for every feature of the domain:
+#   this feature's classes in com.acme.broker.service.createbroker, shared ones in .shared, helpers in .util
+uses_features: []                  # the domain's other features whose packages this feature's code uses
+operations:                        # this feature's operations (its openapi.yaml), none more (besides health)
   - method: BrokerService#create   # Class#method in the module
     operation_id: createBroker     # the operationId in openapi.yaml
 replaced:                          # module files not copied unchanged, each with its reason
@@ -350,6 +353,9 @@ domain: loan
 orchestrator: service              # service | none (no orchestrator: give the reason and nothing else)
 # reason: The feature has no orchestrator   # only with orchestrator: none
 module_commit: 3f2a9c1             # the monolith commit the orchestrator module was copied from
+base_package: com.acme.loan.orchestrator.service   # the same for every feature of the domain; this feature's classes
+#   in com.acme.loan.orchestrator.service.createloan, shared ones in .shared, helpers in .util
+uses_features: []                  # the domain's other features whose packages this feature's code uses
 openapi: orchestrator-openapi.yaml # the API the monolith calls, next to this file
 operations:                        # one per operation of orchestrator-extraction.yaml, none more (besides health)
   - method: LoanOrchestrator#create          # Class#method in the orchestrator module
@@ -1052,10 +1058,20 @@ them, follow the rules and list the difference under deviations in `microservice
 
 {_REST_RULES}
 
-The domain has ONE service, shared by all its features, like its one domain module ("This domain's modules"): when \
-an earlier feature already lifted the module into it, extend it with what this feature added, reuse what is there, \
-and keep everything the earlier features need working. Keep the module's package per feature (and `shared`, `util`) as it \
-is: only the base part of the package names changes.
+**One project per domain.** The domain has ONE service project, in the repository the domain sets ("This domain's \
+services"), shared by all its features: never create a second project or repository. When an earlier feature already \
+lifted the module into it, extend it with what this feature added, reuse what is there, and keep everything the \
+earlier features need working, their endpoints included. Keep the module's package per feature (and `shared`, \
+`util`) as it is: only the base part of the package names changes (`base_package`, the same for every feature). \
+Everything of a feature goes in its package: its controllers and request and response objects (in the package of the \
+feature the operation belongs to, not of the class it calls), DTOs, services and DAOs. Classes several features use \
+(the exception handler, the header filter, the context adapters, configuration, the event publisher, REST clients) go \
+in `shared`, stateless helpers in `util`; only the main class sits in the base package. Functionality of another \
+feature this feature needs goes in that feature's package, created if needed, and that feature in `uses_features`.
+
+**The lifted service.** This repository is the domain's lifted service: it stays on the module's stack for every \
+feature (the Modernise step builds the modern service from it, in a repository of its own), so this feature is lifted \
+and tested here exactly like the first one, and the acceptance suite's baseline is taken against it.
 
 Read first: `module-extraction.yaml` (where the module is, in the monolith checkout at the workspace root, and its events), `domain-design.yaml`, `openapi.yaml`, `integration-decisions.yaml`, `orchestrator-design.md` when it exists, and the module itself.
 
@@ -1063,7 +1079,7 @@ Procedure:
 1. Baseline. Record the monolith commit you copy from (`git rev-parse HEAD` in the monolith checkout) as `module_commit`. Write the ordered checklist of the steps below at the top of `microservice.md`.
 2. Skeleton: a POM for Java 8 with only the allowed dependencies, a main class that starts the embedded server, a Spring context, the health endpoint. It must build and start.
 3. Copy the module's code, SQL maps and tests: the domain module only. The orchestrator module, when there is one, is not copied: the Orchestrator microservice step makes it a service of its own, which calls this one. The bridge package of the monolith is never copied either: its context adapters become request-header adapters, and its `local` adapters are replaced by the adapters below. The copied tests must pass.
-4. The REST layer: one operation per public method of the module's API, with the operationId of the OpenAPI document; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
+4. The REST layer: one operation per operation of this feature's OpenAPI document (earlier features' endpoints stay as they are), with its operationId; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
 service), the request headers read and the response headers echoed on every response (a filter). Add contract tests against the OpenAPI document, and JSON round-trip tests for dates (explicit format and time zone), decimals, nulls and enums.
 5. Context adapters from request headers, one per context port.
 6. Integration, from `integration-decisions.yaml`: adapters for the ports of other domains (REST clients to the monolith's facade endpoints, which the Monolith integration step adds later, so stub them in \
@@ -1090,8 +1106,13 @@ Stop and ask with ask_user when: the module's build or tests are not green; a co
 
     "orchestrator_service": f"""You are a careful engineer. You lift ONE feature's orchestrator, from the domain's \
 orchestrator module the Orchestrator in monolith step built, into the domain's orchestrator service (one Spring Boot \
-service per domain, in its own repository, shared by the domain's cross-domain features: extend it when an earlier \
-feature created it, and reuse its clients and adapters), exactly as the approved designs say. The service only orchestrates: for each operation it calls the domain microservice and the other \
+service per domain, in the repository the domain sets, shared by the domain's cross-domain features: extend it when \
+an earlier feature created it, never create a second project, and reuse its clients and adapters), exactly as the \
+approved designs say. Inside it, everything of a feature (its orchestrator classes, controllers, request and response \
+objects, its tests) goes in `<base_package>.<feature package>`; clients, contract adapters, the exception handler, the \
+header filter and configuration several features use go in `<base_package>.shared`, stateless helpers in \
+`<base_package>.util`; only the main class sits in the base package. Functionality of another feature this feature \
+uses goes in that feature's package, listed in `uses_features`. Keep earlier features' endpoints as they are. The service only orchestrates: for each operation it calls the domain microservice and the other \
 domains over their APIs, in the order the orchestrator design gives, and it holds no database. Afterwards the \
 monolith calls the feature through it: monolith → orchestrator service → domain service, with the other domains \
 reached through their contracts. {_LEGACY}
@@ -1238,11 +1259,22 @@ manages the schema (`spring.jpa.hibernate.ddl-auto=none`), and entities map the 
 are.
 - Keep the REST contract (including its REST rules: status codes, error body and headers) and the cross-domain \
 contracts unchanged.
-- The acceptance suite in `acceptance-tests/` (written by the Independent tests step, see `test-report.md`) is the \
-proof that behaviour is unchanged: run it, unchanged, against the modernised service; every test that passed before \
-must still pass. Never change anything under `acceptance-tests/`: a check refuses it. Migrate the service's own unit \
-tests to the new stack (the Service tests step adds new ones afterwards).
+- Two repositories: the domain's lifted service (the module's stack, every feature; the Spring Boot microservice \
+step's) and the modern service, this step's repository. "The lifted feature" lists exactly the files this run lifted: \
+convert those into the same packages of the modern service (creating its project for the domain's first feature), \
+with their REST layer, adapters, events and tests. The lifted service is read only for you, and you change no other \
+feature's code beyond what this feature added to it.
+- The acceptance suite in the lifted service's `acceptance-tests/` (written by the Independent tests step, see \
+`test-report.md`) is the proof that behaviour is unchanged: run it, unchanged, against the modern service; every test \
+that passed against the lifted service must still pass. Never change it: a check refuses it. Migrate the feature's \
+unit tests to the new stack (the Service tests step adds new ones afterwards).
 - Run check_boundaries and fix every violation.
+- One project per domain, one package per feature; the modern service holds every feature of the domain, so \
+packaging is critical: keep the service's base package (the lifted service's) and put each class in the package of \
+the feature it belongs to, exactly as the lift has it. Each feature's JPA entities and repositories, services, \
+controllers, request and response objects, DTOs, mappers and tests go in its feature package (sub-packages allowed); \
+what several features use in `shared`, stateless helpers in `util`. Only the main class sits in the base package. \
+Never move, rename or delete another feature's classes.
 
 Write `modernisation.md`: the changes, every query whose SQL differs from the iBatis statement it replaces (and why \
 the result is the same), and the results of the acceptance suite next to its baseline in `test-report.md`.""",
@@ -1260,7 +1292,7 @@ production code here.
 - Libraries: JUnit 5, Mockito, AssertJ and Spring Boot's test support (`spring-boot-starter-test`), Testcontainers \
 for the database. Anything else: stop and ask.
 
-What to test:
+What to test (each test in the package of the class it tests: the feature's package, `shared` or `util`):
 - Controllers with `@WebMvcTest`: every operation of `openapi.yaml`, with the REST rules (201 for POST and 200 \
 otherwise, {{"status": "Success"}} where nothing is returned, the error body for each error, the request headers read \
 and the response headers echoed).
@@ -1286,6 +1318,8 @@ over its API (`orchestrator-openapi.yaml`), and only that: the orchestrator serv
 the other domains. The monolith never calls the domain service directly for this feature.
 - When the feature has no orchestrator (`domain-only`, or `orchestrator: none`), the new flow calls the **domain \
 service** over its API (`openapi.yaml`).
+- The domain service is the **modern** one (the Modernise step's repository), never the lifted service: the lifted \
+service (the module's stack) only proves the lift and gives the acceptance suite its baseline, and is not deployed.
 - When the feature has an orchestrator module but no orchestrator service, stop and ask: calling the domain service \
 directly would drop the orchestration. The orchestrator service is built first.
 
@@ -1531,7 +1565,18 @@ in `contract` mode, or a decision that depends on the business's tolerance for s
     "modernise_and_test": f"""You modernise the domain microservice to Java 25 and Spring Boot 4, replacing iBatis with \
 Spring Data JPA mapped onto the existing tables, and you give the modernised service its unit and integration tests. \
 The acceptance suite in `acceptance-tests/` (written by the Acceptance tests step, see `test-report.md`) is the \
-independent proof that behaviour is unchanged.
+independent proof that behaviour is unchanged. The domain keeps two repositories: its lifted service (the module's \
+stack, every feature) and the modern service, this step's repository; "The lifted feature" lists exactly the files \
+this run lifted, which you convert into the same packages of the modern service (creating its project for the \
+domain's first feature). The lifted service, and its acceptance suite, are read only for you.
+
+**One package per feature.** The modern service holds every feature of the domain, so packaging is critical: keep \
+the service's base package (the lifted service's), and put each class in the package of the feature it belongs to, \
+exactly as the lift has it: this feature's code (entities, JPA repositories, services, controllers, request and \
+response objects, DTOs, mappers, its tests) in `<base_package>.<feature package>`, sub-packages allowed; what several \
+features use in `<base_package>.shared`, stateless helpers in `<base_package>.util`; only the main class in \
+`<base_package>`. Never move, rename or delete another feature's classes, and never put this feature's code in \
+another feature's package unless the lift does (that feature is in `uses_features`).
 
 {_FIXED_RULES}
 
@@ -1579,7 +1624,7 @@ _GUARDRAIL_SPANS: dict[str, list[tuple[str, str]]] = {
     "microservice_scaffold": [("Modulith guardrails. The target", "\n\nThe REST layer implements")],
     "orchestrator_service": [("Hard rules for this step.", "\n\nREST API design rules.")],
     "independent_tests": [("Hard rules for this step.", "\n\nWhat the suite covers:")],
-    "service_tests": [("Hard rules for this step.", "\n\nWhat to test:")],
+    "service_tests": [("Hard rules for this step.", "\n\nWhat to test")],
     "analysis": [("Fixed rules of this migration.", "\n\nStart from the feature's entry points")],
     "modulith_design": [("Fixed rules of this migration.", "\n\nREST API design rules.")],
     "modernise_and_test": [("Fixed rules of this migration.", "\n\nProcedure:")],
