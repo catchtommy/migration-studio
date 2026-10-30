@@ -80,3 +80,12 @@ export function useRunEvents(runId: string) {
 
   return events;
 }
+
+/** Re-fetches a run (and the given related queries) after an action on it, resolving once the new state is in. Return
+ * it from a mutation's onSuccess so the button stays busy until the page shows the result, and can't be pressed twice
+ * in between. */
+export function useRefreshRun(runId: string) {
+  const queryClient = useQueryClient();
+  return (...also: string[]) =>
+    Promise.all([["run", runId], ...also.map((k) => [k, runId])].map((queryKey) => queryClient.invalidateQueries({ queryKey })));
+}

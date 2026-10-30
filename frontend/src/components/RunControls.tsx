@@ -103,7 +103,7 @@ export function FailedRun({ run }: { run: RunDetail }) {
           title={canRetry ? undefined : "Needs the “Run migrations” permission"}
           onClick={() => retry.mutate(false)}
         >
-          {kept ? "Retry, continuing where it stopped" : "Retry from failed stage"}
+          {retry.isPending && !retry.variables ? "Retrying…" : kept ? "Retry, continuing where it stopped" : "Retry from failed stage"}
         </button>
         {kept && (
           <button
@@ -111,7 +111,7 @@ export function FailedRun({ run }: { run: RunDetail }) {
             disabled={!canRetry || retry.isPending}
             onClick={() => window.confirm("Undo what the failed attempt did and start the step over?") && retry.mutate(true)}
           >
-            Retry from scratch
+            {retry.isPending && retry.variables ? "Retrying…" : "Retry from scratch"}
           </button>
         )}
         {kept && <span className="text-xs text-subtle">The failed attempt's documents and code are kept, so the retry carries on from them.</span>}

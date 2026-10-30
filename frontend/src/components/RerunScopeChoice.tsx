@@ -12,7 +12,7 @@ export function RerunScopeChoice({ value, onChange, stepTitle }: { value: RerunS
     {
       scope: "redo",
       title: "Redo the step from scratch",
-      text: `${stepTitle} starts over from where it began and writes its documents again, and the steps after it up to this gate run again too.`,
+      text: `${stepTitle} starts over from where it began and writes its documents again, and the steps after it up to this gate run again too. Code it already pushed isn't brought back from git; its next commit undoes it on the feature branch.`,
     },
   ];
   return (

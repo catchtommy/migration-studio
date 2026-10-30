@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { api, type ChecklistItem, type RerunScope, type StageDef } from "../lib/api";
 import { RerunScopeChoice } from "./RerunScopeChoice";
-import { useCan, useMe } from "../lib/hooks";
+import { useCan, useMe, useRefreshRun } from "../lib/hooks";
 
 export function ApprovalPanel({
   runId,
@@ -13,7 +13,7 @@ export function ApprovalPanel({
   gate: { gate: string; reviews: string[]; checklist?: ChecklistItem[] };
   stages: StageDef[];
 }) {
-  const queryClient = useQueryClient();
+  const refreshRun = useRefreshRun(runId);
   const { data: auth } = useMe();
   const canApprove = useCan("runs.approve");
   const [comments, setComments] = useState("");
@@ -27,7 +27,7 @@ export function ApprovalPanel({
 
   const tick = useMutation({
     mutationFn: (body: { item: string; done: boolean }) => api.tickChecklist(runId, body),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["run", runId] }),
+    onSuccess: () => refreshRun(),
   });
 
   const decide = useMutation({
@@ -41,7 +41,7 @@ export function ApprovalPanel({
       }),
     onSuccess: () => {
       setComments("");
-      queryClient.invalidateQueries({ queryKey: ["run", runId] });
+      return refreshRun("artifacts");
     },
   });
 
@@ -166,14 +166,14 @@ export function ApprovalPanel({
                       onClick={() => decide.mutate({ decision: "reject", rerun: "later" })}
                       title="Hold the run so you can change the agent, the inputs or the documents, then re-run when ready"
                     >
-                      Reject, amend first
+                      {decide.isPending && decide.variables?.rerun === "later" ? "Rejecting…" : "Reject, amend first"}
                     </button>
                     <button
                       className="rounded-md border border-bad/50 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/10 disabled:opacity-50"
                       disabled={!comments.trim() || decide.isPending}
                       onClick={() => decide.mutate({ decision: "reject", rerun: "now" })}
                     >
-                      Reject &amp; re-run now
+                      {decide.isPending && decide.variables?.rerun === "now" ? "Rejecting and re-running…" : <>Reject &amp; re-run now</>}
                     </button>
                   </>
                 ) : (
@@ -183,7 +183,7 @@ export function ApprovalPanel({
                     title={open > 0 ? `Tick the ${open} open checklist item${open === 1 ? "" : "s"} first` : undefined}
                     onClick={() => decide.mutate({ decision: "approve" })}
                   >
-                    Approve
+                    {decide.isPending ? "Approving…" : "Approve"}
                   </button>
                 )}
               </div>

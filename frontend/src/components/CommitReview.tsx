@@ -328,8 +328,8 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
         latest_sha: changes!.latest_sha,
         head_sha: changes!.head_sha,
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["run", run.id] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["run", run.id] });
       onCommitted();
     },
   });
@@ -449,6 +449,13 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
                     ) : f.same_in_git ? (
                       <span className="text-[10px] text-subtle" title={`Already on ${changes.feature_branch} in git as it is here: nothing new to commit`}>
                         in git
+                      </span>
+                    ) : f.undo ? (
+                      <span
+                        className="text-[10px] text-warn"
+                        title={`Pushed to ${changes.feature_branch} before the step was re-run fresh (or redone); the re-run doesn't have it as git does, so committing this undoes it in git`}
+                      >
+                        undo
                       </span>
                     ) : f.upstream_changed ? (
                       <span className="text-[10px] text-accent" title={`Also changed on ${changes.base_branch}; merged cleanly`}>
@@ -613,7 +620,7 @@ export function CommitReview({ run }: { run: RunDetail }) {
           <button
             type="button"
             disabled={finish.isPending}
-            className="rounded-md px-3 py-1.5 text-subtle hover:bg-muted hover:text-fg"
+            className="rounded-md px-3 py-1.5 text-subtle hover:bg-muted hover:text-fg disabled:opacity-50"
             onClick={() =>
               afterStep
                 ? finish.mutate()
@@ -624,7 +631,9 @@ export function CommitReview({ run }: { run: RunDetail }) {
                   ) && finish.mutate()
             }
           >
-            {afterStep
+            {finish.isPending
+              ? "Finishing…"
+              : afterStep
               ? "Continue without committing (commit later)"
               : left.length < changed.length
                 ? `Finish without committing ${left.map((r) => r.name).join(", ")}`

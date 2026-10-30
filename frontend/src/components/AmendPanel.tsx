@@ -1,16 +1,15 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { api, MONOLITH, type RerunScope, type RunDetail } from "../lib/api";
 import { RerunScopeChoice } from "./RerunScopeChoice";
 import { EMPTY_INPUTS, InputsEditor } from "./InputsEditor";
 import { Guarded } from "./Guarded";
-import { useCan } from "../lib/hooks";
+import { useCan, useRefreshRun } from "../lib/hooks";
 
 /** A rejection held back for amendments: change the agent, the inputs or the documents, then re-run. */
 export function AmendPanel({ run }: { run: RunDetail }) {
   const canEditAgents = useCan("agents.manage");
-  const queryClient = useQueryClient();
   const pending = run.pending_rerun!;
   const reviews = run.pending_gate?.reviews ?? [pending.target_stage];
   const title = (key: string) => run.workflow_stages.find((s) => s.key === key)?.title ?? key;
@@ -20,7 +19,8 @@ export function AmendPanel({ run }: { run: RunDetail }) {
   const [inputs, setInputs] = useState(run.inputs ?? EMPTY_INPUTS);
   const clean = (i: typeof inputs) => ({ paths: i.paths.map((p) => p.trim()).filter(Boolean), notes: i.notes.trim() });
   const inputsDirty = JSON.stringify(clean(inputs)) !== JSON.stringify(clean(run.inputs ?? EMPTY_INPUTS));
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["run", run.id] });
+  const refreshRun = useRefreshRun(run.id);
+  const refresh = () => refreshRun("artifacts");
 
   const saveInputs = useMutation({ mutationFn: () => api.updateRunInputs(run.id, clean(inputs)), onSuccess: refresh });
   const rerun = useMutation({
@@ -32,6 +32,7 @@ export function AmendPanel({ run }: { run: RunDetail }) {
   });
   const back = useMutation({ mutationFn: () => api.backToReview(run.id), onSuccess: refresh });
   const error = (saveInputs.error ?? rerun.error ?? back.error) as Error | null;
+  const busy = saveInputs.isPending || rerun.isPending || back.isPending;
 
   return (
     <Guarded permission="runs.approve">
@@ -78,8 +79,8 @@ export function AmendPanel({ run }: { run: RunDetail }) {
           pathsHint="One per line, relative to the repository root: code, documentation (docs/**/*.md), entry points."
         />
         {inputsDirty && (
-          <button onClick={() => saveInputs.mutate()} disabled={saveInputs.isPending} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted">
-            Save inputs
+          <button onClick={() => saveInputs.mutate()} disabled={busy} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50">
+            {saveInputs.isPending ? "Saving…" : "Save inputs"}
           </button>
         )}
 
@@ -103,15 +104,15 @@ export function AmendPanel({ run }: { run: RunDetail }) {
               </select>
             </label>
           )}
-          <button onClick={() => back.mutate()} disabled={back.isPending} className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg">
-            Withdraw rejection
+          <button onClick={() => back.mutate()} disabled={busy} className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg disabled:opacity-50">
+            {back.isPending ? "Withdrawing…" : "Withdraw rejection"}
           </button>
           <button
             onClick={() => rerun.mutate()}
-            disabled={!comments.trim() || rerun.isPending}
+            disabled={!comments.trim() || busy}
             className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           >
-            Re-run {title(target)}
+            {rerun.isPending ? `Re-running ${title(target)}…` : `Re-run ${title(target)}`}
           </button>
         </div>
       </section>

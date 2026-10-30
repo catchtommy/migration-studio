@@ -36,7 +36,7 @@ export interface Run {
   branch: string | null; // the feature branch
   base_branch: string | null; // the branch it was cut from (null: the repository's default branch)
   repository: string | null; // the monolith's, at the workspace root
-  repositories: { key: string; name: string; url: string; kind?: string | null; base_branch: string | null; path: string }[] | null; // the others
+  repositories: { key: string; name: string; url: string; kind?: string | null; base_branch: string | null; path: string; base_sha?: string | null }[] | null; // the others (base_sha: checked out)
   legacy: { url: string; branch: string; sha: string; subject?: string } | null; // the shared read-only monolith it reads
   delivery: Delivery | null;
   error: string | null;
@@ -131,6 +131,7 @@ export interface ChangedFile {
   additions: number | null;
   deletions: number | null;
   same_in_git?: boolean; // already on the feature branch in git exactly so: nothing new to commit
+  undo?: boolean; // code pushed before a fresh re-run (or a redo) that the run no longer has: committing it undoes it in git
 }
 
 export interface RunChanges {
@@ -235,6 +236,7 @@ export interface RunDetail extends Run {
   monolith_behind: number | null; // commits the base branch has gained since (as last fetched), docs folder aside
   workflow_update: WorkflowUpdate | null; // the run's workflow changed since it started: what updating it would do
   stopping?: boolean; // an admin asked the working run to stop: its agent ends at its next step
+  branch_per?: "feature" | "domain" | null; // the workflow's branching: a branch per feature, or one per domain
 }
 
 /** What bringing a waiting run up to date with its workflow would change (step titles), or why it can't. */
@@ -806,7 +808,9 @@ export const api = {
    * affects; keep: keep what the steps produced although their agents changed (the next steps use the current agents). */
   updateRunWorkflow: (id: string, mode: "upcoming" | "rerun" | "keep" = "upcoming") =>
     request<Run>(`/runs/${id}/update-workflow`, json("POST", { rerun: mode === "rerun", keep_agents: mode === "keep" })),
-  restart: (id: string, stage: string, notes?: string, fresh = false) => request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh })),
+  /** newBranch (fresh only, per-feature branching): cut this new feature branch from the latest base branch for the re-run. */
+  restart: (id: string, stage: string, notes?: string, fresh = false, newBranch?: string) =>
+    request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh, new_branch: newBranch })),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
   setAllAgentsMode: (mode: "stub" | "llm") => request<{ changed: number; mode: string }>("/agents/mode", json("POST", { mode })),

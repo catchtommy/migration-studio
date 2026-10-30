@@ -1,4 +1,5 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { useRefreshRun } from "../lib/hooks";
 import { api, type RunDetail, type WorkflowUpdate as Update } from "../lib/api";
 
 const PARTS: [keyof Update, string][] = [
@@ -11,13 +12,10 @@ const PARTS: [keyof Update, string][] = [
  * re-run from the earliest step a change affects, or (agents changed) to keep what ran and go on with the updated agents
  * from the next step, which hides the notice until an agent changes again. */
 export function WorkflowUpdate({ run, workflowName, canUpdate }: { run: RunDetail; workflowName: string | null; canUpdate: boolean }) {
-  const queryClient = useQueryClient();
+  const refreshRun = useRefreshRun(run.id);
   const update = useMutation({
     mutationFn: (mode: "upcoming" | "rerun" | "keep") => api.updateRunWorkflow(run.id, mode),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["run", run.id] });
-      queryClient.invalidateQueries({ queryKey: ["artifacts", run.id] });
-    },
+    onSuccess: () => refreshRun("artifacts"),
   });
   const plan = run.workflow_update;
   if (!plan) return null;

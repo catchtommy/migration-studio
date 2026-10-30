@@ -19,8 +19,8 @@ from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution, utcnow
 from app.db.session import emit, get_db, session_scope
-from app import (auth, contracts_store, delivery, discovery_store, docs_publish, document_export, gate_checklist,
-                 projects, repos, run_cleanup, run_workflow, settings_store, workflow_store, workspace)
+from app import (auth, contracts_store, delivery, discovery_store, docs_publish, document_export, domain_modules,
+                 gate_checklist, projects, repos, run_cleanup, run_workflow, settings_store, workflow_store, workspace)
 from app.auth import CurrentUser, ProjectAccess, project_context, require, require_admin
 from app.domain_store import normalize_inputs
 from app.orchestrator import graph, questions
@@ -170,6 +170,7 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
         db.refresh(run)  # the workflow's current code settings, picked up while it waits
     detail = RunDetail.model_validate(run)
     if run.scope == "operation":
+        detail.branch_per = domain_modules.branch_per(run.project, run_id)
         detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
                                   if run.legacy else
                                   repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha))
@@ -399,11 +400,36 @@ def restart(run_id: str, body: Restart, db: Session = Depends(get_db),
     """Re-run the workflow from a stage that already completed, e.g. after its agent's instructions changed. That
     stage and the ones after it update their existing documents with the agents' current settings, or with `fresh`
     regenerate them from where the stage started (earlier attempts, approvals and diffs stay recorded)."""
-    return _restart(db, _run_or_404(db, run_id), body.stage, user, body.notes, body.fresh)
+    run = _run_or_404(db, run_id)
+    new_branch = (body.new_branch or "").strip() or None
+    if new_branch:
+        _check_new_branch(run, new_branch, body.fresh)
+    return _restart(db, run, body.stage, user, body.notes, body.fresh, new_branch=new_branch)
+
+
+def _check_new_branch(run: Run, branch: str, fresh: bool) -> None:
+    """A fresh re-run on a new feature branch: only per-feature branching (a domain's branch holds its other features'
+    work too), and a valid name other than the run's branch and its base branches."""
+    from app.tools.git_ops import valid_branch
+    if not fresh:
+        raise HTTPException(422, "A new branch is only cut for a fresh re-run")
+    if domain_modules.branch_per(run.project, run.id) != "feature":
+        raise HTTPException(422, "A new branch is only cut when each feature has its own branch: in this workflow the "
+                                 "domain's features share one")
+    if not delivery.run_repos(run):
+        raise HTTPException(422, "The run hasn't checked out any repository yet, so there is no branch to cut again")
+    bases = {run.base_branch, *(r.get("base_branch") for r in run.repositories or [])}
+    if not valid_branch(branch) or branch == run.branch or branch in bases:
+        raise HTTPException(422, f"{branch!r} can't be the new branch: choose a valid name other than {run.branch} "
+                                 "and the base branch")
+    for repo in delivery.run_repos(run):  # as last fetched; cutting it fetches again and checks once more
+        mirror = repos.mirror_dir(run.project, repo["url"])
+        if mirror.exists() and git_ops.commit_info(mirror, f"refs/heads/{branch}") is not None:
+            raise HTTPException(409, f"{repo['name']} already has a branch {branch}: choose another name")
 
 
 def _restart(db: Session, run: Run, stage: str, user: CurrentUser, notes: str | None = None, fresh: bool = False,
-             must_have_run: bool = True) -> Run:
+             must_have_run: bool = True, new_branch: str | None = None) -> Run:
     """Run the workflow again from `stage`. `must_have_run`: only from a stage that completed (a re-run that brings
     the run up to date may start at a step the workflow added before the point it had reached)."""
     run_id = run.id
@@ -422,19 +448,22 @@ def _restart(db: Session, run: Run, stage: str, user: CurrentUser, notes: str | 
             db.delete(latest)  # the held rejection never took effect; the restart replaces it
     if graph.discard_stopped_work(run_id):  # a re-run starts the steps over: nothing stopped is continued
         emit(run_id, "log", "What the failed attempt kept was undone, as the workflow re-runs")
+    if not new_branch and (run.delivery or {}).get("failed_cut"):  # re-run on the run's branch after all
+        run.delivery = {k: v for k, v in run.delivery.items() if k != "failed_cut"}
     before, before_stage = run.status, run.current_stage
     # current_stage moves now, so the timeline shows the step re-running at once, not only once its agent starts.
     run.status, run.error, run.pending_rerun, run.current_stage = "running", None, None, stage
     db.commit()
     later = sum(1 for s in run.stage_defs[run.stage_defs.index(step) + 1:] if s["kind"] == "agent")
-    how = ("starting fresh: the workspace is rolled back and the documents regenerated" if fresh else
+    how = (f"starting fresh on a new branch {new_branch} cut from the latest base branch" if new_branch else
+           "starting fresh: the workspace is rolled back and the documents regenerated" if fresh else
            "documents are updated with the agents' current settings")
     emit(run_id, "status", f"{user.display_name} re-ran the workflow from {step['title']}"
                            + (f" and the {later} step(s) after it" if later else "") + f": {how}", stage)
     delivery.refresh_code_settings(run_id)  # the workflow's current code settings (which steps change code, where)
     db.refresh(run)
     try:
-        get_runner().restart(run_id, stage, notes, fresh=fresh)
+        get_runner().restart(run_id, stage, notes, fresh=fresh, new_branch=new_branch, user_id=user.id)
     except RunBusyError as e:
         run.status, run.current_stage = before, before_stage
         db.commit()
@@ -442,13 +471,17 @@ def _restart(db: Session, run: Run, stage: str, user: CurrentUser, notes: str | 
     return run
 
 
-@router.post("/runs/{run_id}/retry", response_model=RunOut, dependencies=[Depends(require("runs.start"))])
-def retry(run_id: str, body: RetryIn | None = None, db: Session = Depends(get_db)):
+@router.post("/runs/{run_id}/retry", response_model=RunOut)
+def retry(run_id: str, body: RetryIn | None = None, db: Session = Depends(get_db),
+          user: CurrentUser = Depends(require("runs.start"))):
     """Run the failed step again. It continues from what its stopped attempt kept (documents, and commits in its
     repository), so finished work isn't paid for twice; with `fresh` it starts over from where the step started."""
     run = _run_or_404(db, run_id)
     if run.status != "failed":
         raise HTTPException(409, "Only failed runs can be retried")
+    cut = (run.delivery or {}).get("failed_cut")
+    if cut:  # cutting a fresh re-run's new branch failed: cut it again (nothing of the re-run ran yet)
+        return _restart(db, run, cut["stage"], user, fresh=True, new_branch=cut["branch"])
     fresh = body is not None and body.fresh
     notes = ((body.notes if body else None) or "").strip() or None
     if fresh and graph.discard_stopped_work(run_id):

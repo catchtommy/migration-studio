@@ -13,11 +13,11 @@ feature branch (with anything else pushed there since), and only later changes a
 import time
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from app import repos
 from app.agents.base_agent import DOCS_ROOT
-from app.db.models import Artifact, Run, StageExecution
+from app.db.models import Artifact, Run, StageExecution, utcnow
 from app.db.session import emit, session_scope
 from app.tools import git_ops
 
@@ -127,20 +127,27 @@ def _restore(path: Path, project: str, url: str | None, branch: str, base_sha: s
     return restored
 
 
-def rebuild(run_id: str, before_stage: str | None = None) -> str:
+def rebuild(run_id: str, before_stage: str | None = None, branch: str | None = None,
+            bases: dict[str, str] | None = None) -> str:
     """Recreate the run's workspace from the database, as it was after the stages in effect (only those before
-    `before_stage`, when given). Returns the new HEAD of the workspace root."""
+    `before_stage`, when given: a roll-back, which replays from where the run started rather than from code it pushed,
+    as that may hold the stages rolled back). `branch` and `bases` (repository key -> commit; "monolith" for the
+    root) build it on another branch from other base commits instead of the run's (recut). Returns the new HEAD of the
+    workspace root."""
     with session_scope() as s:
         run = s.get(Run, run_id)
-        ws, branch, base_sha = Path(run.workspace), run.branch, run.base_sha
+        ws, branch, base_sha = Path(run.workspace), branch or run.branch, (bases or {}).get("monolith", run.base_sha)
         repository, started_by = (run.repository if run.repository is not None else
                                   repos.project_repository(run.project)) or None, run.started_by
         effective = _chain(s, run, before_stage)
         root_diffs = [(ex.id, ex.stage, ex.attempt, ex.diff) for ex in effective]
         nested_changes = [(ex.id, ex.stage, ex.attempt, ex.repos or {}) for ex in effective]
         missing = [ex.stage for ex in effective if ex.diff is None and repository]
-        nested = [dict(r) for r in run.repositories or []]
+        nested = [{**r, "base_sha": (bases or {}).get(r["key"], r.get("base_sha"))} if r.get("base_sha") else dict(r)
+                  for r in run.repositories or []]
         project, pushed = run.project, dict((run.delivery or {}).get("repos") or {})
+    if before_stage is not None:
+        pushed = {}
 
     log = lambda msg: emit(run_id, "log", msg)  # noqa: E731
     git_ops.remove_tree(ws)
@@ -170,6 +177,59 @@ def rebuild(run_id: str, before_stage: str | None = None) -> str:
     note = f"; code changes of {', '.join(missing)} were not stored and are missing" if missing else ""
     emit(run_id, "log", f"Workspace rebuilt from the database: {len(effective)} stage(s){note}")
     return sha
+
+
+def recut(run_id: str, stage: str, branch: str, user_id: int | None) -> None:
+    """A fresh re-run on a new feature branch: every repository the run checked out is cut again as `branch` from the
+    latest of its base branch, and the code of the steps before `stage` is replayed onto it (a replay that no longer
+    applies stops the re-run, leaving the run on its old branch). The old branch stays in git as it is; nothing pushed
+    to it is carried over, and the run's next commits go to the new one."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        ws, project, old = Path(run.workspace), run.project, run.branch
+        root_url = (run.repository if run.repository is not None else repos.project_repository(run.project)) or None
+        targets = ([("monolith", root_url, run.base_branch)] if root_url and run.base_sha else []) + [
+            (r["key"], r["url"], r.get("base_branch")) for r in run.repositories or [] if r.get("base_sha")]
+    _set_failed_cut(run_id, None)
+    bases, base_branches = {}, {}
+    for key, url, base_branch in targets:
+        mirror = Path(repos.fetch(project, url, user_id))
+        base_branch = base_branch or repos.default_branch(mirror)
+        if git_ops.commit_info(mirror, f"refs/heads/{branch}") is not None:
+            raise git_ops.GitError(f"{url} already has a branch {branch}: choose another name for the new branch")
+        bases[key] = git_ops.git(mirror, "rev-parse", f"{base_branch}^{{commit}}")
+        base_branches[key] = base_branch
+    try:
+        rebuild(run_id, before_stage=stage, branch=branch, bases=bases)
+    except Exception as e:
+        git_ops.remove_tree(ws)  # rebuilt on the old branch when next needed (ensure)
+        _set_failed_cut(run_id, {"stage": stage, "branch": branch})  # Retry cuts it again
+        raise git_ops.GitError(f"Could not cut {branch} from the latest base branch: {e}. Fix that on the base branch "
+                               f"and retry (it cuts the branch again), or re-run from here on {old}") from e
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        delivery = dict(run.delivery or {})
+        cut_at = s.scalar(select(func.max(StageExecution.id)).where(StageExecution.run_id == run_id)) or 0
+        previous = [*delivery.get("previous_branches", []),
+                    {"branch": old, "repos": delivery.get("repos") or {}, "at": utcnow().isoformat(),
+                     "exec_id": cut_at}]  # steps started up to here ran on the old branch
+        run.delivery = {**delivery, "repos": {}, "previous_branches": previous}
+        run.branch = branch
+        if "monolith" in bases:
+            run.base_sha = bases["monolith"]
+        run.repositories = [{**r, "base_sha": bases[r["key"]]} if r["key"] in bases else r
+                            for r in run.repositories or []]
+    emit(run_id, "status", f"Cut a new feature branch {branch} from the latest of "
+                           f"{', '.join(sorted(set(base_branches.values()))) or 'the base branch'} for the fresh re-run; "
+                           f"{old} stays in git as it is", stage)
+
+
+def _set_failed_cut(run_id: str, cut: dict | None) -> None:
+    """A cut onto a new branch that failed (its stage and branch), for Retry to cut it again; None clears it."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        delivery = {k: v for k, v in (run.delivery or {}).items() if k != "failed_cut"}
+        run.delivery = {**delivery, **({"failed_cut": cut} if cut else {})}
 
 
 def monolith_pending(run: Run) -> bool:
@@ -352,8 +412,9 @@ def roll_back(run_id: str, ws: Path, sha: str, stage: str) -> None:
     """Reset the workspace (and the run's other repositories) to where `stage` started: to those commits when the
     checkouts still have them, otherwise by rebuilding from the database without that stage and the ones after it."""
     start = _start_of(run_id, stage)
-    if not _reset_all(run_id, ws, sha, start.repos if start else None):
+    if _before_cut(run_id, start) or not _reset_all(run_id, ws, sha, start.repos if start else None):
         rebuild(run_id, before_stage=stage)
+    _pushed_code_rolled_back(run_id)
 
 
 def start_fresh(run_id: str, stage: str) -> None:
@@ -372,7 +433,23 @@ def start_fresh(run_id: str, stage: str) -> None:
             ex.status == "completed" and ex.stage in order
             and order.index(ex.stage) < order.index(stage) for ex in later)
         sha, starts = (start.start_sha, start.repos) if start else (None, None)
-    if not earlier_since and sha and _reset_all(run_id, ws, sha, starts):
+    if not earlier_since and sha and not _before_cut(run_id, start) and _reset_all(run_id, ws, sha, starts):
         emit(run_id, "log", "Workspace rolled back to where this step last started fresh", stage)
     else:
         rebuild(run_id, before_stage=stage)
+    _pushed_code_rolled_back(run_id)
+
+
+def _before_cut(run_id: str, start: StageExecution | None) -> bool:
+    """Whether the run was cut onto a new branch (recut) after `start` began: its commits are on the old branch, so
+    going back to them would leave the new one (a rebuild replays onto the new branch instead)."""
+    with session_scope() as s:
+        cuts = [c.get("exec_id") or 0 for c in (s.get(Run, run_id).delivery or {}).get("previous_branches") or []]
+    return bool(cuts) and (start is None or start.id <= max(cuts))
+
+
+def _pushed_code_rolled_back(run_id: str) -> None:
+    """Code the run pushed may have been rolled back: the next commit undoes it in git, rather than the feature
+    branch bringing it back before the next code step (app/delivery.py)."""
+    from app import delivery
+    delivery.mark_rolled_back(run_id)

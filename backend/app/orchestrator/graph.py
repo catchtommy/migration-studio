@@ -629,6 +629,23 @@ def commit_node_key(stage_key: str) -> str:
     return f"{stage_key}__commit"
 
 
+def node_before(workflow: Workflow, key: str) -> str:
+    """The graph node whose edge leads to step `key`: to continue as if it had just finished, so `key` runs next (a
+    restart, a retry with notes). After an agent step that is its last node: its publish node, else its commit node,
+    else the step itself; a gate routes by the state's "route"."""
+    keys = workflow.keys
+    at = keys.index(key)
+    if not at:
+        return START
+    prev = workflow.by_key[keys[at - 1]]
+    if prev.kind != "agent":
+        return prev.key
+    reviewed = {k for st in workflow.stages if st.kind == "gate" for k in st.reviews}
+    if prev.publish_docs and prev.key not in reviewed:
+        return publish_node_key(prev.key)
+    return commit_node_key(prev.key) if prev.code else prev.key
+
+
 def build_graph(workflow: Workflow, checkpointer):
     g = StateGraph(MigrationState)
     reviewed = {k for st in workflow.stages if st.kind == "gate" for k in st.reviews}

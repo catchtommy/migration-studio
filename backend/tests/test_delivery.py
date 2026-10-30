@@ -823,12 +823,11 @@ def test_changes_in_git_that_conflict_with_the_runs_work_stop_the_step(client, t
     assert not git(ws, "status", "--porcelain", "--untracked-files=no")
 
 
-def test_a_fresh_rerun_starts_from_what_the_run_pushed_to_git(client, tmp_path):
+def test_a_fresh_rerun_does_not_bring_the_pushed_work_it_redoes_back_from_git(client, tmp_path):
     """Re-running a step "starting fresh" rolls the run's copy back to before its earlier, pushed work. Confirming the
-    step's branches brings that work back from git, so the step starts from the branch's latest."""
+    step's branches doesn't bring that work back from git: the step starts fresh, and its next commit replaces it."""
     upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
     ws = Path(run["workspace"])
-    pushed = git(upstream, "show", f"{run['branch']}:{path}")
     assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first, "fresh": True}).status_code == 200
     wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
     assert not (ws / path).exists()  # rolled back: the copy lacks the pushed work
@@ -836,9 +835,9 @@ def test_a_fresh_rerun_starts_from_what_the_run_pushed_to_git(client, tmp_path):
     from app import delivery
     logs = []
     delivery.update_from_git(run["id"], "monolith", None, logs.append)  # what confirming does first
-    assert (ws / path).read_text().strip() == pushed and "Fetched the latest" in logs[-1]
+    assert not (ws / path).exists() and "isn't brought back in" in logs[-1]
     delivery.update_from_git(run["id"], "monolith", None, logs.append)
-    assert "already has its latest" in logs[-1]  # said every time, even with nothing new
+    assert "isn't brought back in" in logs[-1]  # said every time, even with nothing new
 
 
 def _two_monolith_steps(client, tmp_path):
@@ -1214,3 +1213,201 @@ def test_confirming_a_step_refreshes_every_repository_the_run_reads(client, tmp_
     monkeypatch.setattr(delivery, "update_from_git", lambda rid, key, user, log: updated.append(key))
     delivery._apply_confirmation(run["id"], "modern", {"feature_branch": run["branch"]}, lambda _m: None)
     assert updated[0] == "modern" and set(updated) == {"modern", "monolith", "lift"}
+
+
+def test_a_fresh_rerun_of_a_pushed_step_undoes_its_pushed_code_on_the_next_commit(client, tmp_path):
+    """Start fresh (or a redo) after the step's code was pushed: the step starts from before it, not from the pushed
+    code (what a teammate pushed since is still brought in), and the next commit undoes the old code in git, on top
+    of the branch (no force push)."""
+    upstream, key, proj = setup_project(client, tmp_path)
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    run = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    first = run["current_stage"]
+    ws = Path(run["workspace"])
+    (ws / "Extra.java").write_text("only the first attempt wrote this\n")  # as its agent did
+    git(ws, "add", "-A")
+    git(ws, "commit", "-qm", "agent work")
+    changes = proj.get(f"/api/runs/{run['id']}/changes").json()
+    code = [f["path"] for f in changes["files"] if not f["document"]]
+    assert sorted(code) == ["Extra.java", f"studio-stub/{first}.txt"]
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={"message": "first", "branch": run["branch"], "files": code,
+                                                         "latest_sha": changes["latest_sha"],
+                                                         "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
+
+    mate = tmp_path / "mate"  # a teammate pushes on top
+    subprocess.run(["git", "clone", "--quiet", "--branch", run["branch"], str(upstream), str(mate)], check=True)
+    (mate / "Teammate.java").write_text("by a teammate\n")
+    git(mate, "add", "-A")
+    git(mate, "commit", "-qm", "teammate's fix")
+    git(mate, "push", "--quiet", "origin", run["branch"])
+    teammate = git(mate, "rev-parse", "HEAD")
+
+    assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first, "fresh": True}).status_code == 200
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    run = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert not (ws / "Extra.java").exists()  # not brought back from git
+    assert (ws / "Teammate.java").read_text() == "by a teammate\n"  # what others pushed is
+    assert "attempt 2" in (ws / f"studio-stub/{first}.txt").read_text()
+
+    changes = proj.get(f"/api/runs/{run['id']}/changes").json()
+    files = {f["path"]: f for f in changes["files"] if not f["document"]}
+    assert files["Extra.java"]["status"] == "D" and files["Extra.java"]["undo"]
+    assert not files[f"studio-stub/{first}.txt"]["undo"]
+    assert "Teammate.java" not in files
+    detail = proj.get(f"/api/runs/{run['id']}/changes/file",
+                      params={"repo": "monolith", "path": "Extra.java", "latest": changes["latest_sha"]})
+    assert detail.status_code == 200, detail.text
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={"message": "fresh", "branch": run["branch"], "files": list(files),
+                                                         "latest_sha": changes["latest_sha"],
+                                                         "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    branch = run["branch"]
+    assert git(upstream, "rev-parse", f"{branch}^") == teammate  # on top of what was there: no force push
+    tree = git(upstream, "ls-tree", "-r", "--name-only", branch).split()
+    assert "Extra.java" not in tree and "Teammate.java" in tree
+    assert "attempt 2" in git(upstream, "show", f"{branch}:studio-stub/{first}.txt")
+    record = proj.get(f"/api/runs/{run['id']}").json()["delivery"]["repos"]["monolith"]
+    assert "replaces" not in record  # done: later refreshes bring the branch in as usual
+
+
+def test_a_fresh_rerun_can_cut_a_new_feature_branch_from_the_latest_base(client, tmp_path, monkeypatch):
+    """Per-feature branching: a fresh re-run can start on a new feature branch cut from the latest base branch. The old
+    branch stays in git as it is, and the run's commits go to the new one, on top of the latest base."""
+    from app import domain_modules
+    upstream, key, proj = setup_project(client, tmp_path)
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    run = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    first, old = run["current_stage"], run["branch"]
+    changes = proj.get(f"/api/runs/{run['id']}/changes").json()
+    code = [f["path"] for f in changes["files"] if not f["document"]]
+    assert proj.post(f"/api/runs/{run['id']}/commit", json={
+        "message": "first", "branch": old, "files": code, "latest_sha": changes["latest_sha"],
+        "head_sha": changes["head_sha"]}).status_code == 200
+    wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
+    pushed = git(upstream, "rev-parse", old)
+    (upstream / "Hotfix.java").write_text("on main since\n")  # the base branch moves on
+    git(upstream, "add", "-A")
+    git(upstream, "commit", "-qm", "hotfix")
+    main = git(upstream, "rev-parse", "HEAD")
+
+    url = f"/api/runs/{run['id']}/restart"
+    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "domain")
+    r = proj.post(url, json={"stage": first, "fresh": True, "new_branch": f"{old}-v2"})
+    assert r.status_code == 422 and "share one" in r.json()["detail"]  # a domain's branch holds other features' work
+    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "feature")
+    assert proj.get(f"/api/runs/{run['id']}").json()["branch_per"] == "feature"
+    assert proj.post(url, json={"stage": first, "new_branch": f"{old}-v2"}).status_code == 422  # fresh only
+    assert proj.post(url, json={"stage": first, "fresh": True, "new_branch": old}).status_code == 422
+    assert proj.post(url, json={"stage": first, "fresh": True, "new_branch": "main"}).status_code == 422
+    r = proj.post(url, json={"stage": first, "fresh": True, "new_branch": f"{old}-v2"})
+    assert r.status_code == 200, r.text
+
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    assert run["branch"] == f"{old}-v2" and run["pending_branches"]["feature_branch"] == f"{old}-v2"
+    assert run["delivery"]["repos"] == {} and run["delivery"]["previous_branches"][-1]["branch"] == old
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    run = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    ws = Path(run["workspace"])
+    assert git(ws, "rev-parse", "--abbrev-ref", "HEAD") == f"{old}-v2"
+    assert (ws / "Hotfix.java").exists()  # from the latest base branch
+    assert "attempt 2" in (ws / f"studio-stub/{first}.txt").read_text()
+
+    changes = proj.get(f"/api/runs/{run['id']}/changes").json()
+    code = [f["path"] for f in changes["files"] if not f["document"]]
+    assert code == [f"studio-stub/{first}.txt"] and not any(f["undo"] for f in changes["files"])
+    r = proj.post(f"/api/runs/{run['id']}/commit", json={
+        "message": "fresh", "branch": run["branch"], "files": code, "latest_sha": changes["latest_sha"],
+        "head_sha": changes["head_sha"]})
+    assert r.status_code == 200, r.text
+    assert git(upstream, "rev-parse", f"{old}-v2^") == main  # straight on the latest base
+    assert git(upstream, "rev-parse", old) == pushed  # the old branch as it was
+
+    # Taken now: the same name is refused at once.
+    wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
+    r = proj.post(url, json={"stage": first, "fresh": True, "new_branch": f"{old}-v2"})
+    assert r.status_code == 422  # it is the run's branch now
+
+
+def test_a_new_branch_from_a_later_step_replays_the_earlier_steps_code(client, tmp_path, monkeypatch):
+    from app import domain_modules
+    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "feature")
+    upstream, proj, run, first, second = _two_monolith_steps(client, tmp_path)
+    run = proj.get(f"/api/runs/{run['id']}").json()
+    old, step = run["branch"], run["current_stage"]
+    assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204
+    wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
+    (upstream / "Hotfix.java").write_text("on main since\n")  # the base branch moves on
+    git(upstream, "add", "-A")
+    git(upstream, "commit", "-qm", "hotfix")
+    r = proj.post(f"/api/runs/{run['id']}/restart", json={"stage": step, "fresh": True, "new_branch": "mig/v2"})
+    assert r.status_code == 200, r.text
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    ws = Path(run["workspace"])
+    assert git(ws, "rev-parse", "--abbrev-ref", "HEAD") == "mig/v2"
+    assert (ws / first).exists() and not (ws / second).exists()  # the step before: replayed; this one: to redo
+    assert (ws / "Hotfix.java").exists()
+
+    # Redoing the first step, which ran before the cut, goes back on the new branch, not to the old one's commits.
+    run = finish_workflow_until_gate(proj, run["id"])
+    gate = run["pending_gate"]
+    assert gate["reviews"][0] != step
+    r = proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "reject", "comments": "again", "scope": "redo",
+                                                           "target_stage": gate["reviews"][0]})
+    assert r.status_code == 200, r.text
+    wait_for(proj, run["id"], {"awaiting_branches", "awaiting_commit", "awaiting_approval"}, timeout=30)
+    assert git(ws, "rev-parse", "--abbrev-ref", "HEAD") == "mig/v2" and (ws / "Hotfix.java").exists()
+
+
+def finish_workflow_until_gate(proj, run_id) -> dict:
+    """Confirm branches and go on without committing until the run waits at a gate."""
+    while True:
+        run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit", "failed"}, timeout=60)
+        if run["status"] == "awaiting_branches":
+            proj.post(f"/api/runs/{run_id}/branches", json={"feature_branch": run["pending_branches"]["feature_branch"]})
+        elif run["status"] == "awaiting_commit":
+            assert proj.post(f"/api/runs/{run_id}/finish").status_code == 204
+        else:
+            assert run["status"] == "awaiting_approval", run.get("error")
+            return run
+
+
+def test_retry_after_a_failed_cut_cuts_the_new_branch_again(client, tmp_path, monkeypatch):
+    from app import domain_modules, workspace
+    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "feature")
+    upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
+    original, calls = workspace.rebuild, []
+
+    def replay_fails_once(run_id, before_stage=None, branch=None, bases=None):
+        if branch and not calls:
+            calls.append(branch)
+            raise workspace.git_ops.GitError("Could not replay as_is_doc: patch does not apply")
+        return original(run_id, before_stage=before_stage, branch=branch, bases=bases)
+
+    monkeypatch.setattr(workspace, "rebuild", replay_fails_once)
+    old = run["branch"]
+    r = proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first, "fresh": True, "new_branch": "mig/v2"})
+    assert r.status_code == 200, r.text
+    run = wait_for(proj, run["id"], {"failed"}, timeout=30)
+    assert "Could not cut mig/v2" in run["error"] and run["branch"] == old
+    assert run["delivery"]["failed_cut"] == {"stage": first, "branch": "mig/v2"}
+    assert proj.post(f"/api/runs/{run['id']}/retry").status_code == 200
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    assert run["branch"] == "mig/v2" and "failed_cut" not in run["delivery"]
+
+
+def test_a_fresh_rerun_after_the_push_does_not_mark_the_pushed_code_for_undoing(client, tmp_path):
+    """Starting the step after a pushed one fresh rolls back to after the push: nothing pushed is gone."""
+    upstream, proj, run, first, second = _two_monolith_steps(client, tmp_path)
+    step = proj.get(f"/api/runs/{run['id']}").json()["current_stage"]
+    assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204
+    wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
+    assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": step, "fresh": True}).status_code == 200
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    assert "replaces" not in run["delivery"]["repos"]["monolith"]

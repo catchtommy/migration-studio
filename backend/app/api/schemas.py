@@ -117,6 +117,7 @@ class RunDetail(RunOut):
     # The run's workflow has changed since it started: what updating its upcoming steps would do (run_workflow.plan)
     workflow_update: dict | None = None
     stopping: bool = False  # an admin asked the working run to stop: its agent ends at its next turn
+    branch_per: str | None = None  # the workflow's branching: "feature" (a branch per feature) or "domain"
 
 
 class ArtifactSummary(ORM):
@@ -160,6 +161,9 @@ class Restart(BaseModel):
     stage: str
     notes: str | None = Field(default=None, max_length=20_000)  # for the first re-run stage
     fresh: bool = False  # regenerate from scratch instead of updating the existing documents
+    # fresh only, per-feature branching: cut this new feature branch from the latest base branch instead of continuing
+    # on the run's branch (app/workspace.py recut)
+    new_branch: str | None = Field(default=None, max_length=200)
 
 
 class StartOverIn(BaseModel):

@@ -1,21 +1,18 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { Markdown } from "./Markdown";
 import { api, type Question, type StageDef } from "../lib/api";
-import { useCan } from "../lib/hooks";
+import { useCan, useRefreshRun } from "../lib/hooks";
 
 export function QuestionPanel({ runId, question, stages }: { runId: string; question: Question; stages: StageDef[] }) {
-  const queryClient = useQueryClient();
+  const refreshRun = useRefreshRun(runId);
   const canAnswer = useCan("runs.edit");
   const [answer, setAnswer] = useState("");
   const title = stages.find((s) => s.key === question.stage)?.title ?? question.stage;
 
   const send = useMutation({
     mutationFn: (text: string) => api.answer(question.id, text),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["questions", runId] });
-      queryClient.invalidateQueries({ queryKey: ["run", runId] });
-    },
+    onSuccess: () => refreshRun("questions"),
   });
 
   return (
@@ -63,14 +60,14 @@ export function QuestionPanel({ runId, question, stages }: { runId: string; ques
             title="The agent continues using its own judgement"
             onClick={() => send.mutate("")}
           >
-            Skip
+            {send.isPending && send.variables === "" ? "Skipping…" : "Skip"}
           </button>
           <button
             className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
             disabled={!answer.trim() || send.isPending}
             onClick={() => send.mutate(answer)}
           >
-            Send answer
+            {send.isPending && send.variables !== "" ? "Sending…" : "Send answer"}
           </button>
         </div>
       )}

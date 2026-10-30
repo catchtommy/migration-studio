@@ -629,13 +629,20 @@ def update_from_git(run_id: str, key: str, user_id: int | None, log) -> None:
         return  # the branch isn't in git yet: the run's checkout is the latest
     git_ops.git(ws, "fetch", "--quiet", str(mirror), f"+refs/heads/{feature}:refs/studio/feature")
     remote, local = git_ops.git(ws, "rev-parse", "refs/studio/feature"), git_ops.head(ws)
+    if _replacing(ws, record):
+        _update_replacing(run_id, key, ws, record, remote, feature, where, log)
+        return
     if git_ops.is_ancestor(ws, remote, local):
         log(f"Fetched {where} from git: this run's copy already has its latest ({remote[:10]})")
         return
     if git_ops.is_ancestor(ws, local, remote):
         count = git_ops.count_commits(ws, local, remote)
+        own = record.get("sha") if record.get("branch") == feature else None
+        rolled_back = bool(own) and git_ops.has_commit(ws, own) and not git_ops.is_ancestor(ws, own, local)
         git_ops.git(ws, "merge", "--quiet", "--ff-only", "refs/studio/feature")
-        log(f"Fetched the latest of {where}: {count} newer commit(s), now at {remote[:10]}")
+        log(f"Fetched the latest of {where}: {count} newer commit(s), now at {remote[:10]}"
+            + (". That includes code this run committed and pushed before it was rolled back (a fresh re-run or a "
+               "redo): git's version stays, and the step works on top of it" if rolled_back else ""))
         _brought_in(run_id, key, feature, remote, remote)
         return
     # Work in the checkout since the run last pushed or brought the branch in (steps gone on without committing):
@@ -659,7 +666,83 @@ def update_from_git(run_id: str, key: str, user_id: int | None, log) -> None:
     _brought_in(run_id, key, feature, remote, None if unpushed else git_ops.head(ws))
 
 
-def _brought_in(run_id: str, key: str, feature: str, remote: str, head: str | None) -> None:
+def mark_rolled_back(run_id: str) -> None:
+    """A fresh re-run or a redo rolled the run's checkouts back to where a step started. Code the run already pushed
+    may be gone from them: until its next commit, the feature branch in git still has that code, and it is not
+    brought back in (only what others push on top of it), and the next commit undoes it (see `_undone`)."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        delivery = dict(run.delivery or {})
+        done = {k: dict(v) for k, v in (delivery.get("repos") or {}).items()}
+        paths = {r["key"]: Path(run.workspace) / r["path"] for r in run_repos(run)}
+        changed = False
+        for key, rec in done.items():
+            if rec.get("status") != "pushed" or rec.get("replaces"):
+                continue
+            path, pushed_from = paths.get(key), rec.get("head_sha")
+            if (path is not None and (path / ".git").exists() and git_ops.has_commit(path, pushed_from)
+                    and git_ops.is_ancestor(path, pushed_from, git_ops.head(path))):
+                continue  # rolled back to after the push: the checkout still has the pushed code
+            rec["replaces"] = rec["seen"] = rec.get("restored_sha") or rec["sha"]
+            changed = True
+        if changed:
+            run.delivery = {**delivery, "repos": done}
+
+
+def _replacing(ws: Path, record: dict) -> bool:
+    return bool(record.get("replaces")) and git_ops.has_commit(ws, record.get("seen") or record["replaces"])
+
+
+def _update_replacing(run_id: str, key: str, ws: Path, record: dict, remote: str, feature: str, where: str,
+                      log) -> None:
+    """update_from_git after a roll-back over pushed code: the run's copy gets only what was pushed to the feature
+    branch since (by others, or by hand), not the code it rolled back. Changes that clash with the rolled-back copy
+    stop the step (DeliveryError), leaving everything as it was."""
+    seen = record.get("seen") or record["replaces"]
+    if remote == seen:
+        log(f"Fetched {where} from git: it still has the code this run pushed before the re-run; that code isn't "
+            "brought back in, and the next commit replaces it")
+        return
+    if not git_ops.is_ancestor(ws, seen, remote):
+        raise DeliveryError(f"{where} was rewritten in git since this run rolled back its pushed code, so what to keep "
+                            "is unclear. Restore the branch in git (or delete it to start it again), then retry the run")
+    if git_ops.git(ws, "status", "--porcelain"):
+        raise DeliveryError(f"The run's copy of {where} has changes not committed, so the latest from git can't be "
+                            "brought in. Retry the run")
+    patch = subprocess.run(["git", "diff", "--binary", seen, remote], cwd=ws, capture_output=True, check=True).stdout
+    if patch:
+        applied = subprocess.run(["git", "apply", "--3way", "--index", "-"], cwd=ws, input=patch, capture_output=True)
+        if applied.returncode != 0:
+            conflicts = git_ops.git(ws, "diff", "--name-only", "--diff-filter=U").split()
+            git_ops.git(ws, "reset", "--quiet", "--hard", "HEAD")  # clean before (checked above): nothing else lost
+            files = ", ".join(conflicts[:10]) or "some files"
+            raise DeliveryError(f"{where} has changes in git, pushed since this run rolled back its code, that conflict "
+                                f"with the re-run's copy in {files}. Resolve it in git, then retry the run")
+        git_ops.git(ws, "commit", "--quiet", "--allow-empty", "-m",
+                    f"The latest of {feature} from git ({remote[:10]}), without this run's earlier code")
+    count = git_ops.count_commits(ws, seen, remote)
+    log(f"Fetched the latest of {where}: {count} newer commit(s) pushed since this run's earlier code, brought in "
+        "without that code (the next commit replaces it)")
+    _brought_in(run_id, key, feature, remote, None, seen=remote)
+
+
+def _undone(ws: Path, record: dict, head: str, latest: str, remote: str | None) -> dict[str, str]:
+    """After a roll-back over pushed code (mark_rolled_back): the files of that push the run's copy no longer has as
+    the feature branch in git does, with their status for the review (D: deleted from git, M: back to the run's
+    version). Committing them undoes the code pushed before."""
+    replaces = record.get("replaces")
+    if not replaces or not remote or not git_ops.has_commit(ws, replaces):
+        return {}
+    since = git_ops.git(ws, "merge-base", replaces, latest)
+    out = {}
+    for path in git_ops.changed_files(ws, since, replaces):
+        ours = git_ops.read_blob(ws, head, path)
+        if ours != git_ops.read_blob(ws, remote, path):
+            out[path] = "D" if ours is None else "M"
+    return out
+
+
+def _brought_in(run_id: str, key: str, feature: str, remote: str, head: str | None, **extra) -> None:
     """Record that the run's copy now has the feature branch in git at `remote`: later commits go on top of it. With
     `head` (nothing of the run's was unpushed), the review counts changes from there: what came from git isn't the
     run's to commit."""
@@ -668,7 +751,7 @@ def _brought_in(run_id: str, key: str, feature: str, remote: str, head: str | No
         delivery = dict(run.delivery or {})
         done = dict(delivery.get("repos") or {})
         done[key] = {**(done.get(key) or {}), "branch": feature, "restored_sha": remote,
-                     **({"head_sha": head} if head else {})}
+                     **({"head_sha": head} if head else {}), **extra}
         run.delivery = {**delivery, "repos": done}
 
 
@@ -835,7 +918,17 @@ def _changes(run_id: str, key: str, user_id: int | None) -> dict:
         ours = git_ops.read_blob(ws, ctx["head"], path)
         same = ((bool(remote) and ours == git_ops.read_blob(ws, remote, path))
                 or (path in upstream and ours == git_ops.read_blob(ws, ctx["latest"], path)))
-        files.append({**state, "additions": added, "deletions": deleted, "same_in_git": same})
+        files.append({**state, "additions": added, "deletions": deleted, "same_in_git": same, "undo": False})
+    # Code pushed before a fresh re-run (or a redo) that the run no longer has: committing it undoes it in git.
+    listed = {f["path"] for f in files}
+    undone = {p: st for p, st in _undone(ws, ctx["delivery"], ctx["head"], ctx["latest"], remote).items() if p not in listed}
+    if undone:
+        undo_stats = _numstat(ws, remote, ctx["head"])
+        for path, status in undone.items():
+            state = _file_state(ctx, status, path, upstream)
+            state.pop("merged")
+            added, deleted = undo_stats.get(path, (None, None))
+            files.append({**state, "additions": added, "deletions": deleted, "same_in_git": False, "undo": True})
     # Only what is a change: a file already in git exactly as the run has it is left out (a commit leaves it as it is).
     unchanged = sum(1 for f in files if f["same_in_git"])
     files = sorted((f for f in files if not f["same_in_git"]), key=lambda f: (f["document"], f["path"]))  # code first
@@ -864,7 +957,9 @@ def file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
 def _file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
     root = workspace.ensure(run_id)
     with session_scope() as s:
-        repo = _repo_of(s.get(Run, run_id), key)
+        run = s.get(Run, run_id)
+        repo = _repo_of(run, key)
+        record = dict((run.delivery or {}).get("repos", {}).get(key) or {})
     ws = root / repo["path"]
     if not git_ops.has_commit(ws, latest_sha):
         raise DeliveryError("Reload the changes: the base branch was fetched again")
@@ -873,6 +968,8 @@ def _file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
            "merge_base": base_sha,
            "doc_prefix": DOCS_ROOT + "/" if repo["root"] else None}
     run_files = dict((p, st) for st, p in _name_status(ws, base_sha, ctx["head"]))
+    in_git = git_ops.commit_info(ws, "refs/studio/feature") is not None
+    run_files = {**_undone(ws, record, ctx["head"], latest_sha, "refs/studio/feature" if in_git else None), **run_files}
     if path not in run_files:
         raise DeliveryError(f"The run didn't change {path}")
     upstream = set(git_ops.changed_files(ws, ctx["merge_base"], latest_sha)) if ctx["merge_base"] != latest_sha else set()
@@ -881,7 +978,6 @@ def _file_detail(run_id: str, key: str, path: str, latest_sha: str) -> dict:
     ours = git_ops.read_blob(ws, ctx["head"], path)
     theirs = git_ops.read_blob(ws, latest_sha, path) if path in upstream else None
     # The feature branch as it is in git (fetched by the review into refs/studio/feature), when the run pushed it.
-    in_git = git_ops.commit_info(ws, "refs/studio/feature") is not None
     pushed = git_ops.read_blob(ws, "refs/studio/feature", path) if in_git else None
     too_large = any(d is not None and len(d) > MAX_TEXT for d in (original, ours, theirs, pushed))
     show = not state["binary"] and not too_large
@@ -937,6 +1033,7 @@ def _commit(run_id: str, key: str, user_id: int, message: str, branch: str, file
     merge_base = git_ops.git(ws, "merge-base", "HEAD", latest_sha)
     upstream = set(git_ops.changed_files(ws, merge_base, latest_sha)) if merge_base != latest_sha else set()
     run_files = dict((p, st) for st, p in _name_status(ws, merge_base, ctx["head"]))
+    run_files = {**_undone(ws, ctx["delivery"], ctx["head"], latest_sha, ctx["remote_feature"]), **run_files}
     unknown = [f for f in files if f not in run_files]
     if unknown:
         raise DeliveryError(f"The run didn't change {unknown[0]}")

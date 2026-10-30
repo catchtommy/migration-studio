@@ -57,7 +57,7 @@ export function PublishDocsPanel({ run }: { run: RunDetail }) {
           {(skip.error as Error | null) && <p className="text-bad">{(skip.error as Error).message}</p>}
           {canPublish && (
             <button type="button" disabled={skip.isPending} className="rounded-md bg-accent px-4 py-1.5 font-medium text-white disabled:opacity-50" onClick={() => skip.mutate()}>
-              Continue
+              {skip.isPending ? "Continuing…" : "Continue"}
             </button>
           )}
         </div>
@@ -158,7 +158,7 @@ export function PublishDocsPanel({ run }: { run: RunDetail }) {
                   {publish.isPending ? "Publishing…" : `Publish to ${data.branch}`}
                 </button>
                 <button type="button" disabled={skip.isPending} className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg" onClick={() => skip.mutate()}>
-                  Skip for now
+                  {skip.isPending ? "Skipping…" : "Skip for now"}
                 </button>
               </div>
             ) : (

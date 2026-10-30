@@ -6,7 +6,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from langgraph.graph import START
 from langgraph.types import Command
 
 from sqlalchemy import delete
@@ -16,11 +15,11 @@ from app.db.session import emit, session_scope
 from app import delivery, legacy, projects, repos
 from app.orchestrator import questions
 from app.orchestrator.checkpointer import SqlAlchemySaver
-from app.orchestrator.graph import build_graph
+from app.orchestrator.graph import build_graph, node_before
 from app.orchestrator.stages import Workflow
 from app.tools import git_ops
 from app.workspace import ensure as ensure_workspace
-from app.workspace import exclude_nested, release_workspace, start_fresh
+from app.workspace import exclude_nested, recut, release_workspace, start_fresh
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +86,8 @@ class Runner:
     def resume(self, run_id: str, decision: dict) -> None:
         self._submit(run_id, Command(resume=decision))
 
-    def restart(self, run_id: str, stage: str, notes: str | None = None, fresh: bool = False) -> None:
+    def restart(self, run_id: str, stage: str, notes: str | None = None, fresh: bool = False,
+                new_branch: str | None = None, user_id: int | None = None) -> None:
         """Run the workflow again from a stage that already ran, whatever the run's state (completed, failed, or
         waiting at a gate). That stage and every later agent stage re-run with the agents' current settings; gates
         ask for approval again. By default they update their existing documents in place; `fresh` first rolls the
@@ -105,7 +105,7 @@ class Runner:
         if notes:
             values["feedback"] = {stage: notes}
         # Continue as if the step before had just finished (START for the first step); a pending gate is dropped.
-        previous = keys[at - 1] if at else START
+        previous = node_before(Workflow.from_dicts(stages), stage)
         with self._lock:
             if run_id in self._active:
                 raise RunBusyError(f"Run {run_id} is already executing")
@@ -115,7 +115,11 @@ class Runner:
             s.execute(delete(StageExecution).where(StageExecution.run_id == run_id,
                                                    StageExecution.status == "awaiting_approval"))
         self.graph_for(run_id).update_state(self._config(run_id), values, as_node=previous)
-        self._submit(run_id, None, prepare=(lambda: start_fresh(run_id, stage)) if fresh else None)
+        if new_branch:  # fresh, on a new feature branch cut from the latest base branch
+            prepare = lambda: recut(run_id, stage, new_branch, user_id)  # noqa: E731
+        else:
+            prepare = (lambda: start_fresh(run_id, stage)) if fresh else None
+        self._submit(run_id, None, prepare=prepare)
 
     def retry(self, run_id: str, notes: str | None = None) -> None:
         """Run the failed step again. `notes` reach its agent with the step (what to do differently), as a reviewer's
@@ -136,10 +140,9 @@ class Runner:
             if stage in keys and stages[keys.index(stage)]["kind"] == "agent":
                 graph = self.graph_for(run_id)
                 feedback = {**(graph.get_state(self._config(run_id)).values.get("feedback") or {}), stage: notes}
-                at = keys.index(stage)
                 # As a restart does: continue as if the step before had just finished, so the failed step runs next.
                 graph.update_state(self._config(run_id), {"feedback": feedback, "route": stage},
-                                   as_node=keys[at - 1] if at else START)
+                                   as_node=node_before(Workflow.from_dicts(stages), stage))
         # Invoking with None continues from the last checkpoint, re-running the node that failed.
         self._submit(run_id, None)
 
@@ -148,6 +151,14 @@ class Runner:
             if run_id in self._active:
                 raise RunBusyError(f"Run {run_id} is already executing")
             self._active.add(run_id)
+        try:  # shown as running at once, so the page that asked (an approval, a re-run) doesn't offer it again
+            with session_scope() as s:
+                run = s.get(Run, run_id)
+                run.status, run.error = "running", None
+        except Exception:
+            with self._lock:
+                self._active.discard(run_id)
+            raise
         self._pool.submit(self._drive, run_id, inp, initial, prepare)
 
     def _drive(self, run_id: str, inp, initial: bool, prepare=None) -> None:
