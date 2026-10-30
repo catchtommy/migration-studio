@@ -671,3 +671,39 @@ def test_a_service_base_package_named_after_a_feature_is_renamed_too(client, tmp
                                                {"base_package": "com.acme.approve.service", "uses_features": []})
     assert any("the service's is com.acme.loan.service" in p for p in problems)
     assert any(r["step_title"] == "Spring Boot microservice" for r in domain_modules.renames(project, "loan"))
+
+
+def test_on_its_own_branch_modernise_converts_what_was_pushed_to_the_lift_by_hand_too(client, tmp_path, monkeypatch):
+    import subprocess
+
+    from app import delivery
+
+    project = new_project(client)
+    ws = tmp_path / "ws"
+    lift = ws / "lift"
+    lift.mkdir(parents=True)
+    run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=lift,  # noqa: E731
+                                    check=True, capture_output=True, text=True).stdout.strip()
+    run("init", "-q")
+    (lift / "README").write_text("lift")
+    run("add", "-A")
+    run("commit", "-qm", "base")
+    base = run("rev-parse", "HEAD")
+    for name in ("Approve.java", "HandFix.java"):  # the step's work, then a class someone pushed by hand
+        (lift / name).write_text(f"class {name[:-5]} {{}}\n")
+        run("add", "-A")
+        run("commit", "-qm", name)
+    with session_scope() as s:
+        r = Run(project=project, domain="loan", operation="approve", status="running", workflow="standard",
+                repositories=[{"key": "lift", "url": "https://git/lift", "path": "lift", "base_sha": base}])
+        s.add(r)
+        s.flush()
+        run_id = r.id
+    monkeypatch.setattr(delivery, "domain_inputs",
+                        lambda p, d: {domain_modules.LIFT_AGENT: {"repository": "https://git/lift"}})
+    monkeypatch.setattr(domain_modules, "_run_changes", lambda rid, key: ["Approve.java"])  # what the step recorded
+
+    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "domain")
+    assert domain_modules.lifted(project, "loan", run_id, ws)["files"] == ["Approve.java"]  # shared: the run's only
+    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "feature")
+    assert domain_modules.lifted(project, "loan", run_id, ws)["files"] == ["Approve.java", "HandFix.java"]

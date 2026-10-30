@@ -413,6 +413,13 @@ def confirmation_needed(run_id: str, stage_key: str) -> dict | None:
         title = stage["title"]
     mirror = repos.mirror_dir(project, repo["url"])
     repo["default_branch"] = repos.default_branch(mirror) if mirror.exists() else None
+    repo["base_behind"] = None  # commits of the base branch (as last fetched) the checkout doesn't have
+    if repo["checked_out"] and mirror.exists():
+        with session_scope() as s:
+            checkout = next((r for r in run_repos(s.get(Run, run_id)) if r["key"] == repo["key"]), None)
+            ws = Path(s.get(Run, run_id).workspace) / checkout["path"] if checkout else None
+        if ws is not None:
+            repo["base_behind"] = _base_behind(ws, mirror, repo["base_branch"])
     return {"kind": "branches", "stage": stage_key, "stage_title": title, "feature_branch": feature, "repository": repo,
             "existing_branch": existing_branch(project, repo, feature, title),
             "parallel_runs": parallel_runs(run_id, project, repo["url"])}
@@ -496,8 +503,9 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
 
 def apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
     """Use the confirmed branches: rename the feature branch everywhere if it changed, check out the repository
-    (cut from its base branch) if it isn't yet, and bring in the latest of the branch in git, in the monolith too
-    when the step changes another repository (it reads the monolith, e.g. the module the microservice step lifts)."""
+    (cut from its base branch) if it isn't yet, and bring in the latest of the feature branch in git, in every
+    repository the run has checked out (the step reads them: the module a service step lifts, the lifted service
+    Modernise converts); with `update_base` in the answer, the latest of the repository's base branch too."""
     with run_lock(run_id):
         _apply_confirmation(run_id, key, answer, log)
 
@@ -524,7 +532,7 @@ def _apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
     for r in nested:
         if r["key"] == key and not r.get("base_sha"):
             r["base_branch"] = (answer.get("base_branch") or "").strip() or r.get("base_branch")
-            mirror = repos.latest_for_run(project, r["url"], user_id, log)
+            mirror = _latest(project, r["url"], user_id)
             exists = git_ops.commit_info(Path(mirror), f"refs/heads/{feature}") is not None
             r["base_sha"] = git_ops.init_workspace(ws / r["path"], mirror, feature,
                                                    source_branch=feature if exists else r["base_branch"])
@@ -537,8 +545,68 @@ def _apply_confirmation(run_id: str, key: str, answer: dict, log) -> None:
         delivery["confirmed"] = sorted({*delivery.get("confirmed", []), key})
         run.delivery, run.branch, run.repositories = delivery, feature, nested or None
     update_from_git(run_id, key, user_id, log)
-    if key != ROOT:  # a step changing another repository reads the monolith (the module it lifts): its latest too
-        update_from_git(run_id, ROOT, user_id, log)
+    if answer.get("update_base"):
+        merge_base_branch(run_id, key, user_id, log)
+    # The step reads the run's other repositories too (the monolith's module a service step lifts, the lifted service
+    # Modernise converts and its acceptance suite): each gets the latest of its feature branch as well.
+    with session_scope() as s:
+        others = [r["key"] for r in run_repos(s.get(Run, run_id)) if r["key"] != key]
+    for other in others:
+        update_from_git(run_id, other, user_id, log)
+
+
+def _latest(project: str, url: str, user_id: int | None) -> str:
+    """The repository's mirror with the latest from git. A step that changes code must not work on a stale copy, so
+    when git can't be reached it doesn't start (DeliveryError): retry once git is reachable."""
+    try:
+        return str(repos.fetch(project, url, user_id))
+    except (git_ops.GitError, OSError) as e:
+        raise DeliveryError(f"Could not fetch the latest of {url}, so the step didn't start (it would work on an older "
+                            f"copy): {git_auth.scrub(str(e))}. Retry once git is reachable")
+
+
+def _base_behind(ws: Path, mirror: Path, base_branch: str | None) -> int | None:
+    """How many commits of the base branch (as last fetched) the checkout `ws` doesn't have; None when unknown."""
+    try:
+        base = base_branch or repos.default_branch(mirror)
+        if not base or git_ops.commit_info(mirror, f"refs/heads/{base}") is None:
+            return None
+        git_ops.git(ws, "fetch", "--quiet", str(mirror), f"+refs/heads/{base}:refs/studio/base")
+        return git_ops.count_commits(ws, "HEAD", "refs/studio/base") or 0
+    except (git_ops.GitError, OSError):
+        return None
+
+
+def merge_base_branch(run_id: str, key: str, user_id: int | None, log) -> None:
+    """Bring the latest of the repository's base branch into the run's checkout (merged), when the person confirming
+    the branches asks: work merged into the base branch since the run started (another feature's, or a fix made by
+    hand) is then there for the step. A conflict leaves everything as it was and the step doesn't start."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        repo = next((r for r in run_repos(run) if r["key"] == key), None)
+        if repo is None:
+            return
+        ws, project = Path(run.workspace) / repo["path"], run.project
+        base_branch = repo.get("base_branch") if key != ROOT else run.base_branch
+    mirror = Path(_latest(project, repo["url"], user_id))
+    base = base_branch or repos.default_branch(mirror)
+    if not base or git_ops.commit_info(mirror, f"refs/heads/{base}") is None:
+        log(f"{repo['name']} has no branch {base or '(default)'} to bring in")
+        return
+    git_ops.git(ws, "fetch", "--quiet", str(mirror), f"+refs/heads/{base}:refs/studio/base")
+    behind = git_ops.count_commits(ws, "HEAD", "refs/studio/base") or 0
+    if not behind:
+        log(f"{repo['name']} already has the latest of {base}")
+        return
+    try:
+        git_ops.git(ws, "merge", "--quiet", "--no-edit", "-m", f"The latest of {base} from git", "refs/studio/base")
+    except git_ops.GitError:
+        conflicts = git_ops.git(ws, "diff", "--name-only", "--diff-filter=U").split()
+        git_ops.git(ws, "merge", "--abort")
+        raise DeliveryError(f"The latest of {base} in {repo['name']} conflicts with this run's work, in "
+                            f"{', '.join(conflicts[:10]) or 'some files'}. Merge {base} into the feature branch in git "
+                            "and resolve it there (or don't bring it in), then retry")
+    log(f"Brought in the latest of {base} in {repo['name']}: {behind} newer commit(s), merged")
 
 
 def update_from_git(run_id: str, key: str, user_id: int | None, log) -> None:
@@ -556,8 +624,8 @@ def update_from_git(run_id: str, key: str, user_id: int | None, log) -> None:
         ws, project, feature = Path(run.workspace) / repo["path"], run.project, run.branch
         record = ((run.delivery or {}).get("repos") or {}).get(key) or {}
     where = f"{feature} in {repo['name']}"
-    mirror = repos.latest_for_run(project, repo["url"], user_id, log)
-    if not mirror or git_ops.commit_info(Path(mirror), f"refs/heads/{feature}") is None:
+    mirror = _latest(project, repo["url"], user_id)
+    if git_ops.commit_info(Path(mirror), f"refs/heads/{feature}") is None:
         return  # the branch isn't in git yet: the run's checkout is the latest
     git_ops.git(ws, "fetch", "--quiet", str(mirror), f"+refs/heads/{feature}:refs/studio/feature")
     remote, local = git_ops.git(ws, "rev-parse", "refs/studio/feature"), git_ops.head(ws)

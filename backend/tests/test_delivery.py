@@ -4,10 +4,12 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from sqlalchemy import select
 
 from app import git_auth
-from app.db.models import GitCredential
+from app.db.models import GitCredential, Run
 from app.db.session import session_scope
 from tests.conftest import wait_for
 from tests.test_auth import make_user
@@ -1157,3 +1159,58 @@ def test_a_rerun_waiting_to_confirm_its_branches_no_longer_says_its_agent_change
         assert paused["workflow_update"] is None  # the step about to run uses the current agent
     finally:
         proj.put(f"/api/agents/{first}", json=agent)
+
+
+def test_confirming_can_bring_in_the_latest_of_the_base_branch(client, tmp_path):
+    """Work merged into the base branch since the run started (a fix made by hand, another feature) is offered when the
+    step's branches are confirmed, and merged into the run's copy when asked."""
+    upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
+    (upstream / "FIX.md").write_text("fixed by hand on the base branch\n")  # the base branch is checked out there
+    git(upstream, "add", "FIX.md")
+    git(upstream, "commit", "-q", "-m", "a fix made by hand")
+
+    assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first}).status_code == 200
+    paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    from app import repos as repos_module
+    with session_scope() as s:
+        project = s.get(Run, run["id"]).project
+    repos_module.fetch(project, paused["pending_branches"]["repository"]["url"])  # as a background fetch would
+    behind = proj.get(f"/api/runs/{run['id']}").json()["pending_branches"]["repository"]["base_behind"]
+    assert behind == 1
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"], "update_base": True})
+    wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert (Path(run["workspace"]) / "FIX.md").read_text() == "fixed by hand on the base branch\n"
+    changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
+    assert "FIX.md" not in {f["path"] for f in changes["files"]}  # the base branch's work isn't the run's to commit
+
+
+def test_a_code_step_does_not_start_on_a_stale_copy_when_git_cant_be_reached(client, tmp_path, monkeypatch):
+    from app import delivery
+    from app import repos as repos_module
+    from app.tools import git_ops
+
+    upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
+
+    def unreachable(*_a, **_k):
+        raise git_ops.GitError("could not read from remote repository")
+
+    monkeypatch.setattr(repos_module, "fetch", unreachable)
+    with pytest.raises(delivery.DeliveryError, match="didn't start"):
+        delivery.update_from_git(run["id"], "monolith", None, lambda _m: None)
+
+
+def test_confirming_a_step_refreshes_every_repository_the_run_reads(client, tmp_path, monkeypatch):
+    """Modernise changes the modern service but converts the lifted service: the lift (and the monolith) get the
+    latest of their feature branch too, so a fix pushed there by hand is what it converts."""
+    from app import delivery
+
+    upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
+    real = delivery.run_repos
+    monkeypatch.setattr(delivery, "run_repos", lambda r: [*real(r), {"key": "lift", "url": "x", "path": "lift",
+                                                                      "base_sha": "abc", "name": "Lift"},
+                                                          {"key": "modern", "url": "y", "path": "modern",
+                                                           "base_sha": "abc", "name": "Modern"}])
+    updated = []
+    monkeypatch.setattr(delivery, "update_from_git", lambda rid, key, user, log: updated.append(key))
+    delivery._apply_confirmation(run["id"], "modern", {"feature_branch": run["branch"]}, lambda _m: None)
+    assert updated[0] == "modern" and set(updated) == {"modern", "monolith", "lift"}

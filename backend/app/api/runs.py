@@ -724,6 +724,7 @@ def _branches_to_confirm(run_id: str) -> dict | None:
 class BranchesIn(BaseModel):
     feature_branch: str = Field(min_length=1, max_length=255)
     base_branch: str | None = Field(default=None, max_length=255)  # for a repository not checked out yet
+    update_base: bool = False  # also bring in (merge) the latest of the repository's base branch
 
 
 @router.post("/runs/{run_id}/branches", response_model=RunOut)
@@ -744,7 +745,7 @@ def confirm_branches(run_id: str, body: BranchesIn, db: Session = Depends(get_db
     emit(run_id, "status", f"{user.display_name} confirmed branch {body.feature_branch.strip()} for "
                            f"{pending['repository']['name']}", pending["stage"])
     get_runner().resume(run_id, {"feature_branch": body.feature_branch.strip(), "base_branch": body.base_branch,
-                                 "user_id": user.id})
+                                 "update_base": body.update_base, "user_id": user.id})
     with session_scope() as s:
         out = RunOut.model_validate(s.get(Run, run_id))
     return out

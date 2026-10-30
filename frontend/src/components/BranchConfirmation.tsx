@@ -13,8 +13,14 @@ export function BranchConfirmation({ runId, pending }: { runId: string; pending:
   const repo = pending.repository;
   const [feature, setFeature] = useState(pending.feature_branch);
   const [base, setBase] = useState(repo.base_branch ?? "");
+  const behind = repo.checked_out ? (repo.base_behind ?? 0) : 0;
+  const [updateBase, setUpdateBase] = useState(behind > 0); // bring in what was merged into the base branch since
   const confirm = useMutation({
-    mutationFn: () => api.confirmBranches(runId, { feature_branch: feature.trim(), ...(repo.checked_out ? {} : { base_branch: base.trim() || undefined }) }),
+    mutationFn: () =>
+      api.confirmBranches(runId, {
+        feature_branch: feature.trim(),
+        ...(repo.checked_out ? { update_base: updateBase } : { base_branch: base.trim() || undefined }),
+      }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["run", runId] }),
   });
   const renamed = feature.trim() !== pending.feature_branch;
@@ -57,6 +63,18 @@ export function BranchConfirmation({ runId, pending }: { runId: string; pending:
           {renamed && <span className="mt-1 block text-xs text-subtle">Renames the run's feature branch in every repository it uses.</span>}
         </label>
       </div>
+      {repo.checked_out && (
+        <p className="text-xs text-subtle">The latest of the feature branch in git (changes pushed by hand included) is fetched and merged in before the step starts.</p>
+      )}
+      {behind > 0 && (
+        <label className="flex items-start gap-2 rounded-md border border-border px-3 py-2 text-sm">
+          <input type="checkbox" className="mt-0.5" checked={updateBase} onChange={(e) => setUpdateBase(e.target.checked)} />
+          <span>
+            Also bring in the latest of <span className="font-mono text-xs">{repo.base_branch ?? repo.default_branch ?? "the base branch"}</span>: {behind} newer commit
+            {behind === 1 ? "" : "s"} (other features merged, fixes made by hand), merged into the feature branch. A conflict stops the step and names the files.
+          </span>
+        </label>
+      )}
       {pending.existing_branch &&
         (renamed ? (
           <p className="text-xs text-subtle">Whether {feature.trim() || "the new name"} already exists is checked when you confirm.</p>

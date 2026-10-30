@@ -71,7 +71,8 @@ export interface PendingBranches {
   stage: string;
   stage_title: string;
   feature_branch: string;
-  repository: { key: string; name: string; url: string; base_branch: string | null; checked_out: boolean; default_branch: string | null };
+  // base_behind: commits of the base branch (as last fetched) the run's checkout doesn't have yet; null when unknown
+  repository: { key: string; name: string; url: string; base_branch: string | null; checked_out: boolean; default_branch: string | null; base_behind?: number | null };
   existing_branch?: { in_run: boolean; message: string } | null; // the feature branch already exists there
   parallel_runs?: { run_id: string; subject: string; branch: string; by: string | null; stage: string | null }[]; // others working in this repository
 }
@@ -785,7 +786,7 @@ export const api = {
   publishDocs: (runId: string, body: { message: string; paths: string[]; latest_sha: string }) =>
     request<{ sha: string; branch: string }>(`/runs/${runId}/docs/publish`, json("POST", body)),
   skipDocs: (runId: string) => request<void>(`/runs/${runId}/docs/skip`, { method: "POST" }),
-  confirmBranches: (runId: string, body: { feature_branch: string; base_branch?: string }) => request<Run>(`/runs/${runId}/branches`, json("POST", body)),
+  confirmBranches: (runId: string, body: { feature_branch: string; base_branch?: string; update_base?: boolean }) => request<Run>(`/runs/${runId}/branches`, json("POST", body)),
   finishRun: (runId: string) => request<void>(`/runs/${runId}/finish`, { method: "POST" }),
   accountGit: () => request<AccountGit>("/account/git"),
   setGitIdentity: (body: { name: string; email: string }) => request<AccountGit>("/account/git", json("PUT", body)),

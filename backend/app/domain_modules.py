@@ -672,8 +672,35 @@ def lifted(project: str, domain: str, run_id: str | None, ws: Path | None) -> di
     recorded = _run_changes(run_id, entry["key"])
     if recorded is None:  # a run from before steps recorded their changes: what changed since it started there
         recorded = [c.path for c in changes(ws / entry["path"], entry["base_sha"]) if c.status != "D"]
+    if branch_per(project_of(run_id) or "", run_id) == "feature":
+        # The feature's own branch holds only its work: everything on it since it was cut from the base branch,
+        # changes made by hand and pushed to it included (the run's steps recorded only their own)
+        recorded = [*recorded, *(f for f in _branch_changes(project, ws / entry["path"], entry) if f not in recorded)]
     files = sorted(f for f in recorded if not f.startswith(SUITE))
     return {"url": url, "key": entry["key"], "path": entry["path"], "base": entry["base_sha"], "files": files}
+
+
+def _branch_changes(project: str, checkout: Path, entry: dict) -> list[str]:
+    """The files changed (not deleted) on the checkout's branch since it left its base branch: from where it meets the
+    base branch as last fetched, else from where the run checked it out."""
+    from app import repos
+    from app.module_guardrails import changes
+
+    start = entry.get("base_sha")
+    try:
+        mirror = repos.mirror_dir(project, entry["url"])
+        base = entry.get("base_branch") or (repos.default_branch(mirror) if mirror.exists() else None)
+        if base and mirror.exists() and git_ops.commit_info(mirror, f"refs/heads/{base}") is not None:
+            git_ops.git(checkout, "fetch", "--quiet", str(mirror), f"+refs/heads/{base}:refs/studio/base")
+            start = git_ops.git(checkout, "merge-base", "HEAD", "refs/studio/base") or start
+    except (git_ops.GitError, OSError):
+        pass
+    if not start:
+        return []
+    try:
+        return [c.path for c in changes(checkout, start) if c.status != "D"]
+    except Exception:  # noqa: BLE001 - what the run recorded still lists the files
+        return []
 
 
 DIFF_TARGET = re.compile(r"^\+\+\+ b/(.+?)\r?$", re.MULTILINE)  # CRLF too (git on Windows)
