@@ -412,8 +412,10 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             catalogue=(discovery_store.domains_brief(domain) if discovery else
                        contracts_store.catalogue_brief(domain, settings)),
             ownership=_ownership(),
-            domain_modules=(domain_modules.brief(_project_of(run_id), state["domain"], run_id, ws, stage.key)
-                            if stage.key in domain_modules.STEPS and not discovery else ""),
+            domain_modules=(domain_modules.brief(_project_of(run_id), state["domain"], run_id,
+                                                 None if stage.key in domain_modules.DESIGN_STEPS else ws, stage.key)
+                            if stage.key in (*domain_modules.STEPS, *domain_modules.DESIGN_STEPS) and not discovery
+                            else ""),
             service_dir=code_dir if code_dir != "." else settings["service_dir_pattern"].format(domain=domain),
             code_dir=code_dir, repositories=_repository_notes(nested),
             legacy=legacy_info, legacy_dir=legacy.path_for(_project_of(run_id), legacy_info, started_by),

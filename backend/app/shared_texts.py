@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.agents.defaults import SHARED_TEXTS
 from app.db.models import GLOBAL, SHARED, Agent, Setting, SharedText
+from app.agent_store import _keep_updated_at
 from app.db.session import NotConfigured, session_scope
 
 log = logging.getLogger(__name__)
@@ -61,10 +62,12 @@ def seed() -> None:
                 added.append(title)
             elif row.text == text:
                 if row.description != description:
+                    _keep_updated_at(row)
                     row.description = description
             elif row.updated_by is None or \
                     hashlib.sha256((row.text or "").encode()).hexdigest() in PREVIOUS_DEFAULT_HASHES.get(key, ()):
                 # nobody edited it (every edit records who), or it is a known earlier default: it follows the default
+                _keep_updated_at(row)  # a release's upgrade, not an edit: runs don't report their agents as changed
                 row.text, row.description = text, description
                 upgraded.append(title)
             else:
@@ -123,7 +126,8 @@ def list_all() -> list[dict[str, Any]]:
         agents = list(s.scalars(select(Agent)))
     from app import domain_modules
     # Texts the studio adds to a step's prompt itself (not through a placeholder in the instructions)
-    given = {"domain_architecture": set(domain_modules.STEPS), "lift_rules": {"modernise", "modernise_and_test"}}
+    given = {"domain_architecture": {*domain_modules.STEPS, *domain_modules.DESIGN_STEPS},
+             "lift_rules": {"modernise", "modernise_and_test"}}
     for item in out:
         token = item["key"]
         item["used_by"] = sorted({a.title for a in agents if a.key in given.get(token, ()) or any(

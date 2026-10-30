@@ -319,6 +319,58 @@ def test_a_run_can_be_re_run_with_an_agent_edited_since_its_step_ran(client):
         client.put("/api/agents/deep_dive", json=agent)
 
 
+def test_a_run_can_keep_what_ran_and_go_on_with_the_updated_agents_from_the_next_step(client):
+    """Keeping what ran hides the notice until an agent changes again; the run goes on from where it is."""
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    agent = client.get("/api/agents/deep_dive").json()
+    assert client.post(f"/api/runs/{run_id}/update-workflow", json={"keep_agents": True}).status_code == 422
+    assert client.put("/api/agents/deep_dive", json={**agent, "guardrails": "Name every table."}).status_code == 200
+    try:
+        assert client.get(f"/api/runs/{run_id}").json()["workflow_update"]["agents_changed"] == ["Deep dive"]
+        r = client.post(f"/api/runs/{run_id}/update-workflow", json={"keep_agents": True})
+        assert r.status_code == 200, r.text
+        run = client.get(f"/api/runs/{run_id}").json()
+        assert run["workflow_update"] is None and run["status"] == "awaiting_approval"  # still waiting where it was
+        assert client.put("/api/agents/deep_dive", json={**agent, "guardrails": "Name every column."}).status_code == 200
+        assert client.get(f"/api/runs/{run_id}").json()["workflow_update"]["agents_changed"] == ["Deep dive"]  # again
+    finally:
+        client.put("/api/agents/deep_dive", json=agent)
+
+
+def test_a_release_upgrading_a_built_in_agent_is_not_an_agent_change_for_runs(client, monkeypatch):
+    import hashlib
+
+    from app import agent_store
+    from app.db.models import GLOBAL, SHARED, Agent, Setting
+    from app.db.session import session_scope
+
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    old = "Deep dive instructions as an earlier release shipped them."
+    monkeypatch.setitem(agent_store.PREVIOUS_DEFAULT_HASHES, "deep_dive",
+                        agent_store.PREVIOUS_DEFAULT_HASHES.get("deep_dive", set())
+                        | {hashlib.sha256(old.encode()).hexdigest()})
+    with session_scope() as s:
+        row = s.get(Agent, (SHARED, "deep_dive"))
+        current, row.instructions = row.instructions, old
+        stamped = None
+    with session_scope() as s:
+        stamped = s.get(Agent, (SHARED, "deep_dive")).updated_at
+        s.query(Setting).filter(Setting.project == GLOBAL, Setting.key == agent_store.UPGRADE_MARKER).delete()
+    try:
+        with session_scope() as s:
+            agent_store._upgrade_untouched_builtins(s)
+        with session_scope() as s:
+            row = s.get(Agent, (SHARED, "deep_dive"))
+            assert row.instructions == current and row.updated_at == stamped  # upgraded, not stamped as an edit
+    finally:
+        with session_scope() as s:
+            s.get(Agent, (SHARED, "deep_dive")).instructions = current
+            if s.get(Setting, (GLOBAL, agent_store.UPGRADE_MARKER)) is None:
+                s.add(Setting(key=agent_store.UPGRADE_MARKER, value=True))
+
+
 def test_a_step_the_workflow_gained_before_the_point_reached_runs_in_a_re_run(client):
     """A step added before the point a run has reached can't be an upcoming step (it is missed); a re-run takes the
     workflow's current steps and runs it, as a new step, then goes on."""

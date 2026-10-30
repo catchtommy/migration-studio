@@ -86,14 +86,72 @@ def test_a_later_feature_is_told_what_the_domain_module_holds_and_extends_it(cli
     assert second and "already has its domain module at loan-domain" in second[0]
 
 
-def test_an_earlier_features_module_missing_from_the_checkout_stops_the_step(client, tmp_path):
+def test_an_earlier_features_module_on_another_branch_doesnt_stop_this_feature(client, tmp_path):
+    """Each feature runs on its own branch: one whose checkout lacks the module (an earlier feature built it on its
+    branch) creates it at the same path and artifact, so the branches merge into one module."""
+    from app.guardrail_problems import blockers
+
     project = new_project(client)
     earlier_run(project, "approve", module_extraction("approve"))
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert "NOT in this checkout" in domain_modules.brief(project, "loan", "this-run", empty)
-    problems = domain_modules.problems(project, "loan", "this-run", empty, "domain", "loan-domain")
-    assert any("commit and push it first" in p for p in problems)
+    brief = domain_modules.brief(project, "loan", "this-run", empty)
+    assert "Not in this checkout" in brief and "Don't wait for it: create the module here" in brief
+    problems = domain_modules.problems(project, "loan", "this-run", empty, "domain", "loan-domain", "com.acme:loan-domain")
+    assert problems == [] and not blockers(problems)
+    problems = domain_modules.problems(project, "loan", "this-run", empty, "domain", "loan-domain", "com.acme:loan-mod")
+    assert any("artifact com.acme:loan-domain" in p for p in problems)  # the same artifact, or the branches won't merge
+
+
+def test_the_domains_module_and_base_package_are_never_named_after_a_feature(client, tmp_path):
+    project = _features(client, "manage-preference", "view-preference")
+    ws, base = _repo(tmp_path)
+    problems = domain_modules.problems(project, "loan", None, ws, "domain", "loan-domain",
+                                       "com.acme:manage-preference-module")
+    assert any("named after the feature manage-preference" in p for p in problems)
+    problems = domain_modules.package_problems(project, "loan", "manage-preference", None, ws, base, "domain",
+                                               "loan-domain", {"base_package": "com.acme.managepreference",
+                                                               "uses_features": []})
+    assert any("base_package com.acme.managepreference is named after the feature" in p for p in problems)
+
+
+def test_the_design_declares_the_domains_one_module_and_the_features_package(client, tmp_path):
+    from app import contracts_store as cs
+
+    project = _features(client, "manage-preference", "view-preference")
+    out = tmp_path / "docs"
+    out.mkdir()
+
+    def design(**fields) -> list[str]:
+        lines = ["domain: loan", "feature: manage-preference", *(f"{k}: {v}" for k, v in fields.items()),
+                 *(f"{k}: []" for k in ("owned_tables", "read_only_tables", "utility_modules",
+                                         "other_domain_dependencies", "context_ports", "schema_changes", "ui_changes",
+                                         "stack_changes", "god_module_dependencies"))]
+        (out / cs.DOMAIN_DESIGN_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return domain_modules.design_problems(project, "loan", "manage-preference", None, out)
+
+    assert any("add module, artifact, base_package, feature_package" in p for p in design())
+    good = {"module": "loan-domain", "artifact": "com.acme:loan-domain", "base_package": "com.acme.loan.domain",
+            "feature_package": "com.acme.loan.domain.managepreference"}
+    assert design(**good) == []
+    wrong = design(**{**good, "module": "manage-preference", "artifact": "com.acme:manage-preference",
+                      "feature_package": "com.acme.loan.domain"})
+    assert any("but the domain's is loan-domain" in p for p in wrong)
+    assert any("named after the feature manage-preference" in p for p in wrong)
+    assert any("go in com.acme.loan.domain.managepreference" in p for p in wrong)
+
+    # A cross-domain feature also declares the orchestrator module: a separate Maven module, named for the domain
+    (out / cs.DOMAIN_DEPENDENCIES_FILE).write_text("decision:\n  scope: cross-domain\n  reason: calls customer\n"
+                                                   "dependencies:\n  - domain: customer\n    relation: calls\n"
+                                                   "    touchpoints: [{kind: service, ref: a.B#c}]\n",
+                                                   encoding="utf-8")
+    assert any("add orchestrator_module" in p for p in design(**good))
+    orch = {"module": "loan-orchestrator", "artifact": "com.acme:loan-orchestrator",
+            "base_package": "com.acme.loan.orchestrator", "feature_package": "com.acme.loan.orchestrator.managepreference"}
+    nested = "{" + ", ".join(f"{k}: {v}" for k, v in orch.items()) + "}"
+    assert design(**good, orchestrator_module=nested) == []
+    same = "{" + ", ".join(f"{k}: {v}" for k, v in {**orch, "artifact": good["artifact"]}.items()) + "}"
+    assert any("separate Maven modules" in p for p in design(**good, orchestrator_module=same))
 
 
 def test_earlier_features_keep_their_toggle_in_the_router(client, tmp_path):
@@ -102,6 +160,72 @@ def test_earlier_features_keep_their_toggle_in_the_router(client, tmp_path):
     ws = checkout(tmp_path, router_reads="migration.loan.reject.route")  # approve's toggle was dropped
     problems = domain_modules.problems(project, "loan", "this-run", ws, "domain", "loan-domain")
     assert any("no longer reads migration.loan.approve.route" in p for p in problems)
+
+
+def test_on_its_own_branch_a_feature_keeps_only_the_toggles_its_branch_started_with(client, tmp_path):
+    """approve's toggle is on approve's branch, not merged yet: this feature's router (on its own branch) doesn't have
+    it, and that's no problem; once merged into the base, it must be kept."""
+    import subprocess
+
+    project = new_project(client)
+    earlier_run(project, "approve", module_extraction("approve"))
+    ws, base = _repo(tmp_path)
+    router = ws / "web/src/main/java/com/acme/loan/bridge/LoanServiceRouter.java"
+    router.parent.mkdir(parents=True)
+    router.write_text('class LoanServiceRouter { String p = "migration.loan.reject.route"; }')
+    assert domain_modules.problems(project, "loan", "this-run", ws, "domain", "loan-domain", None, base) == []
+
+    router.write_text('class LoanServiceRouter { String p = "migration.loan.approve.route"; }')  # merged into base
+    subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "merged"], cwd=ws, check=True)
+    merged = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws, check=True, capture_output=True, text=True).stdout
+    router.write_text('class LoanServiceRouter { String p = "migration.loan.reject.route"; }')  # dropped: refused
+    problems = domain_modules.problems(project, "loan", "this-run", ws, "domain", "loan-domain", None, merged.strip())
+    assert any("no longer reads migration.loan.approve.route" in p for p in problems)
+
+
+def test_the_brief_says_how_the_runs_workflow_branches_and_a_design_step_gets_no_checkout_notes(client, tmp_path):
+    project = new_project(client)
+    earlier_run(project, "approve", module_extraction("approve"))
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    for per, says in (("feature", "Each feature on its own branch"), ("domain", "One branch per domain")):
+        from unittest import mock
+        with mock.patch.object(domain_modules, "branch_per", return_value=per):
+            assert says in domain_modules.brief(project, "loan", "this-run", empty)
+    assert "**Branches.**" in domain_modules.brief(project, "loan", None, empty)  # unknown: neither is claimed
+    design = domain_modules.brief(project, "loan", "this-run", None, "modulith_design")
+    assert "Not in this checkout" not in design and "create the module here" not in design
+    assert "Router route: bean `loanService`" in design  # what earlier features declared, to design against
+
+
+def test_a_feature_name_counts_only_as_whole_parts_of_a_name(client):
+    project = _features(client, "pay", "manage-preference")
+    assert domain_modules.named_for_feature(project, "loan", "loan-payment-domain") is None  # pay inside payment
+    assert domain_modules.named_for_feature(project, "loan", "loan-pay-module") == "pay"
+    assert domain_modules.named_for_feature(project, "loan", "managepreference") == "manage-preference"
+    assert domain_modules.named_for_feature(project, "loan", "manage-preference-domain") == "manage-preference"
+
+
+def test_the_module_steps_build_the_module_the_approved_design_declares(tmp_path):
+    from app import contracts_store as cs
+
+    lists = "".join(f"{k}: []\n" for k in ("owned_tables", "read_only_tables", "utility_modules",
+                                           "other_domain_dependencies", "context_ports", "schema_changes",
+                                           "ui_changes", "stack_changes", "god_module_dependencies"))
+    (tmp_path / cs.DOMAIN_DESIGN_FILE).write_text(
+        "domain: loan\nmodule: loan-domain\nartifact: com.acme:loan-domain\nbase_package: com.acme.loan.domain\n"
+        "feature_package: com.acme.loan.domain.approve\norchestrator_module: {module: loan-orchestrator, artifact: "
+        "com.acme:loan-orchestrator, base_package: com.acme.loan.orchestrator, feature_package: "
+        "com.acme.loan.orchestrator.approve}\n" + lists, encoding="utf-8")
+    assert domain_modules.against_design(tmp_path, "domain", "loan-domain", "com.acme:loan-domain",
+                                         "com.acme.loan.domain") == []
+    wrong = domain_modules.against_design(tmp_path, "domain", "loan-domain", "com.acme:approve", "com.acme.approve")
+    assert len(wrong) == 2 and all("approved design" in p for p in wrong)
+    assert domain_modules.against_design(tmp_path, "orchestrator", "loan-orchestrator", "com.acme:loan-orchestrator",
+                                         "com.acme.loan.orchestrator") == []
+    assert domain_modules.against_design(tmp_path, "orchestrator", "loan-domain", "com.acme:loan-domain",
+                                         "com.acme.loan.domain")  # the domain module's: refused
 
 
 def test_module_folder_settings_are_relative_folders_naming_the_domain(client):
@@ -477,3 +601,73 @@ def test_the_domain_architecture_and_lift_rules_are_shared_texts_editable_from_t
     finally:
         assert client.post("/api/shared-texts/domain_architecture/reset").status_code == 200
     assert client.get("/api/shared-texts").json() and "house rule 7" not in domain_modules.brief(project, "loan", None, tmp_path)
+
+
+def test_a_failed_module_step_doesnt_decide_the_domains_module(client):
+    from app.db.models import StageExecution
+
+    project = new_project(client)
+    run_id = earlier_run(project, "approve", module_extraction("approve", path="approve-domain"))
+    with session_scope() as s:
+        s.get(Run, run_id).status = "failed"
+        s.add(StageExecution(run_id=run_id, stage="modular_monolith", attempt=1, status="failed"))
+    assert domain_modules.existing(project, "loan")["domain"].path == "loan-domain"  # the settings', not the failure's
+    with session_scope() as s:
+        s.add(StageExecution(run_id=run_id, stage="modular_monolith", attempt=2, status="completed"))
+    assert domain_modules.existing(project, "loan")["domain"].path == "approve-domain"  # once it completed
+
+
+def test_later_features_use_the_domains_name_and_the_feature_named_one_is_renamed_on_its_branch(client, tmp_path):
+    """An earlier feature named the domain module after itself: later features use the domain's name, and the domain
+    page lists the rename that feature's branch needs before it is merged."""
+    from tests.test_projects import as_project
+
+    project = _features(client, "manage-preference", "view-preference")
+    feature_named = module_extraction("manage-preference").replace("com.acme:loan-domain",
+                                                                   "com.acme:manage-preference-domain")
+    feature_named += "base_package: com.acme.managepreference\n"
+    run_id = earlier_run(project, "manage-preference", feature_named)
+    m = domain_modules.existing(project, "loan")["domain"]
+    assert (m.path, m.artifact, m.base_package) == ("loan-domain", "com.acme:loan-domain", "com.acme.loan")
+    assert {(r["what"], r["old"], r["new"]) for r in m.renames} == {
+        ("artifact", "com.acme:manage-preference-domain", "com.acme:loan-domain"),
+        ("base package", "com.acme.managepreference", "com.acme.loan")}
+
+    ws, base = _repo(tmp_path)  # the later feature keeps the domain's names, not the feature's
+    problems = domain_modules.problems(project, "loan", "this-run", ws, "domain", "loan-domain",
+                                       "com.acme:manage-preference-domain", base)
+    assert any("keep it" in p and "com.acme:loan-domain" in p for p in problems)
+    assert domain_modules.problems(project, "loan", "this-run", ws, "domain", "loan-domain", "com.acme:loan-domain",
+                                   base) == []
+    assert "Rename needed: manage-preference named its artifact" in domain_modules.brief(project, "loan", "this-run", ws)
+
+    renames = as_project(client, project).get("/api/domains/loan").json()["module_renames"]
+    assert {r["new"] for r in renames} == {"com.acme:loan-domain", "com.acme.loan"}
+    assert all(r["run_id"] == run_id and r["step_title"] == "Module in monolith" for r in renames)
+
+    # Re-running its own step, the earlier feature must take the domain's names too (its design's aren't enforced)
+    problems = domain_modules.problems(project, "loan", run_id, ws, "domain", "loan-domain",
+                                       "com.acme:manage-preference-domain", base)
+    assert any("name it for the domain: com.acme:loan-domain" in p for p in problems)
+
+
+def test_a_service_base_package_named_after_a_feature_is_renamed_too(client, tmp_path):
+    project = _features(client, "approve", "reject")
+    with session_scope() as s:
+        run = Run(project=project, domain="loan", operation="approve", status="completed")
+        s.add(run)
+        s.flush()
+        s.add(Artifact(run_id=run.id, stage="microservice_scaffold", attempt=1, name="microservice-extraction.yaml",
+                       path="x", kind="yaml", content=(
+                           "feature: approve\ndomain: loan\nmodule_commit: abc\nbase_package: com.acme.approve.service\n"
+                           "uses_features: []\noperations:\n  - {method: LoanService#approve, operation_id: approve}\n"
+                           "replaced: []\nopen_decisions: []\nevents: []\n")))
+    info = domain_modules.services(project, "loan", "this-run")["service"]
+    assert info["base_package"] == "com.acme.loan.service"
+    assert info["renames"] == [{"feature": "approve", "what": "base package", "old": "com.acme.approve.service",
+                                "new": "com.acme.loan.service"}]
+    ws, base = _repo(tmp_path)
+    problems = domain_modules.service_problems(project, "loan", "reject", "this-run", ws, base, "service",
+                                               {"base_package": "com.acme.approve.service", "uses_features": []})
+    assert any("the service's is com.acme.loan.service" in p for p in problems)
+    assert any(r["step_title"] == "Spring Boot microservice" for r in domain_modules.renames(project, "loan"))

@@ -2,8 +2,10 @@
 
 The first feature of a domain creates them where the project's settings say (`domain_module_dir_pattern`,
 `orchestrator_module_dir_pattern`); each later feature adds to them, reusing the classes, SQL statements, router and
-ports earlier features copied, instead of copying them again. The domain's features share one branch
-(app/delivery.py, one branch per domain), so a later feature's checkout has the modules as the earlier ones left them.
+ports earlier features copied, instead of copying them again. With one branch per domain (app/delivery.py) a later
+feature's checkout has the modules as the earlier ones left them. With one branch per feature, each feature runs on
+its own: when the module isn't in its checkout, it creates it at the same path with the same artifact and base
+package, holding only what it needs, so the features' branches merge into the one module.
 
 Inside a module, every feature has its own package, `<base_package>.<feature>` (the feature's key without dashes,
 e.g. `com.acme.broker.domain.createbroker`); the domain's types several features use, owned by none (entities, DAOs,
@@ -30,6 +32,8 @@ from app.tools import git_ops
 
 STEPS = ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service", "modernise",
          "modernise_and_test", "service_tests")
+# The design steps get the same brief: they design the feature into the domain's one module, in its own package.
+DESIGN_STEPS = ("domain_design", "modulith_design", "orchestrator_design")
 STATEMENT = re.compile(r"<\s*(?:select|insert|update|delete|statement|procedure)\b[^>]*\bid\s*=\s*\"([^\"]+)\"",
                        re.IGNORECASE)
 MAX_LISTED = 80
@@ -72,6 +76,9 @@ class Module:
     present: bool = False  # in this checkout
     classes: list[str] = field(default_factory=list)  # main Java classes in the checkout
     statements: list[str] = field(default_factory=list)  # SQL statement ids in the module's SQL maps
+    # Earlier features' names for it that are named after a feature: [{"feature", "what", "old", "new"}]. They don't
+    # decide its name (the domain's does); that feature's branch is renamed to `new` before it is merged.
+    renames: list[dict] = field(default_factory=list)
 
 
 def posix(path) -> str:
@@ -87,11 +94,17 @@ def pattern_path(project: str, kind: str, domain: str) -> str:
 
 
 def _declarations(project: str, domain: str, run_id: str | None, name: str) -> list[tuple[str, str]]:
-    """(feature, text) of the latest declaration `name` of each other run of the domain, oldest run first."""
+    """(feature, text) of the latest declaration `name` of each other run of the domain, oldest run first. Only from
+    steps that completed: a failed or abandoned attempt doesn't decide where the domain's module is or what it is
+    called."""
     with session_scope() as s:
+        done = select(StageExecution.id).where(StageExecution.run_id == Artifact.run_id,
+                                               StageExecution.stage == Artifact.stage,
+                                               StageExecution.status == "completed").exists()
         rows = s.execute(select(Run.id, Run.operation, Run.created_at, Artifact.content, Artifact.id)
                          .join(Artifact, Artifact.run_id == Run.id)
                          .where(Run.project == project, Run.domain == domain, Artifact.name == name,
+                                (Run.status == "completed") | done,
                                 *([Run.id != run_id] if run_id else []))
                          .order_by(Run.created_at, Artifact.id)).all()
     latest: dict[str, tuple[str, str]] = {}
@@ -121,12 +134,52 @@ def _scan(module: Module, ws: Path | None) -> None:
         module.statements += [f"{f.name}:{sid}" for sid in STATEMENT.findall(text)]
 
 
+def domain_named_package(project: str, domain: str, package: str) -> str:
+    """`package` with each part named after a feature of the domain named for the domain instead
+    (com.acme.ccp.managepreference → com.acme.ccp.<domain>)."""
+    seg = re.sub(r"[^a-z0-9]", "", domain.lower()) or "domain"
+    return ".".join(seg if named_for_feature(project, domain, part) else part for part in package.split("."))
+
+
+def domain_named_artifact(project: str, domain: str, artifact: str, path: str) -> str:
+    """`artifact` (groupId:artifactId) with its artifactId named for the domain's module (its folder's name) when it is
+    named after a feature."""
+    group, _, artifact_id = artifact.rpartition(":")
+    if named_for_feature(project, domain, artifact_id):
+        artifact_id = posix(path).split("/")[-1]
+    return f"{group}:{artifact_id}" if group else artifact_id
+
+
+def _settle(project: str, domain: str, m: Module, kind: str, seen: list[tuple[str, str, str]]) -> None:
+    """The module's folder, artifact and base package from what earlier features declared (`seen`: (feature, what,
+    value), oldest first): the first that isn't named after a feature; when every one is, the domain-named form of the
+    first. Each declaration named after a feature becomes a rename its feature's branch needs."""
+    named = [(f, w, v) for f, w, v in seen if v and named_for_feature(project, domain,
+                                                                      v.split(":")[-1] if w == "artifact" else v)]
+    for what in ("folder", "artifact", "base package"):
+        good = next((v for f, w, v in seen if w == what and v and (f, w, v) not in named), None)
+        if what == "folder":
+            m.path = good or pattern_path(project, kind, domain)
+        elif what == "artifact":
+            m.artifact = good or next((domain_named_artifact(project, domain, v, m.path) for f, w, v in named
+                                       if w == what), None)
+        else:
+            m.base_package = good or next((domain_named_package(project, domain, v) for f, w, v in named
+                                           if w == what), None)
+    current = {"folder": m.path, "artifact": m.artifact, "base package": m.base_package}
+    for f, w, v in named:
+        rename = {"feature": f, "what": w, "old": v, "new": current[w]}
+        if rename not in m.renames:
+            m.renames.append(rename)
+
+
 def existing(project: str, domain: str, run_id: str | None = None, ws: Path | None = None) -> dict[str, Module]:
-    """The domain's modules: where they are (declared by earlier runs, else where the settings put them), what the
-    earlier features declared, and what this checkout (`ws`) holds."""
+    """The domain's modules: where they are and what they are called (declared by earlier runs, never named after a
+    feature; else where the settings put them), what the earlier features declared, and what this checkout (`ws`)
+    holds."""
     out = {"domain": Module("domain", pattern_path(project, "domain", domain)),
            "orchestrator": Module("orchestrator", pattern_path(project, "orchestrator", domain))}
-    declared_domain = False
+    seen: dict[str, list[tuple[str, str, str]]] = {"domain": [], "orchestrator": []}
     for feature, text in _declarations(project, domain, run_id, cs.MODULE_EXTRACTION_FILE):
         try:
             data = cs.parse_module_extraction(text)
@@ -134,8 +187,8 @@ def existing(project: str, domain: str, run_id: str | None = None, ws: Path | No
             continue
         m = out["domain"]
         dm = next(x for x in data["modules"] if x["kind"] == "domain")
-        if not declared_domain:  # the first feature that built it says where it is
-            m.path, m.artifact, declared_domain = posix(dm["path"]), str(dm["artifact"]), True
+        seen["domain"] += [(feature, "folder", posix(dm["path"])), (feature, "artifact", str(dm["artifact"])),
+                           (feature, "base package", str(data.get("base_package") or ""))]
         if feature not in m.features:
             m.features.append(feature)
         m.bridge = m.bridge or posix(data["bridge_dir"])
@@ -143,9 +196,7 @@ def existing(project: str, domain: str, run_id: str | None = None, ws: Path | No
         m.routes += [{"bean": r["bean"], "interface": r["interface"], "property": routing["property"],
                       "router": posix(routing["router"]), "feature": feature} for r in routing["routes"]]
         m.events += [e for e in data.get("events") or [] if e not in m.events]
-        m.base_package = m.base_package or data.get("base_package")
         m.uses += [f"{feature} → {u}" for u in data.get("uses_features") or [] if f"{feature} → {u}" not in m.uses]
-    declared_orchestrator = False
     for feature, text in _declarations(project, domain, run_id, cs.ORCHESTRATOR_EXTRACTION_FILE):
         try:
             data = cs.parse_orchestrator_extraction(text)
@@ -154,47 +205,232 @@ def existing(project: str, domain: str, run_id: str | None = None, ws: Path | No
         if data["orchestrator"] != "module":
             continue
         m = out["orchestrator"]
-        if not declared_orchestrator:
-            m.path, m.artifact = posix(data["module"]["path"]), str(data["module"]["artifact"])
-            declared_orchestrator = True
+        seen["orchestrator"] += [(feature, "folder", posix(data["module"]["path"])),
+                                 (feature, "artifact", str(data["module"]["artifact"])),
+                                 (feature, "base package", str(data.get("base_package") or ""))]
         if feature not in m.features:
             m.features.append(feature)
         m.operations += [f"{o['method']} ({feature})" for o in data.get("operations") or []]
         m.ports += [f"{p['port']} ({p['contract']}, {p['property']})" for p in data.get("ports") or []
                     if f"{p['port']} ({p['contract']}, {p['property']})" not in m.ports]
-        m.base_package = m.base_package or data.get("base_package")
         m.uses += [f"{feature} → {u}" for u in data.get("uses_features") or [] if f"{feature} → {u}" not in m.uses]
+    for kind, m in out.items():
+        if seen[kind]:
+            _settle(project, domain, m, kind, seen[kind])
     for m in out.values():
         _scan(m, ws)
     return out
 
 
-def problems(project: str, domain: str, run_id: str | None, root: Path, kind: str, declared: str) -> list[str]:
-    """The one-module-per-domain rules for a step declaring its `kind` module at `declared`: it is the domain's
-    existing module (or, for the domain's first feature, where the settings put it), that module is in the checkout,
-    and the earlier features' toggles are still routed."""
-    from app.guardrail_problems import blocker
+def named_for_feature(project: str, domain: str, name: str | None) -> str | None:
+    """The feature of the domain that `name` (a module folder, an artifactId or a package's last part) is named after,
+    when it is named after one instead of after the domain; None otherwise."""
+    parts = [p for p in re.split(r"[^a-z0-9]+", str(name or "").lower()) if p]
+    # Whole parts only (manage-preference-module, managepreference): a short key inside a word (pay in payment) isn't
+    # the feature's name.
+    runs = {"".join(parts[i:j]) for i in range(len(parts)) for j in range(i + 1, len(parts) + 1)}
+    domain_flat = re.sub(r"[^a-z0-9]", "", domain.lower())
+    for key, _name in domain_features(project, domain):
+        seg = re.sub(r"[^a-z0-9]", "", key.lower())
+        if seg and seg in runs and seg not in domain_flat:
+            return key
+    return None
 
-    m = existing(project, domain, run_id, root)[kind]
+
+# Where each kind of rename is made: the step that declared the name, in the earlier feature's run.
+RENAME_STEPS = {"domain": ("Domain module", "modular_monolith", "Module in monolith"),
+                "orchestrator": ("Orchestrator module", "monolith_orchestrator", "Orchestrator in monolith"),
+                "service": ("Domain service", "microservice_scaffold", "Spring Boot microservice"),
+                "orchestrator_service": ("Orchestrator service", "orchestrator_service", "Orchestrator microservice")}
+
+
+def renames(project: str, domain: str, run_id: str | None = None) -> list[dict]:
+    """Names earlier features gave the domain's modules and services that are named after a feature, with the
+    domain's name each must be renamed to on that feature's branch before it is merged: [{"feature", "run_id" (its
+    latest run), "where", "what", "old", "new", "step", "step_title"}]."""
+    found = []
+    for kind, m in existing(project, domain, run_id).items():
+        found += [(kind, r) for r in m.renames]
+    for kind, info in services(project, domain, run_id).items():
+        found += [(kind, r) for r in info["renames"]]
+    if not found:
+        return []
+    with session_scope() as s:
+        latest = {op: rid for rid, op in s.execute(select(Run.id, Run.operation).where(
+            Run.project == project, Run.domain == domain).order_by(Run.created_at)).all()}
+    out = []
+    for kind, r in found:
+        where, step, title = RENAME_STEPS[kind]
+        out.append({**r, "run_id": latest.get(r["feature"]), "where": where, "step": step, "step_title": title})
+    return out
+
+
+def _rename_notes(items: list[dict], kind: str) -> list[str]:
+    step = RENAME_STEPS[kind][2]
+    return [f"  Rename needed: {r['feature']} named its {r['what']} `{r['old']}` after the feature. The domain's is "
+            f"`{r['new']}`: use that. {r['feature']}'s branch gets renamed to it (its {step} step re-run) before it is "
+            "merged; don't change it from this feature." for r in items]
+
+
+def problems(project: str, domain: str, run_id: str | None, root: Path, kind: str, declared: str,
+             artifact: str | None = None, base: str | None = None) -> list[str]:
+    """The one-module-per-domain rules for a step declaring its `kind` module at `declared` (Maven `artifact`,
+    groupId:artifactId): it is the domain's module (where earlier features declared it, else where the settings put
+    it), named for the domain and never for a feature, with the artifact earlier features gave it, and the earlier
+    features' toggles the router read at `base` (where the step started) are still routed. Each feature runs on its
+    own: when the module is not in this checkout (an
+    earlier feature's work is on another branch, or not committed yet), this feature creates it at the same path with
+    the same artifact and base package, so the branches merge into one module."""
+    mods = existing(project, domain, run_id, root)
+    m = mods[kind]
     declared = posix(declared)
     label = "domain module" if kind == "domain" else "orchestrator module"
     out = []
+    if kind == "orchestrator" and artifact and mods["domain"].artifact and \
+            str(artifact).strip() == mods["domain"].artifact:
+        out.append(f"The orchestrator module's artifact {artifact} is the domain module's: they are separate Maven "
+                   "modules, so give the orchestrator module its own (named for the domain)")
     if m.features:
         if declared != m.path:
             out.append(f"The domain already has its {label} at {m.path} (built by {', '.join(m.features)}): extend it "
-                       f"instead of creating {declared}. A domain has one {label}, shared by its features")
-        if not m.present:
-            out.append(blocker(f"The domain's {label} {m.path} (built by {', '.join(m.features)}) is not in this "
-                               "checkout: their work is not on the domain's branch yet. Stop and ask the user to "
-                               "commit and push it first"))
+                       f"instead of creating {declared}"
+                       + (" (or, when it isn't in this checkout, create it there)" if not m.present else "")
+                       + f". A domain has one {label}, shared by its features")
+        if artifact and m.artifact and str(artifact).strip() != m.artifact:
+            out.append(f"The domain's {label} is the artifact {m.artifact} (built by {', '.join(m.features)}): keep "
+                       f"it, not {artifact}")
     elif declared != m.path:
         setting = "domain_module_dir_pattern" if kind == "domain" else "orchestrator_module_dir_pattern"
         out.append(f"The domain's first {label} goes at {m.path} (Project settings, {setting}), not {declared}")
-    for r in m.routes:  # earlier features keep their parallel run
+    artifact_id = str(artifact or "").split(":")[-1]
+    feature = named_for_feature(project, domain, artifact_id)
+    if feature and not (m.features and m.artifact):  # with earlier features, "keep the domain's artifact" says it
+        out.append(f"The {label}'s artifact {artifact} is named after the feature {feature}: it is the domain's "
+                   f"module, shared by all its features, so name it for the domain: "
+                   f"{domain_named_artifact(project, domain, str(artifact), m.path)}")
+    for r in m.routes:  # earlier features keep their parallel run, where it is on this branch
         router = root / r["router"]
+        if base:  # only toggles the router read where this step started: on its own branch, an earlier feature's
+            try:  # toggle is there only once that feature was merged into the base branch
+                if r["property"] not in git_ops.git(root, "show", f"{base}:{posix(r['router'])}"):
+                    continue
+            except git_ops.GitError:
+                continue  # no router there yet: this feature adds its own
         if router.is_file() and r["property"] not in router.read_text(encoding="utf-8", errors="replace"):
             out.append(f"The router {r['router']} no longer reads {r['property']}, the toggle of {r['feature']}: keep "
                        "the earlier features' methods and toggles as they are")
+    return out
+
+
+def _design_scope(output_dir: Path) -> str | None:
+    """The feature's Modulith scope (domain-dependencies.yaml decision.scope): domain-only or cross-domain."""
+    f = output_dir / cs.DOMAIN_DEPENDENCIES_FILE
+    try:
+        data = cs.load_domain_dependencies(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    except cs.InvalidDocument:
+        return None
+    return str((data.get("decision") or {}).get("scope") or "") or None
+
+
+def _declared_module(project: str, domain: str, feature: str, where: str, block: dict, m: Module,
+                     label: str) -> list[str]:
+    """One module of the design (`block`: module, artifact, base_package, feature_package) against the domain's `m`."""
+    missing = [k for k in ("module", "artifact", "base_package", "feature_package") if not str(block.get(k) or "").strip()]
+    if missing:
+        return [f"{where}: add {', '.join(missing)} of the domain's {label} (see \"This domain's modules\")"]
+    module, artifact = posix(block["module"]), str(block["artifact"]).strip()
+    base_package, feature_package = str(block["base_package"]).strip(), str(block["feature_package"]).strip()
+    setting = "domain_module_dir_pattern" if m.kind == "domain" else "orchestrator_module_dir_pattern"
+    out = []
+    if module != m.path:
+        out.append(f"{where}: the {label} is {module}, but the domain's is {m.path}"
+                   + (f" (built by {', '.join(m.features)})" if m.features else f" (Project settings, {setting})")
+                   + ": every feature of the domain goes into that one module")
+    if m.artifact and artifact != m.artifact:
+        out.append(f"{where}: the {label}'s artifact is {artifact}, but the domain's is {m.artifact} (built by "
+                   f"{', '.join(m.features)}): keep it")
+    elif (named := named_for_feature(project, domain, artifact.split(":")[-1])):
+        out.append(f"{where}: the {label}'s artifact {artifact} is named after the feature {named}: the module is the "
+                   f"domain's, shared by all its features, so name it for the domain: "
+                   f"{domain_named_artifact(project, domain, artifact, m.path)}")
+    if m.base_package and base_package != m.base_package:
+        out.append(f"{where}: the {label}'s base_package is {base_package}, but it is {m.base_package} (earlier "
+                   "features): keep it")
+    elif not m.base_package and (named := named_for_feature(project, domain, base_package)):
+        out.append(f"{where}: the {label}'s base_package {base_package} is named after the feature {named}: it is the "
+                   f"package of the domain's module: {domain_named_package(project, domain, base_package)}; the "
+                   "feature's own classes go in <base_package>.<feature package>")
+    expected = f"{m.base_package or base_package}.{feature_segment(feature)}"
+    if feature_package != expected:
+        out.append(f"{where}: the {label}'s feature_package is {feature_package}: this feature's classes go in "
+                   f"{expected} (<base_package>.<the feature's key without dashes>)")
+    return out
+
+
+def design_problems(project: str, domain: str, feature: str, run_id: str | None, output_dir: Path) -> list[str]:
+    """The domain design's modules (domain-design.yaml): the domain's one domain module (`module`, `artifact`,
+    `base_package`, `feature_package`) and, for a cross-domain feature, its one orchestrator module
+    (`orchestrator_module`), a separate Maven module: each named for the domain, with the artifact and base package
+    earlier features gave it, and this feature in its own package. Empty when the file is absent or invalid (reported
+    elsewhere)."""
+    f = output_dir / cs.DOMAIN_DESIGN_FILE
+    if not f.is_file():
+        return []
+    try:
+        data = cs.parse_domain_design(f.read_text(encoding="utf-8"))
+    except cs.InvalidDocument:
+        return []
+    where = cs.DOMAIN_DESIGN_FILE
+    mods = existing(project, domain, run_id)
+    out = _declared_module(project, domain, feature, where, data, mods["domain"], "domain module")
+    orch = data.get("orchestrator_module")
+    scope = _design_scope(output_dir)
+    if isinstance(orch, dict):
+        out += _declared_module(project, domain, feature, f"{where} orchestrator_module", orch, mods["orchestrator"],
+                                "orchestrator module")
+        if str(orch.get("artifact") or "").strip() and str(orch.get("artifact")).strip() == str(data.get("artifact")
+                                                                                                 or "").strip():
+            out.append(f"{where}: the orchestrator module and the domain module are separate Maven modules: give the "
+                       "orchestrator module its own artifact")
+        if str(orch.get("base_package") or "").strip() and \
+                str(orch.get("base_package")).strip() == str(data.get("base_package") or "").strip():
+            out.append(f"{where}: the orchestrator module has its own base package, not the domain module's")
+    elif scope == "cross-domain":
+        out.append(f"{where}: add orchestrator_module (module, artifact, base_package, feature_package): a "
+                   "cross-domain feature's orchestrator goes in the domain's one orchestrator module, a separate Maven "
+                   "module")
+    elif orch not in (None, "none", ""):
+        out.append(f"{where}: orchestrator_module is a mapping (module, artifact, base_package, feature_package), or "
+                   "none for a domain-only feature")
+    return out
+
+
+def against_design(output_dir: Path, kind: str, declared: str, artifact: str | None, base_package: str | None,
+                   project: str | None = None, domain: str | None = None) -> list[str]:
+    """The module step builds the module the approved design declared (domain-design.yaml: the domain module, or its
+    `orchestrator_module`): the same folder, artifact and base package. Nothing to compare when the design doesn't
+    declare them (a design from before they were declared) or can't be read, nor for a name the design gave after a
+    feature: that one is renamed to the domain's (the module step's own checks say which)."""
+    f = output_dir / cs.DOMAIN_DESIGN_FILE
+    try:
+        design = cs.parse_domain_design(f.read_text(encoding="utf-8")) if f.is_file() else None
+    except cs.InvalidDocument:
+        return []
+    block = design if kind == "domain" else (design or {}).get("orchestrator_module")
+    if not isinstance(block, dict):
+        return []
+    label = "domain module" if kind == "domain" else "orchestrator module"
+    out = []
+    for what, mine, theirs in (("folder", posix(declared), posix(block.get("module"))),
+                               ("artifact", str(artifact or "").strip(), str(block.get("artifact") or "").strip()),
+                               ("base package", str(base_package or "").strip(),
+                                str(block.get("base_package") or "").strip())):
+        if project and domain and theirs and named_for_feature(project, domain, theirs.split(":")[-1]
+                                                               if what == "artifact" else theirs):
+            continue
+        if theirs and mine and mine != theirs:
+            out.append(f"The {label}'s {what} is {mine}, but the approved design ({cs.DOMAIN_DESIGN_FILE}) says {theirs}: "
+                       "build the module the design declares, or ask the user if the design is wrong")
     return out
 
 
@@ -276,16 +512,23 @@ def package_problems(project: str, domain: str, feature: str, run_id: str | None
     if earlier and earlier != base_package:
         out.append(f"base_package is {base_package}, but the module's is {earlier} (earlier features): keep it")
         base_package = earlier
+    elif not earlier and (named := named_for_feature(project, domain, base_package)):
+        out.append(f"base_package {base_package} is named after the feature {named}: it is the package of the "
+                   f"domain's module, shared by all its features: "
+                   f"{domain_named_package(project, domain, base_package)}; the feature's own classes go in "
+                   f"<base_package>.{feature_segment(feature)}")
     return out + layout_problems(root, base, module_path, base_package, feature, _segments(project, domain, feature),
                                  declaration.get("uses_features") or [])
 
 
 def services(project: str, domain: str, run_id: str | None) -> dict[str, dict]:
     """What earlier features declared about the domain's two services: {"service" | "orchestrator_service":
-    {"base_package", "features", "uses"}}."""
+    {"base_package", "features", "uses", "renames"}}. The base package is the first one not named after a feature
+    (else the domain-named form of the first); one named after a feature is a rename its feature's branch needs."""
     out = {}
     for kind, name in SERVICE_FILES.items():
-        info = {"base_package": None, "features": [], "uses": [], "module_commit": None}
+        info = {"base_package": None, "features": [], "uses": [], "module_commit": None, "renames": []}
+        named = []
         for feature, text in _declarations(project, domain, run_id, name):
             try:
                 data = (cs.parse_microservice_extraction if kind == "service" else cs.parse_orchestrator_service)(text)
@@ -293,12 +536,20 @@ def services(project: str, domain: str, run_id: str | None) -> dict[str, dict]:
                 continue
             if data.get("orchestrator") == "none":
                 continue
-            info["base_package"] = info["base_package"] or data.get("base_package")
+            declared = str(data.get("base_package") or "")
+            if declared and named_for_feature(project, domain, declared):
+                named.append((feature, declared))
+            else:
+                info["base_package"] = info["base_package"] or declared or None
             info["module_commit"] = data.get("module_commit") or info["module_commit"]  # the latest lift's
             if feature not in info["features"]:
                 info["features"].append(feature)
             info["uses"] += [f"{feature} → {u}" for u in data.get("uses_features") or []
                              if f"{feature} → {u}" not in info["uses"]]
+        if named:
+            info["base_package"] = info["base_package"] or domain_named_package(project, domain, named[0][1])
+            info["renames"] = [{"feature": f, "what": "base package", "old": v, "new": info["base_package"]}
+                               for f, v in named]
         out[kind] = info
     return out
 
@@ -321,6 +572,9 @@ def service_problems(project: str, domain: str, feature: str, run_id: str | None
                    "feature's classes go in <base_package>.<feature>, shared ones in <base_package>.shared")
     if base_package and earlier and earlier != base_package:
         out.append(f"base_package is {base_package}, but the service's is {earlier} (earlier features): keep it")
+    elif not earlier and base_package and (named := named_for_feature(project, domain, base_package)):
+        out.append(f"base_package {base_package} is named after the feature {named}: it is the package of the "
+                   f"domain's service, shared by all its features: {domain_named_package(project, domain, base_package)}")
     base_package = earlier or base_package or base_hint
     if one_project:
         out += [f"{c.path}: a second project in the service's repository. The domain has one project: add this "
@@ -647,6 +901,37 @@ def _unmapped_operations(ctx, modern_root: Path) -> list[str]:
     return out
 
 
+BRANCHING = {
+    "feature": "**Each feature on its own branch.** Every feature works on its own branch, cut from the base branch, "
+               "and is merged into it when it is done, in every repository (the monolith and each service's): what an "
+               "earlier feature built is in your checkout only once it was merged.",
+    "domain": "**One branch per domain.** The domain's features add their work to one shared branch, one feature at "
+              "a time, in every repository (the monolith and each service's): what an earlier feature built is in "
+              "your checkout once it was committed.",
+    None: "**Branches.** What an earlier feature built is in your checkout only once it is on your branch (committed "
+          "to it, or merged into the base branch it was cut from).",
+}
+
+
+def branch_per(project: str, run_id: str | None) -> str | None:
+    """How the run's workflow branches: "feature" (each feature on its own branch, merged into the base branch when
+    done) or "domain" (the domain's features share one branch); None when unknown."""
+    if not run_id:
+        return None
+    try:
+        from app import delivery, projects, workflow_store
+
+        with session_scope() as s:
+            run = s.get(Run, run_id)
+            key = run.workflow if run is not None else None
+        if not key:
+            return None
+        with projects.use(project):
+            return delivery.git_settings(workflow_store.get(key))["branch_per"]
+    except Exception:  # noqa: BLE001 - the brief goes on without it
+        return None
+
+
 def brief(project: str, domain: str, run_id: str | None, ws: Path | None, stage: str | None = None) -> str:
     """What the module and service steps must know: the domain's modules and services, and that they extend them. The
     wording is the shared text "domain_architecture" (and "lift_rules" for Modernise), editable on the Agents page;
@@ -663,24 +948,31 @@ def brief(project: str, domain: str, run_id: str | None, ws: Path | None, stage:
             continue
         modules.append(f"- {label}: `{m.path}/`" + (f" ({m.artifact})" if m.artifact else "")
                        + f", built by {', '.join(m.features)}.")
-        if not m.present:
-            modules.append(f"  NOT in this checkout: the earlier features' work isn't on this branch yet. Stop and ask "
-                           f"(ask_user) to commit and push {', '.join(m.features)} to the domain's branch first.")
+        if ws is not None and not m.present:  # (a design step has no checkout: ws None)
+            modules.append(f"  Not in this checkout: {', '.join(m.features)} built it on another branch (or hasn't "
+                           "committed it yet). Don't wait for it: create the module here, at this same path with "
+                           "this same artifact and base package, holding only what this feature needs (its package, "
+                           "and the `shared`/`util` classes it uses), so the features' branches merge into one module.")
         if m.base_package:
             modules.append(f"  Base package: `{m.base_package}` (keep it).")
+        modules += _rename_notes(m.renames, m.kind)
         if m.uses:
             modules.append(f"  Feature interactions so far: {', '.join(m.uses)}.")
         if m.bridge:
             modules.append(f"  Bridge package: `{m.bridge}/`.")
-        for r in m.routes:
-            modules.append(f"  Router route: bean `{r['bean']}` ({r['interface']}), toggle `{r['property']}` "
-                           f"({r['feature']}).")
-        if m.operations:
-            modules.append(f"  Operations: {_listing(m.operations)}.")
-        if m.ports:
-            modules.append(f"  Ports with mode switches: {_listing(m.ports)}.")
-        if m.events:
-            modules.append(f"  Events: {', '.join(m.events)}.")
+        if m.present or ws is None:  # what earlier features declared (in a checkout, only once on its branch)
+            if m.routes or m.operations or m.ports or m.events:
+                modules.append("  Declared by earlier features" + (" (in your checkout only once on your branch; keep "
+                                                                   "what is there):" if ws is not None else ":"))
+            for r in m.routes:
+                modules.append(f"  Router route: bean `{r['bean']}` ({r['interface']}), toggle `{r['property']}` "
+                               f"({r['feature']}).")
+            if m.operations:
+                modules.append(f"  Operations: {_listing(m.operations)}.")
+            if m.ports:
+                modules.append(f"  Ports with mode switches: {_listing(m.ports)}.")
+            if m.events:
+                modules.append(f"  Events: {', '.join(m.events)}.")
         if m.classes:
             modules.append(f"  Classes already there (reuse them): {_listing(m.classes)}.")
         if m.statements:
@@ -708,8 +1000,10 @@ def brief(project: str, domain: str, run_id: str | None, ws: Path | None, stage:
                              + (f", built by {', '.join(info['features'])}" if info["features"] else ", no feature yet")
                              + (f"; base package `{info['base_package']}` (keep it)" if info["base_package"] else "")
                              + (f"; interactions so far: {', '.join(info['uses'])}" if info["uses"] else "") + ".")
+    for kind, info in services(project, domain, run_id).items():  # the lifted and modern services share one name
+        service_lines += _rename_notes(info["renames"], kind)
     text = shared_texts.fill("domain_architecture", {
-        "domain": domain,
+        "domain": domain, "branching": BRANCHING.get(branch_per(project, run_id), BRANCHING[None]),
         "feature_packages": (", ".join(f"{k} → {feature_segment(k)}" for k, _ in features)
                              or "no features listed for the domain yet") + f"; shared → {SHARED}; util → {UTIL}",
         "modules": "\n".join(modules), "services": "\n".join(service_lines)})

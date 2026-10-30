@@ -93,7 +93,8 @@ def _baseline_tables():
 LATER_COLUMNS = {("stage_executions", "rerun"), ("runs", "repository"), ("runs", "base_branch"),
                  ("runs", "started_by"), ("runs", "delivery"), ("workflows", "git"),
                  ("runs", "repositories"), ("stage_executions", "repos"),
-                 ("runs", "legacy"), ("agents", "guardrails"), ("stage_executions", "checklist")}
+                 ("runs", "legacy"), ("agents", "guardrails"), ("stage_executions", "checklist"),
+                 ("runs", "agents_kept_at")}
 
 
 def _add_missing_columns(conn) -> None:

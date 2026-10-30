@@ -512,6 +512,29 @@ export function DomainPage() {
           </div>
         </div>
       </div>
+      {!!domain.module_renames?.length && (
+        <div className="space-y-1 rounded-md bg-warn/10 px-3 py-2 text-sm text-warn">
+          <p>
+            Some names are named after a feature instead of the domain. Later features use the domain&apos;s name; rename each on its feature&apos;s branch (re-run the step
+            shown) before that branch is merged:
+          </p>
+          <ul className="list-disc pl-5">
+            {domain.module_renames.map((r) => (
+              <li key={`${r.where}:${r.what}:${r.feature}:${r.old}`}>
+                {r.where} {r.what} <code className="text-xs">{r.old}</code> → <code className="text-xs">{r.new}</code>, from{" "}
+                {r.run_id ? (
+                  <Link to={`/runs/${r.run_id}`} className="underline">
+                    {r.feature}
+                  </Link>
+                ) : (
+                  r.feature
+                )}{" "}
+                (re-run its {r.step_title} step)
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <nav className="flex gap-4 border-b border-border text-sm">
         {TABS.map((t) => (
           <button

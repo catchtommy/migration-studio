@@ -17,7 +17,7 @@ from app.api.schemas import (
 from app.agents import common
 from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
-from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution
+from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution, utcnow
 from app.db.session import emit, get_db, session_scope
 from app import (auth, contracts_store, delivery, discovery_store, docs_publish, document_export, gate_checklist,
                  projects, repos, run_cleanup, run_workflow, settings_store, workflow_store, workspace)
@@ -201,6 +201,15 @@ def update_workflow(run_id: str, body: WorkflowUpdateIn | None = None, db: Sessi
     if get_runner().is_active(run_id):
         raise HTTPException(409, "The run is working; wait for it to stop or reach a gate, then update it")
     update = run_workflow.plan(run)
+    if body is not None and body.keep_agents:
+        if not update or not update.get("agents_changed"):
+            raise HTTPException(422, "No agent changed since its step ran")
+        run.agents_kept_at = utcnow()
+        db.commit()
+        emit(run_id, "status", f"{user.display_name} kept what {', '.join(update['agents_changed'])} produced; the "
+                               "steps the run hasn't reached use the current agents", run.current_stage)
+        db.refresh(run)
+        return run
     if body is not None and body.rerun:
         if not update or not update.get("rerun"):
             raise HTTPException(422, "Nothing the run has already run differs from its workflow and agents")

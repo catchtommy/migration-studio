@@ -4,6 +4,9 @@ A run keeps a copy of its workflow's steps from when it started (Run.workflow_st
 reshapes a run behind its back. Its agents are read when each step starts, so the steps it hasn't reached yet use
 their agents as they are then; the steps it has already run keep the output of the agents as they were.
 
+When agents changed after their steps ran, a person can also keep what those steps produced: the notice goes until an
+agent changes again (Run.agents_kept_at), and the steps the run hasn't reached use the current agents as always.
+
 A person can update a run in one of two ways:
 - the upcoming steps only (a run that is waiting: at a gate, after a failure, ...): everything the run has reached
   stays exactly as it ran, and the steps after that point become the workflow's current ones. Steps the workflow
@@ -40,11 +43,15 @@ def _reached(run, keys: list[str]) -> int:
 
 
 def agents_changed(run) -> dict[str, str]:
-    """Steps the run has completed whose agent changed after the step last ran: step key -> what changed."""
+    """Steps the run has completed whose agent changed after the step last ran (and after someone last chose to keep
+    what the steps produced, Run.agents_kept_at): step key -> what changed."""
     last_run: dict[str, object] = {}
     for e in run.stages:
         if e.status == "completed" and (e.stage not in last_run or e.started_at > last_run[e.stage]):
             last_run[e.stage] = e.started_at
+    kept = getattr(run, "agents_kept_at", None)
+    if kept is not None:
+        last_run = {k: max(ran, kept) for k, ran in last_run.items()}
     if not last_run:
         return {}
     with projects.use(run.project):

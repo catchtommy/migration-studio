@@ -375,9 +375,29 @@ def verify(ctx: AgentContext, written: set[str] | None = None) -> list[str]:
     problems += contracts_store.validate_outputs(ctx.output_dir, own)
     if own is None or contracts_store.DOMAIN_DESIGN_FILE in own:
         problems += contracts_store.domain_design_ownership_problems(ctx.output_dir, ctx.domain, ctx.ownership)
+        problems += _design_module_problems(ctx)
     problems += discovery_store.validate_outputs(ctx.output_dir)
     problems += guardrail_problems(ctx, checks)
     return problems
+
+
+def _design_module_problems(ctx: AgentContext) -> list[str]:
+    """A design step's module: the domain's one module, this feature in its own package (app/domain_modules.py)."""
+    from app import domain_modules
+    from app.db.models import Run
+    from app.db.session import session_scope
+
+    if ctx.stage not in domain_modules.DESIGN_STEPS or not ctx.operation:
+        return []
+    try:
+        with session_scope() as s:
+            run = s.get(Run, ctx.run_id)
+            project = run.project if run is not None else None
+    except Exception:  # noqa: BLE001 - without the database there are no earlier features to know
+        project = None
+    if project is None:
+        return []
+    return domain_modules.design_problems(project, ctx.domain, ctx.operation, ctx.run_id, ctx.output_dir)
 
 
 def finish_check(ctx: AgentContext, written: set[str], previous: list[str] | None) -> list[str]:

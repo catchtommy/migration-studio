@@ -642,7 +642,14 @@ def one_per_domain(ctx, root: Path, kind: str, declared: str, declaration: dict)
         project = None
     if project is None:
         return []
-    return (domain_modules.problems(project, ctx.domain, ctx.run_id, root, kind, declared)
+    if kind == "domain":
+        artifact = next((m.get("artifact") for m in declaration.get("modules") or [] if m.get("kind") == "domain"), None)
+    else:
+        artifact = (declaration.get("module") or {}).get("artifact")
+    return (domain_modules.against_design(ctx.output_dir, kind, declared, str(artifact) if artifact else None,
+                                          declaration.get("base_package"), project, ctx.domain)
+            + domain_modules.problems(project, ctx.domain, ctx.run_id, root, kind, declared,
+                                      str(artifact) if artifact else None, ctx.base_sha)
             + domain_modules.package_problems(project, ctx.domain, ctx.operation, ctx.run_id, root, ctx.base_sha, kind,
                                               declared, declaration))
 

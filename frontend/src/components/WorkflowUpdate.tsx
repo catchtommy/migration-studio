@@ -7,12 +7,13 @@ const PARTS: [keyof Update, string][] = [
   ["changed", "Changes"],
 ];
 
-/** The run's workflow or agents changed since it started: offer to bring the steps it hasn't reached up to date, or to
- * re-run from the earliest step a change affects. */
+/** The run's workflow or agents changed since it started: offer to bring the steps it hasn't reached up to date, to
+ * re-run from the earliest step a change affects, or (agents changed) to keep what ran and go on with the updated agents
+ * from the next step, which hides the notice until an agent changes again. */
 export function WorkflowUpdate({ run, workflowName, canUpdate }: { run: RunDetail; workflowName: string | null; canUpdate: boolean }) {
   const queryClient = useQueryClient();
   const update = useMutation({
-    mutationFn: (rerun: boolean) => api.updateRunWorkflow(run.id, rerun),
+    mutationFn: (mode: "upcoming" | "rerun" | "keep") => api.updateRunWorkflow(run.id, mode),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["run", run.id] });
       queryClient.invalidateQueries({ queryKey: ["artifacts", run.id] });
@@ -49,8 +50,9 @@ export function WorkflowUpdate({ run, workflowName, canUpdate }: { run: RunDetai
       )}
       {!!plan.agents_changed?.length && (
         <p>
-          Agents changed since their step ran: {plan.agents_changed.join(", ")}. Steps this run hasn't reached use the current agents automatically; the steps above keep
-          what they produced unless the run is re-run.
+          Agents changed since their step ran: {plan.agents_changed.join(", ")}. Steps this run hasn't reached use the current agents automatically.{" "}
+          <strong>Keep and go on</strong> keeps what those steps produced, so the run goes on from where it is with the updated agents from the next step
+          {plan.rerun ? <>; <strong>Update and re-run</strong> runs them again with the updated agents.</> : "."}
         </p>
       )}
       {plan.rerun && (
@@ -59,16 +61,16 @@ export function WorkflowUpdate({ run, workflowName, canUpdate }: { run: RunDetai
           That step and the ones after it update their documents; their gates ask for approval again. Earlier steps stay as they ran.
         </p>
       )}
-      {canUpdate && (upcoming || plan.rerun) && (
+      {canUpdate && (upcoming || plan.rerun || !!plan.agents_changed?.length) && (
         <div className="flex flex-wrap items-center gap-3">
           {upcoming && (
             <button
               type="button"
               className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
               disabled={update.isPending}
-              onClick={() => update.mutate(false)}
+              onClick={() => update.mutate("upcoming")}
             >
-              {update.isPending && update.variables === false ? "Updating…" : "Update upcoming steps"}
+              {update.isPending && update.variables === "upcoming" ? "Updating…" : "Update upcoming steps"}
             </button>
           )}
           {plan.rerun && (
@@ -78,10 +80,21 @@ export function WorkflowUpdate({ run, workflowName, canUpdate }: { run: RunDetai
               disabled={update.isPending}
               onClick={() =>
                 window.confirm(`Re-run this migration from ${plan.rerun!.title} with the current workflow and agents? Its later steps run again and their gates ask for approval again.`) &&
-                update.mutate(true)
+                update.mutate("rerun")
               }
             >
-              {update.isPending && update.variables === true ? "Re-running…" : `Update and re-run from ${plan.rerun.title}`}
+              {update.isPending && update.variables === "rerun" ? "Re-running…" : `Update and re-run from ${plan.rerun.title}`}
+            </button>
+          )}
+          {!!plan.agents_changed?.length && (
+            <button
+              type="button"
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-accent hover:bg-accent/10 disabled:opacity-50"
+              disabled={update.isPending}
+              onClick={() => update.mutate("keep")}
+              title="Keep what the steps already produced; the steps this run hasn't reached use the updated agents"
+            >
+              {update.isPending && update.variables === "keep" ? "Saving…" : "Keep and go on (updated agents from the next step)"}
             </button>
           )}
           {update.error && <span className="text-bad">{(update.error as Error).message}</span>}

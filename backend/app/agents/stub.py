@@ -113,10 +113,27 @@ shared_code: []
 """
     if "domain-design.yaml" in outputs:
         owned = (ctx.ownership.get(ctx.domain) or {}).get("tables") or []
+        from app import domain_modules, projects
+
+        project = projects.current_or_none()
+        module = domain_modules.pattern_path(project, "domain", ctx.domain) if project else f"{ctx.domain}-domain"
+        base_package = f"com.example.{_ident(ctx.domain).lower()}.domain"
+        orchestrator = "orchestrator_module: none\n"
+        if _scope(ctx) == "cross-domain":
+            path = domain_modules.pattern_path(project, "orchestrator", ctx.domain) if project \
+                else f"{ctx.domain}-orchestrator"
+            package = f"com.example.{_ident(ctx.domain).lower()}.orchestrator"
+            orchestrator = (f"orchestrator_module:\n  module: {path}\n  artifact: com.example:{ctx.domain}-orchestrator\n"
+                            f"  base_package: {package}\n"
+                            f"  feature_package: {package}.{domain_modules.feature_segment(ctx.operation)}\n")
         files["domain-design.yaml"] = f"""# [stub] sample guardrail declaration
 domain: {ctx.domain}
 feature: {ctx.operation}
-owned_tables: [{', '.join(owned)}]
+module: {module}
+artifact: com.example:{ctx.domain}-domain
+base_package: {base_package}
+feature_package: {base_package}.{domain_modules.feature_segment(ctx.operation)}
+{orchestrator}owned_tables: [{', '.join(owned)}]
 read_only_tables: []
 utility_modules: []
 other_domain_dependencies: [{query}]

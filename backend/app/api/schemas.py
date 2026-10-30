@@ -173,6 +173,8 @@ class RetryIn(BaseModel):
 
 class WorkflowUpdateIn(BaseModel):
     rerun: bool = False  # take all the workflow's current steps and re-run from the earliest one a change affects
+    # keep what the steps that ran produced although their agents changed: the upcoming steps use the current agents
+    keep_agents: bool = False
 
 
 class Rerun(BaseModel):
@@ -282,6 +284,9 @@ class DomainOut(ORM):
     owned_packages: list[str] | None
     # The migration workflows this domain uses (its new runs', then its earlier runs'): which agents to configure
     workflows: list[dict] = []
+    # Names earlier features gave the domain's modules or services after themselves: each is renamed to the domain's
+    # on that feature's branch before it is merged (app/domain_modules.py renames)
+    module_renames: list[dict] = []
     created_at: datetime
     updated_at: datetime
 

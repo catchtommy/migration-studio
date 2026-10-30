@@ -63,6 +63,9 @@ class Run(Base):
     # A rejection held back so people can amend agents, inputs or documents before the re-run:
     # {"gate", "target_stage", "comments"}. Set while the status is changes_requested.
     pending_rerun: Mapped[dict | None] = mapped_column(JSONText)
+    # When someone chose to keep what the run's steps produced although their agents changed since: changes up to then
+    # are not offered again (the upcoming steps use the current agents anyway).
+    agents_kept_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

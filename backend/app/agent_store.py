@@ -53,7 +53,9 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                       "142d8a42236f9e844bcd3445647e9f34787655dece2bc6ccc0b05ec30862e3c8",
                       "5a7035410502576364098df1291b71788fdbe7e10be7644db0a102550a7f8ab7",
                       "e5ac314731ee2cea532d10917f03304365e33b91c1f7358103bbe9d314ddd8db",
-        "12b7b3cd2ffc888c21f10cd8fab6141eb9140dd450081f452843ddd0662b1e84"},
+        "12b7b3cd2ffc888c21f10cd8fab6141eb9140dd450081f452843ddd0662b1e84",
+        "a51508117bdc207fd09fc144f932d18a66638cf5bb683d4a76ca0d38943474f7",
+        "339578ac2087bbdb497644faf80d3f7ace56d0c9f60c86ffb940840d4a964ad6"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
     "orchestrator_design": {"fec9b1a759bfbb513210a58472431041d014335317139309281fd8546c42b34a",
@@ -64,7 +66,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                               "b1175e5e93c69bb615256ce4684be01648dd7736bee4955052bbca5be914d9dc",
                             "f9e96fafed18fe73fe6e62b9d75184fe99b3c6bdf802d190fed21afb42c35542",
                             "95e1470cf6cff461d1caf1d4e94205c0229b696ee8c852c6bd3acdb7b257a79e",
-                            "3e283b3f86a097de59173a64e5068d92ee6fc631799dfaac7c2617f903a91dc9"},
+                            "3e283b3f86a097de59173a64e5068d92ee6fc631799dfaac7c2617f903a91dc9",
+        "d6dc2dbe5ee11320b29122983c1d5cf80aa47f47f9346c6430a0457792c30da5"},
     "linked_domain_contracts": {"082994b819661585759f03856a7188552dd1aec9960aed6d63413ce956b4b5bc",
                                 "2f1fde8befb5a2d452aea0a989261f084433a5465e64dced1eb3205a53654609",
         "5d19465bca4616a7f4a6e3581fbadcd30b9707efb9c43e993ddddd96ed8cc464",
@@ -116,7 +119,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "1ef74b0a61e385d549568080a9464b1330314e6957b8819114716b1d2cb4a52a",
         "5fa33af0b039ab07f2cb732abc0a97fad8bac30609f1aa366c42433f3900cb80",
         "c606bd6e69de66270b01248c20cd160602c92fafc5d0682783ae5998c34c825f",
-        "0183c418952e37bbe42453d01ee323819fdaee85b694321e87a6bc36a4e6bc69"},
+        "0183c418952e37bbe42453d01ee323819fdaee85b694321e87a6bc36a4e6bc69",
+        "991b17db193a33d5329c3b2957f6fb182c7f9b557f25d48d97977435a74fb199"},
     "monolith_integration": {"b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
                              "29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
                              "11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
@@ -137,6 +141,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "orchestrator_service": {"84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee",
         "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68",
         "e9a0a4f846d21ff3e0b360c6acd0d6017f453bfe9dc5c5ea937669b2c49c9be9"},
+    "modulith_design": {"252cf4ec3774bac5dc90c8853ec400f96308cd88864ddc7f2d0d6c241e190c54",
+        "da774e69420c666793587dc7f0e433e7a06e56c3f3ca5bf203e672cc98a53739"},
     "service_tests": {"92748bd2b1cb6f490d603714dc95bd9067baead0f79409ac43927cf7a1f81149"},
     "modernise_and_test": {"f344e3a8168e60d7ce6aff5aaaafe61ef51c0687c994261490c708af0cb135cf",
         "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f",
@@ -144,7 +150,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v26"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v28"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
 GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails
@@ -334,6 +340,7 @@ def _upgrade_untouched_builtins(s) -> None:
         if hashlib.sha256(row.instructions.encode()).hexdigest() not in hashes:
             kept.append(row.title)
             continue
+        _keep_updated_at(row)  # the studio's upgrade, not a person's edit: runs don't report the agent as changed
         row.instructions, row.outputs = current["instructions"], current["outputs"]  # the documents they ask for
         row.tools = [*row.tools, *(t for t in current["tools"] if t not in row.tools)]
         row.checks = [*(row.checks or []), *(c for c in current["checks"] if c not in (row.checks or []))]
@@ -358,6 +365,15 @@ def _upgrade_untouched_builtins(s) -> None:
     if guardrails_kept:
         log.info("Guardrails kept as edited (a newer default is available; Reset on the agent's page takes it): %s",
                  ", ".join(guardrails_kept))
+
+
+def _keep_updated_at(row) -> None:
+    """Keep the row's `updated_at` through this change: it is when a person last edited it (runs compare it with when
+    their steps ran), and a release bringing a built-in up to its defaults is not such an edit."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    row.updated_at = row.updated_at
+    flag_modified(row, "updated_at")  # written as it is, so the column's onupdate doesn't stamp the upgrade's time
 
 
 def _remember_untouched_guardrails(s) -> None:

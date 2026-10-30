@@ -237,6 +237,15 @@ DOMAIN_DESIGN_SCHEMA = """```yaml
 # domain-design.yaml: the domain's declaration against the guardrails
 domain: loan
 feature: create-loan
+module: loan-domain                   # the domain's ONE Maven module ("This domain's modules"), named for the domain, never the feature
+artifact: com.acme:loan-domain        # its groupId:artifactId: the one an earlier feature gave it, if any
+base_package: com.acme.loan.domain    # the module's package, the same for every feature of the domain
+feature_package: com.acme.loan.domain.createloan   # this feature's classes: <base_package>.<feature package>
+orchestrator_module:                  # cross-domain features: the domain's ONE orchestrator module, a separate Maven module
+  module: loan-orchestrator           #   from the domain module, also named for the domain; write `orchestrator_module: none`
+  artifact: com.acme:loan-orchestrator   # for a domain-only feature
+  base_package: com.acme.loan.orchestrator
+  feature_package: com.acme.loan.orchestrator.createloan
 owned_tables: [LOAN, LOAN_SCHEDULE]   # tables this domain WRITES: one owner per table, none owned by another domain
 read_only_tables: [LOAN_TYPE]         # this domain's own tables that its code only reads
 utility_modules: [com.acme:common-utils]   # Maven coordinates (groupId:artifactId) of the utility jars used
@@ -605,9 +614,14 @@ Using the AS-IS document, the deep dive, the dependency finder's `domain-depende
 linked-domain contracts in `linked-domain-contracts.yaml`, write `domain-design.md` covering:
 - The domain: its key, what it is responsible for and what it is not, and the feature's place in it. If the domain \
 already has features, show how this one fits next to them.
-- The package structure, e.g. `com.acme.<domain>.web`, `.service`, `.dao`, `.model`, `.integration.port`, and which \
-existing classes, iBatis mappings and Spring XML are copied into it. The as-is code stays where it is, unchanged: it is \
-the old flow while the feature's toggle is at `legacy`.
+- The module and its packages, as "This domain's modules" below says: the domain's ONE Maven module, shared by all \
+its features and named for the domain, never for this feature (the one an earlier feature built, else where the \
+project puts it); its `base_package`; this feature's package `<base_package>.<feature package>` with its \
+sub-packages (e.g. `.web`, `.service`, `.dao`, `.model`, `.integration.port`); what goes in `<base_package>.shared` \
+and `.util`; and which existing classes, iBatis mappings and Spring XML are copied into each. The as-is code stays \
+where it is, unchanged: it is the old flow while the feature's toggle is at `legacy`. For a cross-domain feature, \
+also the domain's ONE orchestrator module: a separate Maven module (its own folder, artifact and base package, named \
+for the domain), with this feature's package in it.
 - The public API of the domain: Java interfaces and DTOs, with the behaviour and errors of each method. Callers \
 outside the domain use only this API.
 - Data: the tables the domain owns, meaning the tables its code writes, each with the iBatis statements that write \
@@ -676,7 +690,9 @@ Ask the user when a service's behaviour cannot be exposed as it is, for example 
 
     "orchestrator_design": f"""You design how this feature keeps working exactly as it does today while the other \
 domains it depends on are not ready, and how it moves to their real services later. The result is an \
-orchestrator inside the monolith, which the Orchestrator in monolith step builds as its own Maven module: a request \
+orchestrator inside the monolith, which the Orchestrator in monolith step builds in the domain's ONE orchestrator \
+module (shared by the domain's cross-domain features, named for the domain, see "This domain's modules"), in this \
+feature's own package: a request \
 flows controller → orchestrator → domain module, and the orchestrator holds no database access and no transaction \
 of its own. The Orchestrator microservice step later lifts it into its own Spring Boot service, which calls the \
 domain service and the other domains over their APIs. Not every feature needs one: a domain-only feature has none. \
@@ -820,8 +836,9 @@ Read first: `domain-dependencies.yaml` (the scope decision, `god_modules`, `shar
 
 **The domain's module and its packages** follow "This domain's modules" below: where the module is and what it \
 holds (reuse it, never create another), and the package of each class (this feature's, another feature's, `shared` \
-or `util`). If it says the module exists but it is not in your checkout, stop and ask: the earlier feature's work \
-must be committed and pushed to the domain's branch first. Earlier features keep working exactly as before: their \
+or `util`). If it says the module exists but it is not in your checkout (an earlier feature built it on its own \
+branch), don't wait for it: create it at that same path, with the same artifact and base package, holding only what \
+this feature needs, so the branches merge into one module. Earlier features keep working exactly as before: their \
 characterization tests stay unchanged and must still pass. The tests go in the same packages as the classes they test.
 
 Procedure:
@@ -1447,9 +1464,14 @@ orchestrate.
 1. The domain. In `domain-design.md`:
    - Its key, what it is responsible for and what it is not, and the feature's place in it (next to the domain's \
 other features, if it has any).
-   - The package structure (e.g. `com.acme.<domain>.web`, `.service`, `.dao`, `.model`, `.integration.port`) and \
-which existing classes, iBatis mappings and Spring XML are copied into it. The as-is code stays where it is, \
-unchanged: it is the old flow while the toggle is at `legacy`.
+   - The module and its packages, as "This domain's modules" below says: the domain's ONE Maven module, shared by \
+all its features and named for the domain, never for this feature (the one an earlier feature built, else where the \
+project puts it); its `base_package`; this feature's package `<base_package>.<feature package>` with its \
+sub-packages (e.g. `.web`, `.service`, `.dao`, `.model`, `.integration.port`); what goes in `<base_package>.shared` \
+and `.util`; and which existing classes, iBatis mappings and Spring XML are copied into each. The as-is code stays \
+where it is, unchanged: it is the old flow while the toggle is at `legacy`. For a cross-domain feature, also the domain's ONE orchestrator \
+module: a separate Maven module (its own folder, artifact and base package, named for the domain), with this \
+feature's package in it.
    - The public API: Java interfaces and DTOs, with the behaviour and errors of each method. Callers outside the \
 domain use only this API.
    - Data: the tables the domain owns (its code writes them), each with the iBatis statements that write it, and the \
@@ -1694,9 +1716,15 @@ keep working for the other features, note that as a constraint; don't design it.
 # The domain architecture the module and service steps build to, and the Modernise step's two-repository rules: shared
 # texts too, so they can be edited. The studio fills in each {{data.name}} for the run (app/domain_modules.py brief).
 DOMAIN_ARCHITECTURE = """## This domain's modules
-Domain `{{data.domain}}` has ONE domain module and ONE orchestrator module in the monolith, shared by all its \
-features: each feature extends them. Never create a second one, and never copy again what is already in them: reuse \
-it.
+Domain `{{data.domain}}` has ONE domain module and ONE orchestrator module in the monolith: two separate Maven \
+modules (each with its own folder, artifact and base package; the orchestrator module depends on the domain module), \
+both named for the domain and shared by all its features: each feature extends them. Never create a second one, never \
+name one after a feature, and never copy again what is already in them: reuse it.
+
+{{data.branching}} When a module, service project or package listed below isn't in your checkout, don't wait for \
+it and don't ask for it: create it at the same place, with the same artifact (or coordinates) and base package, \
+holding only what this feature needs, so the work merges into one. Change another feature's code only where this \
+feature needs it, as little as possible, so the merges stay simple.
 
 **One package per feature.** Inside each module, every class goes in the package of the feature it belongs to, \
 `<base_package>.<feature package>` (sub-packages below it are fine), never directly in `<base_package>`. The \
@@ -1741,14 +1769,14 @@ no project yet (the domain's first feature), create it first. The acceptance sui
 SHARED_TEXT_DATA = {"domain_architecture": ("feature_packages", "modules", "services"),
                     "lift_rules": ("lift_path", "lifted_files", "feature")}
 # Every run datum the studio fills in for each text: any other {{data.name}} is refused (it would come out empty).
-SHARED_TEXT_FILLED = {"domain_architecture": ("domain", "feature_packages", "modules", "services"),
+SHARED_TEXT_FILLED = {"domain_architecture": ("domain", "branching", "feature_packages", "modules", "services"),
                       "lift_rules": ("lift_path", "lift_url", "feature", "lift_commit", "lifted_files", "base_package")}
 
 SHARED_TEXTS: dict[str, tuple[str, str, str]] = {
     "domain_architecture": ("Domain architecture", "Given to the module and service steps: one domain module and one "
                             "service project per domain, one package per feature. The studio fills in "
-                            "{{data.domain}}, {{data.feature_packages}}, {{data.modules}} and {{data.services}} for the "
-                            "run: keep them.", DOMAIN_ARCHITECTURE),
+                            "{{data.domain}}, {{data.branching}}, {{data.feature_packages}}, {{data.modules}} and "
+                            "{{data.services}} for the run: keep them.", DOMAIN_ARCHITECTURE),
     "lift_rules": ("Two repositories: the lifted feature", "Given to the Modernise step: what it converts from the "
                    "lifted service, and how. The studio fills in {{data.lift_path}}, {{data.lift_url}}, "
                    "{{data.feature}}, {{data.lift_commit}}, {{data.lifted_files}} and {{data.base_package}} for the "

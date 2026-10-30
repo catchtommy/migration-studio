@@ -432,6 +432,17 @@ export interface AgentCatalog {
   tools: { name: string; description: string }[];
 }
 
+export interface ModuleRename {
+  feature: string;
+  run_id: string | null;
+  where: string; // Domain module, Orchestrator module, Domain service, Orchestrator service
+  what: string; // folder, artifact, base package
+  old: string;
+  new: string;
+  step: string;
+  step_title: string;
+}
+
 export interface Domain {
   key: string;
   name: string;
@@ -442,6 +453,9 @@ export interface Domain {
   owned_tables: string[] | null;
   owned_packages: string[] | null;
   workflows?: { key: string; name: string; agents: string[]; code_agents: string[]; when_needed?: string[]; hints?: Record<string, string> }[]; // the workflows this domain uses; when_needed: code agents skipped for domain-only features; hints: which repository an agent's is
+  /** Names earlier features gave the domain's modules or services after themselves: renamed to the domain's on that
+   * feature's branch (its step re-run) before it is merged. */
+  module_renames?: ModuleRename[];
   created_at: string;
   updated_at: string;
 }
@@ -787,7 +801,10 @@ export const api = {
   startOver: (id: string, workflow: string) => request<Run>(`/runs/${id}/start-over`, json("POST", { workflow })),
   retry: (id: string, fresh = false, notes?: string) => request<Run>(`/runs/${id}/retry`, json("POST", { fresh, notes })),
   stopRun: (id: string) => request<{ stopping: boolean }>(`/runs/${id}/stop`, { method: "POST" }),
-  updateRunWorkflow: (id: string, rerun = false) => request<Run>(`/runs/${id}/update-workflow`, json("POST", { rerun })),
+  /** upcoming: the steps not reached yet take the workflow's current ones; rerun: re-run from the earliest step a change
+   * affects; keep: keep what the steps produced although their agents changed (the next steps use the current agents). */
+  updateRunWorkflow: (id: string, mode: "upcoming" | "rerun" | "keep" = "upcoming") =>
+    request<Run>(`/runs/${id}/update-workflow`, json("POST", { rerun: mode === "rerun", keep_agents: mode === "keep" })),
   restart: (id: string, stage: string, notes?: string, fresh = false) => request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh })),
   artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
