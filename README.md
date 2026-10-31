@@ -562,28 +562,6 @@ a token for the host (or for SSH URLs), the server's own git setup is used. Toke
 `STUDIO_SECRET_KEY`, or else `backend/data/secret.key` (made on first use, mode 600). Every server sharing the
 database needs the same key, so back it up. If it's lost, users enter their tokens again.
 
-## Publishing AS-IS documentation to the monolith
-
-The AS-IS documentation and Deep dive steps describe the legacy code as it is. Once approved, their documents can be
-committed into the monolith repository, so later agents (for this feature, and for features calling into it) read
-reviewed documentation before the code, which saves tokens and time.
-
-- **Workflow → agent step → "Publish its documents to the monolith's docs/<domain>/<feature> once approved"**: on by
-  default for AS-IS documentation and Deep dive. Design, contract and microservice documents are never published.
-- **Project → Settings → Monolith documentation folder** (default `docs`): documents go to
-  `<folder>/<domain>/<feature>/`.
-- After the gate that reviews those steps (**Approve analysis**) is approved, the run waits as **Ready to publish
-  docs**. The run page lists the documents (new, modified or unchanged against the base branch, with a warning if
-  someone changed one in git since this run published it), with a side-by-side diff of each and an editable commit
-  message. **Publish to <base branch>** (needs *Approve workflow runs* and your git name and email) commits them
-  **directly to the monolith's base branch** as you and pushes, never forced. If the branch moved since you looked,
-  it asks you to compare again. **Skip for now** goes on without publishing.
-- The legacy code stays read-only: the commit is built inside the server's mirror of the repository, so nothing
-  touches the shared read-only copy or any checkout. The shared copy gets the documents at the next **Fetch now**.
-- Agents are told when the monolith has `<folder>/`: read the feature's documentation first; the AS-IS steps update
-  existing documents instead of re-analysing everything.
-- Re-running the AS-IS steps and approving again asks to publish only if the documents changed.
-
 ## How it works
 
 - **Run** = one `(domain, feature)` through one workflow; one LangGraph thread, checkpointed in the studio database

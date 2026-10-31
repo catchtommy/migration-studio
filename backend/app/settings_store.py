@@ -24,7 +24,6 @@ GLOBAL_DEFAULTS: dict[str, Any] = {
 PROJECT_DEFAULTS: dict[str, Any] = {
     "monolith_repo": "",  # git URL or local path; empty = blank workspace
     "monolith_branch": "",  # the branch (or tag) runs start from; empty = the repository's default branch
-    "monolith_docs_dir": "docs",  # where approved AS-IS documents are published in the monolith: <dir>/<domain>/<feature>
     "max_attempts": 3,  # self-verification retries per stage
     # What the project migrates from and to; given to every agent, so AI agents work in the project's language.
     "language": "java",  # see LANGUAGES
@@ -33,6 +32,7 @@ PROJECT_DEFAULTS: dict[str, Any] = {
     # Toolchains run_command puts first on PATH; each agent picks legacy (the monolith's) or target on the Agents page.
     "jdk_legacy_home": "",  # e.g. a JDK 8, .NET Framework SDK or Node 14 install
     "jdk_modern_home": "",  # e.g. a JDK 25, .NET 9 SDK or Node 22 install
+    "monolith_docs_dir": "docs",  # the monolith's own documentation, which agents read before the code
     "oracle_test_url": "",  # read-only connection to the monolith's database, for schema metadata and tests
     # Cross-domain integration conventions given to agents (no secrets)
     "event_bus_namespace": "",  # Azure Service Bus namespace, e.g. mycompany-migration.servicebus.windows.net
@@ -94,7 +94,7 @@ def _check(values: dict[str, Any], allowed: dict[str, Any], kind: str) -> None:
     if "language" in values and values["language"] not in LANGUAGES:
         raise KeyError(f"language must be one of {', '.join(LANGUAGES)}")
     docs = values.get("monolith_docs_dir")
-    if docs is not None and not _relative_folder(docs):
+    if docs is not None and docs != "" and not _relative_folder(docs):
         raise KeyError("The monolith documentation folder must be a relative folder, e.g. docs")
     for key, example in (("domain_module_dir_pattern", "{domain}-domain"),
                          ("orchestrator_module_dir_pattern", "{domain}-orchestrator")):

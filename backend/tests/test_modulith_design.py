@@ -312,7 +312,7 @@ def test_standard_workflow_gains_the_orchestrator_step_keeping_its_settings(clie
     original = client.get("/api/workflows/standard").json()["steps"]
     previous = _steps_of_shape(workflow_store._STANDARD_V4)
     previous = [{**st, "code": {"repository": "", "base_branch": "develop"}} if st["key"] == "modular_monolith"
-                else {**st, "publish_docs": True} if st["key"] == "as_is_doc" else st for st in previous]
+                else st for st in previous]
     with session_scope() as s:
         s.get(WorkflowDef, (SHARED, "standard")).steps = previous
         s.query(Setting).filter(Setting.key == "_standard_workflow_v5").delete()
@@ -323,7 +323,7 @@ def test_standard_workflow_gains_the_orchestrator_step_keeping_its_settings(clie
     by_key = {st["key"]: st for st in steps}
     assert by_key["monolith_orchestrator"]["code"] == by_key["modular_monolith"]["code"] == \
         {"changes_code": True, "base_branch": "develop"}  # it changes the same code as the module step (as saved then)
-    assert by_key["as_is_doc"]["publish_docs"] and "monolith_orchestrator" in by_key["gate_tests"]["reviews"]
+    assert "monolith_orchestrator" in by_key["gate_tests"]["reviews"]
     with session_scope() as s:
         s.get(WorkflowDef, (SHARED, "standard")).steps = original
 

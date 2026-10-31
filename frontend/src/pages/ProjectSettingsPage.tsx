@@ -279,7 +279,7 @@ function General({ project }: { project: string }) {
           <RepositoryNote project={project} />
           <Field
             label="Monolith documentation folder"
-            hint="Approved AS-IS documents are published here, as <folder>/<domain>/<feature>/, on the base branch; later agents read them before the code."
+            hint="The monolith's own documentation (e.g. docs/, or docs/<domain>/<feature>/): agents read it before the code."
           >
             <input
               className={`${input} max-w-xs font-mono`}

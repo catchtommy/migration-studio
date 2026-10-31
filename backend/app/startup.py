@@ -24,6 +24,7 @@ def open_database(url: URL) -> None:
     domain_store.seed()
     workflow_store.seed()
     get_runner().recover_interrupted()
+    get_runner().release_publish_waits()
     try:  # finished runs need nothing on disk (their documents and diffs are in the database)
         removed = workspace.release_completed()
         if removed:

@@ -23,8 +23,8 @@ class StageDef:
     # Agents only: the step changes code, in {"repository": "" (the project's monolith) | git URL ({domain} filled
     # in), "base_branch": ""}. None: it writes documents only (it still reads the monolith).
     code: dict | None = field(default=None, hash=False, compare=False)
-    # Agents only: once approved, the step's documents are published to the monolith's docs/<domain>/<feature>/
-    # (AS-IS documentation, for later agents; see app/docs_publish.py).
+    # Agents only, runs started before it was removed: once approved, the step's documents were published to the
+    # monolith. Kept so their workflow snapshots still load; nothing publishes any more (graph.make_publish_node).
     publish_docs: bool = False
     # Gates only: items the approver ticks before approving (app/gate_checklist.py).
     checklist: tuple[str, ...] = field(default_factory=tuple, hash=False, compare=False)
@@ -75,11 +75,9 @@ class Workflow:
 
 STANDARD = Workflow((
     StageDef("as_is_doc", "AS-IS documentation", "agent",
-             "Trace JSP → Controller → Service → DAO → iBatis SQL and document the current behaviour.",
-             publish_docs=True),
+             "Trace JSP → Controller → Service → DAO → iBatis SQL and document the current behaviour."),
     StageDef("deep_dive", "Deep dive", "agent",
-             "Business rules, edge cases, exception paths, cross-domain calls and a test scenario catalogue.",
-             publish_docs=True),
+             "Business rules, edge cases, exception paths, cross-domain calls and a test scenario catalogue."),
     StageDef("gate_analysis", "Approve analysis", "gate",
              "Review the AS-IS documentation and deep dive.", ("as_is_doc", "deep_dive")),
     # Modulith design: find what this feature depends on, define the contracts with those domains, then design the
@@ -159,8 +157,7 @@ DOMAIN_FEATURES = Workflow((
 LEAN = Workflow((
     StageDef("analysis", "Analysis", "agent",
              "One pass from the entry points down to the SQL: the AS-IS flow, business rules and edge cases, the test "
-             "scenario catalogue, and exactly which other domains the feature depends on (the scope decision).",
-             publish_docs=True),
+             "scenario catalogue, and exactly which other domains the feature depends on (the scope decision)."),
     StageDef("gate_analysis", "Approve analysis", "gate",
              "Review the AS-IS documentation, the test scenarios and the dependencies, including the scope decision "
              "(domain-only or cross-domain).", ("analysis",)),

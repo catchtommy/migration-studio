@@ -21,7 +21,6 @@ class StageDefOut(BaseModel):
     uses: list[str] | None = None
     include_content: bool = False
     code: dict | None = None  # agents only: the step changes code ({"repository", "base_branch"})
-    publish_docs: bool = False
 
 
 DOMAIN_KEY = r"^[a-z][a-z0-9_-]*$"
@@ -111,7 +110,6 @@ class RunDetail(RunOut):
     pending_gate: dict | None = None
     pending_branches: dict | None = None  # awaiting_branches: what to confirm before a step changes code
     pending_commit: dict | None = None  # awaiting_commit right after a step: the step and repository to commit
-    pending_publish: dict | None = None  # awaiting_publish: approved AS-IS documents to publish to the monolith
     base_sha: str | None = None  # the monolith commit the run started from
     monolith_behind: int | None = None  # commits the base branch has gained since (as last fetched), docs folder aside
     # The run's workflow has changed since it started: what updating its upcoming steps would do (run_workflow.plan)
@@ -324,7 +322,6 @@ class WorkflowStep(BaseModel):
     uses: list[str] | None = None  # agents only: earlier agent steps whose output it gets; None = all of them
     include_content: bool = False  # agents only: include those documents' contents in the prompt
     code: StepCode | None = None  # agents only: the step changes code, in this repository
-    publish_docs: bool = False  # agents only: once approved, its documents go to the monolith's docs folder
 
 
 

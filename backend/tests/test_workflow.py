@@ -450,3 +450,52 @@ def test_a_rejection_can_still_redo_the_step_from_where_it_started(client, monke
     run = wait_for(client, run_id, {"awaiting_approval"})
     assert seen["as_is_doc"] == [False, False] and len(seen["deep_dive"]) == 2  # redone, and the steps after it too
     assert not executions(run, "as_is_doc")[1]["rerun"]
+
+
+def test_publishing_as_is_documents_was_removed_and_older_runs_go_straight_on(client):
+    """No workflow publishes AS-IS documents to the monolith any more; a run started before (its workflow snapshot
+    still marks the AS-IS step "publish_docs") passes the old publish point without waiting."""
+    from app import workflow_store
+    from app.db.models import Run, Setting, WorkflowDef
+    from app.db.session import session_scope
+    from app.projects import SHARED
+
+    assert not any(st.get("publish_docs") for st in client.get("/api/workflows/standard").json()["steps"])
+    with session_scope() as s:  # a database from before: the flag saved on the standard workflow
+        row = s.get(WorkflowDef, (SHARED, "standard"))
+        original = row.steps
+        row.steps = [{**st, "publish_docs": True} if st.get("key") == "as_is_doc" else st for st in original]
+        s.query(Setting).filter(Setting.key == "_removed_publish_docs").delete()
+    workflow_store.seed()
+    with session_scope() as s:
+        assert not any("publish_docs" in st for st in s.get(WorkflowDef, (SHARED, "standard")).steps)
+
+    run_id = new_run(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    with session_scope() as s:  # started before: its snapshot publishes the AS-IS documents
+        run = s.get(Run, run_id)
+        run.workflow_stages = [{**d, "publish_docs": True} if d["key"] == "as_is_doc" else d for d in run.stage_defs]
+    decide(client, run_id, decision="approve")
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    assert run["pending_gate"]["gate"] == "gate_design"  # straight on to the next gate
+    assert run["workflow_update"] is None  # the old flag isn't a workflow change
+
+
+def test_agents_are_told_of_the_monoliths_own_documentation(tmp_path):
+    from types import SimpleNamespace
+
+    from app.agents.common import documentation_brief
+
+    legacy = tmp_path / "legacy"
+    ctx = SimpleNamespace(settings={"monolith_docs_dir": "docs"}, legacy_dir=legacy, workspace=tmp_path / "ws",
+                          domain="loan", operation="approve")
+    assert documentation_brief(ctx) == ""  # no docs folder: nothing to say
+    (legacy / "docs").mkdir(parents=True)
+    brief = documentation_brief(ctx)
+    assert "## Existing documentation" in brief and "under `docs/`" in brief and "This" not in brief.split("\n")[-1][:5]
+    (legacy / "docs/loan").mkdir()
+    assert "This domain's is in `docs/loan/`." in documentation_brief(ctx)
+    (legacy / "docs/loan/approve").mkdir()
+    assert "This feature's is in `docs/loan/approve/`." in documentation_brief(ctx)
+    ctx.settings = {"monolith_docs_dir": "documentation"}
+    assert documentation_brief(ctx) == ""  # another folder, which this monolith doesn't have

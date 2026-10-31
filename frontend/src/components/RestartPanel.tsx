@@ -9,7 +9,7 @@ export function nextBranch(branch: string): string {
   return m ? `${m[1]}-v${Number(m[2]) + 1}` : `${branch}-v2`;
 }
 
-const RESTARTABLE = ["completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "awaiting_publish"];
+const RESTARTABLE = ["completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches"];
 
 /** "Re-run from here" (a flex item of the step header; the open panel takes a full row): run a completed step and
  * the steps after it again with the agents' current settings, either updating their documents or starting fresh. */

@@ -175,7 +175,7 @@ export function Dashboard() {
   for (const d of domains) byDomain.set(d.key, []);
   for (const r of migrations) byDomain.set(r.domain, [...(byDomain.get(r.domain) ?? []), r]);
   const domainName = (key: string) => domains.find((d) => d.key === key)?.name ?? key;
-  const waiting = runs.filter((r) => r.status === "awaiting_approval" || r.status === "changes_requested" || r.status === "awaiting_commit" || r.status === "awaiting_branches" || r.status === "awaiting_publish").length;
+  const waiting = runs.filter((r) => r.status === "awaiting_approval" || r.status === "changes_requested" || r.status === "awaiting_commit" || r.status === "awaiting_branches").length;
   const needsInput = runs.filter((r) => r.status === "awaiting_input").length;
   const completed = runs.filter((r) => r.status === "completed").length;
 

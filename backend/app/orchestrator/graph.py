@@ -571,15 +571,11 @@ def publish_node_key(key: str) -> str:
 
 
 def make_publish_node(key: str):
-    """After a gate approved steps that publish their documents (or after such a step no gate reviews): the run waits
-    for a person to publish the AS-IS documents to the monolith's docs folder, or skip (see app/docs_publish.py)."""
+    """Runs started before publishing AS-IS documents to the monolith was removed have a node here (their workflow
+    snapshot marks steps "publish_docs"): it passes straight on, so their saved progress stays valid. New runs have
+    none."""
 
     def node(state: MigrationState) -> dict:
-        from app import docs_publish
-        projects.set_current(_project_of(state["run_id"]))
-        proposal = docs_publish.publish_needed(state["run_id"], key)
-        if proposal:
-            interrupt(proposal)  # the runner shows the run as awaiting_publish; publishing or skipping resumes it
         return {}
 
     return node

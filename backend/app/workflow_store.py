@@ -44,7 +44,7 @@ class WorkflowInvalid(ValueError):
 
 def steps_of(workflow: Workflow) -> list[dict]:
     return [{"kind": "agent", "key": s.key, "uses": None if s.uses is None else list(s.uses),
-             "include_content": s.include_content, "publish_docs": s.publish_docs} if s.kind == "agent" else
+             "include_content": s.include_content} if s.kind == "agent" else
             {"kind": "gate", "key": s.key, "title": s.title, "description": s.description,
              "reviews": list(s.reviews), "checklist": list(s.checklist)} for s in workflow.stages]
 
@@ -124,7 +124,7 @@ def _upgraded(steps: list[dict]) -> list[dict]:
             if source and source.get("code"):
                 st = {**st, "code": source["code"]}
             if st["key"] in stored:
-                st = {**st, **{k: stored[st["key"]][k] for k in ("uses", "include_content", "publish_docs")
+                st = {**st, **{k: stored[st["key"]][k] for k in ("uses", "include_content")
                                if k in stored[st["key"]]}}
         elif gates.get(st["key"], {}).get("checklist"):
             st = {**st, "checklist": gates[st["key"]]["checklist"]}
@@ -157,14 +157,6 @@ def seed() -> None:
                     if _shape(copy.steps) == previous:
                         copy.steps = _upgraded(copy.steps)
                 s.add(Setting(key=marker, value=True))
-        if s.get(Setting, (GLOBAL, "_standard_publishes_as_is_docs")) is None:
-            # The standard workflow's AS-IS steps publish their approved documents to the monolith's docs folder.
-            standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
-            if standard is not None:
-                standard.steps = [{**st, "publish_docs": True}
-                                  if st.get("kind") == "agent" and st.get("key") in ("as_is_doc", "deep_dive")
-                                  and "publish_docs" not in st else st for st in standard.steps]
-            s.add(Setting(key="_standard_publishes_as_is_docs", value=True))
         if s.get(Setting, (GLOBAL, "_added_discovery_workflows")) is None:
             for scope, (key, name, description, workflow) in DISCOVERY.items():
                 if s.get(WorkflowDef, (SHARED, key)) is None:
@@ -180,6 +172,14 @@ def seed() -> None:
                 if flags != row.steps:
                     row.steps = flags
             s.add(Setting(key="_step_code_flags", value=True))
+        if s.get(Setting, (GLOBAL, "_removed_publish_docs")) is None:
+            # Publishing approved AS-IS documents to the monolith's base branch was removed (they are redundant once
+            # the migration is done): no step publishes any more. Runs already started keep their snapshot.
+            for row in s.scalars(select(WorkflowDef)):
+                steps = [{k: v for k, v in st.items() if k != "publish_docs"} for st in row.steps or []]
+                if steps != row.steps:
+                    row.steps = steps
+            s.add(Setting(key="_removed_publish_docs", value=True))
         if s.get(Setting, (GLOBAL, "_added_lean_workflow")) is None:
             if s.get(WorkflowDef, (SHARED, LEAN_KEY)) is None:
                 standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
@@ -231,8 +231,7 @@ def validate(steps: list[dict]) -> list[dict]:
             keys.add(key)
             out.append({"kind": "agent", "key": key, "uses": uses,
                         "include_content": bool(step.get("include_content")),
-                        "code": _code(step.get("code"), i, agents[key][0]),
-                        "publish_docs": bool(step.get("publish_docs"))})
+                        "code": _code(step.get("code"), i, agents[key][0])})
         elif kind == "gate":
             title = (step.get("title") or "").strip()
             if not title:
@@ -323,8 +322,7 @@ def resolve(steps: list[dict]) -> Workflow:
             title, description = agents.get(step["key"], (step["key"], ""))
             uses = step.get("uses")
             stages.append(StageDef(step["key"], title, "agent", description, uses=None if uses is None else tuple(uses),
-                                   include_content=bool(step.get("include_content")), code=step.get("code") or None,
-                                   publish_docs=bool(step.get("publish_docs"))))
+                                   include_content=bool(step.get("include_content")), code=step.get("code") or None))
         else:
             stages.append(StageDef(step["key"], step["title"], "gate", step.get("description", ""),
                                    tuple(step["reviews"]), checklist=tuple(step.get("checklist") or ())))

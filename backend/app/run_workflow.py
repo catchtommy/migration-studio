@@ -20,8 +20,7 @@ A person can update a run in one of two ways:
 from app import agent_store, projects, shared_texts, workflow_store
 
 # Runs that are waiting and will go on: the ones whose upcoming steps an update can still change.
-UPDATABLE = ("failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches",
-             "awaiting_publish")
+UPDATABLE = ("failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches")
 # Runs that can be re-run from a step (a completed one too): the ones a re-run can bring up to date.
 RERUNNABLE = (*UPDATABLE, "completed")
 # Shared texts every agent gets, whatever its instructions include.
@@ -29,9 +28,10 @@ _ALWAYS = ("preamble", "feature_rules")
 
 
 def _plain(stage: dict) -> dict:
-    """A step without its code settings, which every run picks up when it goes on (delivery.refresh_code_settings), and
-    without a gate's checklist, which a run waiting at the gate reads from the workflow (app/gate_checklist.py)."""
-    return {k: v for k, v in stage.items() if k not in ("code", "checklist")}
+    """A step without its code settings, which every run picks up when it goes on (delivery.refresh_code_settings),
+    without a gate's checklist, which a run waiting at the gate reads from the workflow (app/gate_checklist.py), and
+    without "publish_docs" (removed: a run that has it publishes nothing)."""
+    return {k: v for k, v in stage.items() if k not in ("code", "checklist", "publish_docs")}
 
 
 def _reached(run, keys: list[str]) -> int:

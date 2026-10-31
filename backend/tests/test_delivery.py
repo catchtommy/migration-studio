@@ -37,11 +37,8 @@ def finish_workflow(client, run_id, confirm=None) -> dict:
     """Approve every gate, confirm the proposed branches (or what `confirm(pending)` returns) and go on without
     committing right after code steps, until the workflow is done."""
     while True:
-        run = wait_for(client, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit", "awaiting_publish",
-                                        "completed", "failed"}, timeout=60)
-        if run["status"] == "awaiting_publish":
-            assert client.post(f"/api/runs/{run_id}/docs/skip").status_code == 204  # (tests/test_docs_publish.py)
-            continue
+        run = wait_for(client, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit", "completed",
+                                        "failed"}, timeout=60)
         if run["status"] == "awaiting_commit" and run["current_stage"]:
             assert client.post(f"/api/runs/{run_id}/finish").status_code == 204  # go on; offered again at the end
             continue
@@ -344,8 +341,6 @@ def test_an_older_run_approved_at_a_gate_asks_for_branches_before_a_later_code_s
              else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
     assert proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
-    wait_for(proj, run["id"], {"awaiting_publish"}, timeout=60)  # the approved AS-IS documents come first
-    assert proj.post(f"/api/runs/{run['id']}/docs/skip").status_code == 204
     paused = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=60)
     assert paused["current_stage"] == later
 
@@ -483,7 +478,7 @@ def test_a_run_started_before_any_step_changed_code_reviews_its_commits_once_one
     service = tmp_path / "loan-service"
     make_monolith(service)
     run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
-    run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)
+    run = wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
     with session_scope() as s:
         from app.db.models import Run
         r = s.get(Run, run["id"])
@@ -495,11 +490,9 @@ def test_a_run_started_before_any_step_changed_code_reviews_its_commits_once_one
 
     reviewed = []
     while True:
-        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches", "awaiting_commit", "awaiting_publish",
+        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches", "awaiting_commit",
                                          "completed"}, timeout=60)
-        if run["status"] == "awaiting_publish":
-            assert proj.post(f"/api/runs/{run['id']}/docs/skip").status_code == 204
-        elif run["status"] == "awaiting_branches":
+        if run["status"] == "awaiting_branches":
             proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
         elif run["status"] == "awaiting_commit" and run["current_stage"]:
             reviewed.append(run["pending_commit"]["stage"])
@@ -537,11 +530,9 @@ def test_a_later_step_cuts_the_feature_branch_in_its_own_repository_after_an_ear
     assert git(upstream, "rev-parse", "--verify", run["branch"])  # pushed to the monolith
 
     while True:  # on to the later step, which asks for its own repository's branches
-        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches", "awaiting_publish"}, timeout=60)
+        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches"}, timeout=60)
         if run["status"] == "awaiting_branches":
             break
-        if run["status"] == "awaiting_publish":
-            assert proj.post(f"/api/runs/{run['id']}/docs/skip").status_code == 204
         else:
             assert proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
     assert run["pending_branches"]["repository"]["url"] == str(service)
@@ -693,7 +684,7 @@ def test_once_the_branch_is_pushed_the_review_compares_with_the_branch_in_git(cl
         "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
     assert r.status_code == 200, r.text
 
-    wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)  # the run went on and paused
+    wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)  # the run went on and paused
     assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": first}).status_code == 200
     wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)  # every code step asks
     proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
@@ -726,11 +717,9 @@ def test_a_step_changing_another_repository_reads_the_latest_of_the_monolith_bra
     _push_as_someone_else(upstream, tmp_path, run["branch"], {"module/Fix.java": "fixed outside the studio\n"})
 
     while True:
-        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches", "awaiting_publish"}, timeout=60)
+        run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_branches"}, timeout=60)
         if run["status"] == "awaiting_branches":
             break
-        if run["status"] == "awaiting_publish":
-            assert proj.post(f"/api/runs/{run['id']}/docs/skip").status_code == 204
         else:
             assert proj.post(f"/api/runs/{run['id']}/decision", json={"decision": "approve"}).status_code == 200
     ws = Path(run["workspace"])
@@ -758,7 +747,7 @@ def _pushed_first_step(client, tmp_path):
         "repo": "monolith", "message": "First step", "branch": run["branch"], "files": [path],
         "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
     assert r.status_code == 200, r.text
-    run = wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)
+    run = wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
     return upstream, proj, run, first, path
 
 
@@ -799,7 +788,7 @@ def test_a_rerun_step_starts_from_the_latest_of_the_branch_in_git(client, tmp_pa
     assert "attempt 2" in git(upstream, "show", f"{run['branch']}:{path}")
 
     # Bringing it up to date again with nothing new in git changes nothing.
-    wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)
+    wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
     from app import delivery
     delivery.update_from_git(run["id"], "monolith", None, lambda _m: None)  # brings in the step's own push
     head = git(Path(run["workspace"]), "rev-parse", "HEAD")
@@ -999,7 +988,7 @@ def test_the_features_of_a_domain_run_on_their_own_branches_and_never_share_one(
         "repo": "monolith", "message": "approve's module", "branch": first["branch"], "files": [path],
         "latest_sha": changes["latest_sha"], "head_sha": changes["head_sha"]})
     assert r.status_code == 200, r.text
-    wait_for(proj, first["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)  # unfinished
+    wait_for(proj, first["id"], {"awaiting_approval"}, timeout=30)  # unfinished
 
     second = proj.post("/api/runs", json={"domain": "loan", "operation": "reject"})
     assert second.status_code == 201, second.text
@@ -1147,7 +1136,7 @@ def test_a_rerun_waiting_to_confirm_its_branches_no_longer_says_its_agent_change
     proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
     wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
     assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204  # go on without committing
-    wait_for(proj, run["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)
+    wait_for(proj, run["id"], {"awaiting_approval"}, timeout=30)
 
     agent = proj.get(f"/api/agents/{first}").json()
     assert proj.put(f"/api/agents/{first}", json={**agent, "guardrails": "Name every table."}).status_code == 200
@@ -1516,10 +1505,7 @@ def test_a_step_the_scope_decision_skips_asks_for_no_branches(client, tmp_path):
 
     run_id = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()["id"]
     while True:  # a reviewer edits the scope decision to domain-only before the design is approved
-        run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_publish"}, timeout=30)
-        if run["status"] == "awaiting_publish":
-            assert proj.post(f"/api/runs/{run_id}/docs/skip").status_code == 204
-            continue
+        run = wait_for(proj, run_id, {"awaiting_approval"}, timeout=30)
         deps = next((a for a in proj.get(f"/api/runs/{run_id}/artifacts").json()
                      if a["name"] == "domain-dependencies.yaml"), None)
         if deps:

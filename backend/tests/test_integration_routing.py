@@ -146,13 +146,10 @@ def test_a_stub_run_routes_a_feature_with_an_orchestrator_to_the_orchestrator_se
     r = start_run(client, {"domain": "customer", "operation": "routing-stub"})
     run_id = r.json()["id"]
     for _ in range(8):
-        run = wait_for(client, run_id, {"awaiting_approval", "awaiting_publish", "completed"}, timeout=30)
+        run = wait_for(client, run_id, {"awaiting_approval", "completed"}, timeout=30)
         if run["status"] == "completed":
             break
-        if run["status"] == "awaiting_publish":
-            assert client.post(f"/api/runs/{run_id}/docs/skip").status_code == 204
-        else:
-            client.post(f"/api/runs/{run_id}/decision", json={"reviewer": "t", "decision": "approve"})
+        client.post(f"/api/runs/{run_id}/decision", json={"reviewer": "t", "decision": "approve"})
     docs = {a["name"]: a for a in client.get(f"/api/runs/{run_id}/artifacts").json()}
     text = client.get(f"/api/artifacts/{docs[cs.INTEGRATION_ROUTING_FILE]['id']}").json()["content"]
     declared = cs.parse_integration_routing(text)

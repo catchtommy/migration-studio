@@ -71,7 +71,7 @@ const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boo
 /** Whether a feature matches the search: by name, key, description, entry point or table. */
 const matches = (f: Feature, query: string) =>
   [f.name, f.key, f.description, ...f.entry_points, ...f.tables].some((s) => s.toLowerCase().includes(query));
-const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "awaiting_publish", "failed"];
+const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "failed"];
 
 export function FeatureForm({ domain, feature, onDone }: { domain: Domain; feature?: Feature; onDone: () => void }) {
   const queryClient = useQueryClient();

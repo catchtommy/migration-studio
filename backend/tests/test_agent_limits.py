@@ -220,7 +220,7 @@ def test_a_step_that_moves_its_branch_fails_and_changes_elsewhere_are_undone(cli
     mode["bad"] = None
     assert proj.post(f"/api/runs/{run_id}/retry").status_code == 200
     while True:
-        run = wait_for(proj, run_id, {"awaiting_branches", "awaiting_commit", "awaiting_approval", "awaiting_publish"},
+        run = wait_for(proj, run_id, {"awaiting_branches", "awaiting_commit", "awaiting_approval"},
                        timeout=30)
         if run["current_stage"] == agents[1] and run["status"] == "awaiting_commit":
             break
@@ -228,8 +228,6 @@ def test_a_step_that_moves_its_branch_fails_and_changes_elsewhere_are_undone(cli
             proj.post(f"/api/runs/{run_id}/branches", json={"feature_branch": run["branch"]})
         elif run["status"] == "awaiting_commit":
             assert proj.post(f"/api/runs/{run_id}/finish").status_code == 204
-        elif run["status"] == "awaiting_publish":
-            assert proj.post(f"/api/runs/{run_id}/docs/skip").status_code == 204
         else:
             assert proj.post(f"/api/runs/{run_id}/decision", json={"decision": "approve"}).status_code == 200
     assert not (ws / "SNEAKY.md").exists()
@@ -270,7 +268,7 @@ def test_rerunning_an_approved_step_with_an_updated_agent_updates_its_documents(
     run_id = r.json()["id"]
     wait_for(client, run_id, {"awaiting_approval"})  # AS-IS and deep dive done, the analysis gate waits
     decide(client, run_id, decision="approve")
-    wait_for(client, run_id, {"awaiting_approval", "awaiting_publish"})
+    wait_for(client, run_id, {"awaiting_approval"})
 
     version["text"] = "second version, from the updated agent"
     assert client.post(f"/api/runs/{run_id}/restart", json={"stage": "as_is_doc"}).status_code == 200
@@ -284,10 +282,7 @@ def test_rerunning_an_approved_step_with_an_updated_agent_updates_its_documents(
     assert not any(p.endswith("as-is.md") for p in seen["locked"])  # nothing locked yet: its gate comes after both
 
     decide(client, run_id, decision="approve")  # approved again; the steps after the gate run
-    run = wait_for(client, run_id, {"awaiting_approval", "awaiting_publish"})
-    if run["status"] == "awaiting_publish":
-        assert client.post(f"/api/runs/{run_id}/docs/skip").status_code == 204
-        wait_for(client, run_id, {"awaiting_approval"})
+    wait_for(client, run_id, {"awaiting_approval"})
     assert any(p.endswith("as-is.md") for p in seen["after_gate"])  # read-only after its gate
     docs = [a for a in client.get(f"/api/runs/{run_id}/artifacts").json() if a["name"] == "as-is.md"]
     assert {a["stage"] for a in docs} == {"as_is_doc"}  # the later step's rewrite was not kept

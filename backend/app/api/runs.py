@@ -19,7 +19,7 @@ from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution, utcnow
 from app.db.session import emit, get_db, session_scope
-from app import (auth, contracts_store, delivery, discovery_store, docs_publish, document_export, domain_modules,
+from app import (auth, contracts_store, delivery, discovery_store, document_export, domain_modules,
                  gate_checklist, projects, repos, run_cleanup, run_workflow, settings_store, workflow_store, workspace)
 from app.auth import CurrentUser, ProjectAccess, project_context, require, require_admin
 from app.domain_store import normalize_inputs
@@ -187,8 +187,6 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
         detail.pending_branches = branches or get_runner().pending_gate(run_id)
     if run.status == "awaiting_commit" and run.current_stage:
         detail.pending_commit = get_runner().pending_gate(run_id)
-    if run.status == "awaiting_publish":
-        detail.pending_publish = get_runner().pending_gate(run_id)
     update = None if get_runner().is_active(run_id) else run_workflow.plan(run)
     detail.workflow_update = update and {k: v for k, v in update.items() if k not in ("stages", "rerun_stages")}
     detail.stopping = common.stop_requested(run_id)
@@ -394,8 +392,7 @@ def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db
     return get_run(run_id, db)
 
 
-RESTARTABLE = ("completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches",
-               "awaiting_publish")
+RESTARTABLE = ("completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches")
 
 
 @router.post("/runs/{run_id}/restart", response_model=RunOut)
@@ -717,7 +714,7 @@ def commit_changes(run_id: str, body: CommitIn, db: Session = Depends(get_db),
 
 
 def _go_on(run_id: str) -> None:
-    """Resume a run that waits right after a step (to commit its code, or publish its documents). Like every way a
+    """Resume a run that waits right after a step (to commit its code). Like every way a
     run goes on, it first picks up the workflow's current code settings for the steps still to run."""
     delivery.refresh_code_settings(run_id)
     with session_scope() as s:
@@ -782,51 +779,3 @@ def confirm_branches(run_id: str, body: BranchesIn, db: Session = Depends(get_db
     with session_scope() as s:
         out = RunOut.model_validate(s.get(Run, run_id))
     return out
-
-
-# --- publishing approved AS-IS documents to the monolith (app/docs_publish.py) --------------------------------------
-
-class PublishIn(BaseModel):
-    message: str = Field(min_length=1, max_length=10_000)
-    paths: list[str] = Field(min_length=1)
-    latest_sha: str = Field(pattern=r"^[0-9a-f]{40}$")  # the base branch commit the preview showed
-
-
-def _publishing(db: Session, run_id: str) -> Run:
-    run = _run_or_404(db, run_id)
-    if run.status != "awaiting_publish":
-        raise HTTPException(409, "The run isn't waiting for its AS-IS documents to be published")
-    return run
-
-
-@router.get("/runs/{run_id}/docs")
-def docs_preview(run_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(auth.current_user)):
-    """The approved AS-IS documents and how they compare with the monolith's base branch (fetched now, as the user)."""
-    _publishing(db, run_id)
-    db.close()
-    try:
-        return docs_publish.preview(run_id, user.id)
-    except (docs_publish.PublishError, git_ops.GitError) as e:
-        raise HTTPException(409, str(e))
-
-
-@router.post("/runs/{run_id}/docs/publish")
-def docs_publish_now(run_id: str, body: PublishIn, db: Session = Depends(get_db),
-                     user: CurrentUser = Depends(require("runs.approve"))):
-    """Commit the documents to the monolith's base branch as the user, push it, and let the workflow go on."""
-    _publishing(db, run_id)
-    db.close()
-    try:
-        record = docs_publish.publish(run_id, user.id, body.message, body.paths, body.latest_sha)
-    except (docs_publish.PublishError, git_ops.GitError) as e:
-        raise HTTPException(409, str(e))
-    _go_on(run_id)
-    return record
-
-
-@router.post("/runs/{run_id}/docs/skip", status_code=204)
-def docs_skip(run_id: str, db: Session = Depends(get_db), user: CurrentUser = Depends(require("runs.approve"))):
-    _publishing(db, run_id)
-    db.close()
-    docs_publish.skipped(run_id, user.id)
-    _go_on(run_id)

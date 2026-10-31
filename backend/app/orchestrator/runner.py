@@ -245,8 +245,6 @@ class Runner:
                 run.status, run.current_stage = "awaiting_branches", gate["stage"]
             elif gate and gate.get("kind") == "commit":  # a step's code changes wait to be reviewed and committed
                 run.status, run.current_stage = "awaiting_commit", gate["stage"]
-            elif gate and gate.get("kind") == "docs":  # approved AS-IS documents wait to be published (or not)
-                run.status, run.current_stage = "awaiting_publish", gate["stage"]
             elif gate:
                 run.status, run.current_stage = "awaiting_approval", gate["gate"]
             elif review:  # the workflow is done; a person reviews the code changes and commits them
@@ -258,9 +256,6 @@ class Runner:
         elif gate and gate.get("kind") == "branches":
             emit(run_id, "status", f"Confirm the branches for {gate['repository']['name']} before "
                                    f"{gate['stage_title']} changes code", gate["stage"])
-        elif gate and gate.get("kind") == "docs":
-            emit(run_id, "status", f"Publish the approved AS-IS documents ({len(gate['files'])}) to the monolith's "
-                                   "documentation, or skip", gate["stage"])
         elif gate and gate.get("kind") == "commit":
             emit(run_id, "status", f"Review the code {gate['stage_title']} changed in {gate['repository']['name']} "
                                    "and commit it", gate["stage"])
@@ -276,6 +271,18 @@ class Runner:
     def shutdown(self) -> None:
         questions.shutting_down.set()  # agents waiting for an answer give up so their threads can finish
         self._pool.shutdown(wait=True, cancel_futures=True)
+
+    def release_publish_waits(self) -> None:
+        """Runs left waiting to publish their AS-IS documents to the monolith (a feature since removed) go on: their
+        publish step now passes straight through."""
+        with session_scope() as s:
+            waiting = [r.id for r in s.query(Run).filter(Run.status == "awaiting_publish")]
+        for run_id in waiting:
+            emit(run_id, "status", "Publishing AS-IS documents to the monolith was removed: the run goes on")
+            try:
+                self.resume(run_id, {"skip": True})
+            except RunBusyError:
+                pass
 
     def recover_interrupted(self) -> None:
         """Runs left running (or waiting for an answer) by a previous process are failed; the user can retry them

@@ -93,13 +93,11 @@ def _fail_once(monkeypatch, stage):
 
 def drive(proj, run_id, stop):
     while True:
-        run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit", "awaiting_publish",
-                                      "completed", "failed"}, timeout=60)
+        run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit", "completed",
+                                      "failed"}, timeout=60)
         if run["status"] in stop:
             return run
-        if run["status"] == "awaiting_publish":
-            proj.post(f"/api/runs/{run_id}/docs/skip")
-        elif run["status"] == "awaiting_commit":
+        if run["status"] == "awaiting_commit":
             assert proj.post(f"/api/runs/{run_id}/finish").status_code == 204
         elif run["status"] == "awaiting_branches":
             proj.post(f"/api/runs/{run_id}/branches", json={"feature_branch": run["pending_branches"]["feature_branch"]})
