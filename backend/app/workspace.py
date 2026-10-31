@@ -375,7 +375,8 @@ def ensure(run_id: str) -> Path:
     with session_scope() as s:
         run = s.get(Run, run_id)
         ws, nested = Path(run.workspace), [r for r in run.repositories or [] if r.get("base_sha")]
-    if not (ws / ".git").exists() or any(not (ws / r["path"] / ".git").exists() for r in nested):
+    # A checkout without a commit (an interrupted clone, or `git init` run in it) is as good as missing
+    if not git_ops.has_commits(ws) or any(not git_ops.has_commits(ws / r["path"]) for r in nested):
         rebuild(run_id)
     return ws
 

@@ -1432,3 +1432,67 @@ def test_a_migration_needs_the_base_package_prefix(client, tmp_path):
     assert r.status_code == 422 and "Set the base package prefix" in r.json()["detail"]
     assert client.put(f"/api/projects/{key}/settings", json={"base_package_prefix": "com.acme"}).status_code == 200
     assert proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).status_code == 201
+
+
+def test_an_empty_repository_is_refused_with_a_clear_message_instead_of_a_git_error(client, tmp_path):
+    """A domain's repository created empty on the git host (no commit yet): confirming the step's branches says so,
+    instead of failing later with git's "ambiguous argument 'HEAD'"; starting a run says so once it's been fetched."""
+    from app.tools import git_ops
+
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    empty = tmp_path / "loan-service.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(empty)], check=True)
+    wf = proj.get("/api/workflows/standard").json()
+    first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
+    steps = [{**st, "code": {"repository": domain_repo(proj, empty, first)}} if st.get("key") == first else st
+             for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    r = proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    assert r.status_code == 422 and "has no commit yet (an empty repository)" in r.json()["detail"]
+    assert proj.get(f"/api/runs/{run['id']}").json()["status"] == "awaiting_branches"  # nothing checked out
+
+    proj.post("/api/domains/loan/features", json={"key": "reject", "name": "reject"})
+    r = proj.post("/api/runs", json={"domain": "loan", "operation": "reject"})  # its copy is on the server now
+    assert r.status_code == 422 and "has no commit yet" in r.json()["detail"]
+
+    mirror = tmp_path / "mirror.git"  # the checkout itself: no half-made repository left behind
+    git_ops.clone_mirror(str(empty), mirror)
+    try:
+        git_ops.init_workspace(tmp_path / "ws", str(mirror), "migration/loan/approve")
+        raise AssertionError("an empty repository was checked out")
+    except git_ops.GitError as e:
+        assert "has no commit yet" in str(e) and not (tmp_path / "ws").exists()
+
+
+def test_a_checkout_left_without_commits_is_rebuilt_and_a_step_that_empties_one_is_stopped(client, tmp_path):
+    import shutil
+
+    from app import workspace
+    from app.orchestrator.graph import _repo_left
+    from app.tools import git_ops
+
+    upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
+    ws = Path(run["workspace"])
+    start = git_ops.head(ws)
+    shutil.rmtree(ws / ".git")  # an interrupted clone, or `git init` run in it
+    git(ws, "init", "-q")
+    assert not git_ops.has_commits(ws)
+    assert _repo_left(ws, ws, run["branch"], start) == \
+        "the workspace root has no commit any more: its git history was removed or re-initialised (`git init`)"
+    workspace.ensure(run["id"])  # what every step and review does first
+    assert git_ops.has_commits(ws) and git_ops.head(ws)
+
+
+def test_confirming_a_branch_another_run_of_the_same_domain_works_on_is_refused(client, tmp_path):
+    upstream, key, proj = setup_project(client, tmp_path)
+    proj.post("/api/domains/loan/features", json={"key": "reject", "name": "reject"})
+    first = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    first = wait_for(proj, first["id"], {"awaiting_branches"}, timeout=30)
+    assert proj.post(f"/api/runs/{first['id']}/branches", json={"feature_branch": first["branch"]}).status_code == 200
+    second = proj.post("/api/runs", json={"domain": "loan", "operation": "reject"}).json()
+    second = wait_for(proj, second["id"], {"awaiting_branches"}, timeout=30)
+    r = proj.post(f"/api/runs/{second['id']}/branches", json={"feature_branch": first["branch"]})
+    assert r.status_code == 422 and "Another unfinished run works on branch" in r.json()["detail"]

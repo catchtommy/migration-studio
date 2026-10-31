@@ -245,6 +245,7 @@ def plan(project: str, workflow: dict, domain: str, feature: str, base_branches:
             info["feature_branch_exists"] = repos.has_branch(project, r["url"], out["feature_branch"])
             base = info["base_branch"] or info["default_branch"]
             info["base_branch_exists"] = bool(base) and git_ops.commit_info(mirror, base) is not None
+            info["empty"] = git_ops.is_empty(mirror)
         out["repositories"].append(info)
     return out
 
@@ -268,6 +269,8 @@ def check_branches(project: str, info: dict) -> None:
             raise ValueError(f"{r['base_branch']!r} isn't a valid base branch for {where}")
         if feature == (r["base_branch"] or r["default_branch"]):
             raise ValueError(f"The feature branch must differ from {where}'s base branch")
+        if r.get("empty"):
+            raise ValueError(f"{where} {git_ops.EMPTY}")
         if r["base_branch_exists"] is False:
             raise ValueError(f"{where} has no branch or tag {r['base_branch'] or r['default_branch']}")
         if r["url"] in busy:
@@ -458,7 +461,7 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
         if key == ROOT and workspace.monolith_pending(run):  # its own checkout is cut once confirmed
             target = {"url": run.legacy["url"], "base_branch": run.base_branch or run.legacy.get("branch") or None}
         others = s.scalars(select(Run).where(Run.project == project, Run.branch == feature, Run.status != "completed",
-                                             Run.id != run_id, Run.domain != run.domain)).all()
+                                             Run.id != run_id)).all()  # each run has its own branch
         busy = {u for o in others for u in [_monolith_url(o), *(r["url"] for r in o.repositories or [])] if u}
     if target is not None and not target.get("base_sha"):
         urls.append(target["url"])
@@ -470,6 +473,8 @@ def check_confirmation(run_id: str, key: str, feature: str, base: str | None, us
             mirror = repos.fetch(project, target["url"], user_id)
         except git_ops.GitError as e:
             raise ValueError(f"Could not fetch {target['url']}: {git_auth.scrub(str(e))}")
+        if git_ops.is_empty(Path(mirror)):
+            raise ValueError(f"{target['url']} {git_ops.EMPTY}")
         base_branch = base or target.get("base_branch") or repos.default_branch(mirror)
         if git_ops.commit_info(mirror, f"refs/heads/{base_branch}") is None and git_ops.commit_info(mirror, base_branch) is None:
             raise ValueError(f"{target['url']} has no branch or tag {base_branch}")

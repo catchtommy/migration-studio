@@ -150,6 +150,9 @@ def init_workspace(path: Path, source_repo: str | None, branch: str, base_sha: s
         if proc.returncode != 0:
             on = f" (branch {source_branch})" if start else ""
             raise GitError(f"git clone {source_repo}{on} failed: {proc.stderr.strip()}")
+        if not has_commits(path):  # cloned an empty repository: nothing to cut a branch from
+            remove_tree(path)
+            raise GitError(f"The repository {EMPTY}")
     else:
         path.mkdir(exist_ok=True)
         git(path, "init", "--quiet")
@@ -199,6 +202,22 @@ def count_commits(repo: Path, since: str, until: str, exclude: str | None = None
     paths = ["--", ".", f":(exclude){exclude}"] if exclude else []
     proc = subprocess.run(["git", "rev-list", "--count", f"{since}..{until}", *paths], cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
     return int(proc.stdout.strip()) if proc.returncode == 0 else None
+
+
+EMPTY = ("has no commit yet (an empty repository): push a first commit to its base branch (a README is enough), then "
+         "try again")
+
+
+def is_empty(repo: Path) -> bool:
+    """Whether a repository (a checkout or a mirror) has no commit at all: a new, empty repository."""
+    proc = subprocess.run(["git", "rev-list", "-n", "1", "--all"], cwd=repo, capture_output=True, text=True)
+    return proc.returncode == 0 and not proc.stdout.strip()
+
+
+def has_commits(repo: Path) -> bool:
+    """Whether a checkout is usable: a git repository whose HEAD is a commit (not one left without any, by an
+    interrupted clone or a `git init`)."""
+    return has_commit(repo, "HEAD")
 
 
 def has_commit(repo: Path, sha: str | None) -> bool:

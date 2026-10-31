@@ -136,6 +136,8 @@ def _repo_left(ws: Path, path: Path, branch: str, start: str) -> str | None:
                           text=True).stdout.strip()
     root = ws.resolve()
     where = path.resolve().relative_to(root).as_posix() if path.resolve() != root else "the workspace root"
+    if not git_ops.has_commits(path):
+        return f"{where} has no commit any more: its git history was removed or re-initialised (`git init`)"
     if name != branch:
         return f"{where} is on {name or 'a detached HEAD'}, not the run's branch {branch}"
     if subprocess.run(["git", "merge-base", "--is-ancestor", start, "HEAD"], cwd=path).returncode != 0:
@@ -202,6 +204,9 @@ def _keep_stopped_work(ws: Path, run_id: str, stage: StageDef, attempt: int, cod
     own = (ws / code_dir).resolve() if stage.code else None  # a documents-only step never keeps code changes
 
     def keep(path: Path, start: str) -> str:
+        if not git_ops.has_commits(path):  # emptied by the step (`git init`): rebuilt from the database when next needed
+            git_ops.remove_tree(path)
+            return start
         if own == path.resolve() and _repo_left(ws, path, branch, start) is None:
             return git_ops.commit_all(path, message)
         _back_to(path, branch, start)  # not its repository, or left where a step may not leave it: undone
