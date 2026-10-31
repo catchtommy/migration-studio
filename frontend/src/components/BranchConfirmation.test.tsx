@@ -35,3 +35,14 @@ test("says nothing when the branch is new", () => {
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.getByRole("button", { name: "Confirm and start Orchestrator microservice" })).toBeEnabled();
 });
+
+test("a branch left in git by earlier work can be swapped for a fresh one in one click", () => {
+  show(pending({ in_run: false, message: "Branch migration/customer/view-customer already exists in orchestrator-test. It continues on it." }));
+  fireEvent.click(screen.getByRole("button", { name: "Start fresh on migration/customer/view-customer-v2 instead" }));
+  expect(screen.getByLabelText("Feature branch")).toHaveValue("migration/customer/view-customer-v2");
+});
+
+test("no fresh branch offered for the run's own branch", () => {
+  show(pending({ in_run: true, message: "Branch migration/customer/view-customer already exists: this run is working on it." }));
+  expect(screen.queryByRole("button", { name: /Start fresh on/ })).toBeNull();
+});

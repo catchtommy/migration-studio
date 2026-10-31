@@ -101,6 +101,11 @@ def _create_run(db: Session, domain: str, operation: str, scope: str, workflow_k
     db.flush()
     run.workspace = str(settings.workspaces_dir / run.id)
     db.commit()
+    if scope == "operation" and git.get("earlier_branch"):
+        emit(run.id, "status", f"Branch {git['earlier_branch']} already exists (from an earlier run of this feature): "
+                               f"this run starts fresh on {branch}, cut from the base branch. To continue on the "
+                               f"earlier work instead, rename the branch to {git['earlier_branch']} when confirming "
+                               "the branches")
     return run, workflow["name"]
 
 

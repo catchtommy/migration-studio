@@ -53,6 +53,12 @@ def dependency_map():
 def create_domain(body: DomainCreate, db: Session = Depends(get_db)):
     if db.get(Domain, (projects.current(), body.key)):
         raise HTTPException(409, f"Domain {body.key} already exists")
+    from app.domain_modules import domain_segment
+    other = next((d for d in db.scalars(select(Domain.key).where(Domain.project == projects.current()))
+                  if domain_segment(d) == domain_segment(body.key)), None)
+    if other is not None:  # a domain's package is <prefix>.<its key without dashes>
+        raise HTTPException(409, f"The domains {body.key} and {other} would share the package "
+                                 f"{domain_segment(body.key)}: give it a key that differs in more than dashes")
     domain = Domain(project=projects.current(), key=body.key, name=body.name, description=body.description, context="", agent_inputs={})
     db.add(domain)
     db.commit()

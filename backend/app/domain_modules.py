@@ -300,6 +300,9 @@ def layout_problems(root: Path, base: str, prefix: str, base_package: str, featu
     own = feature_segment(feature)
     prefix = posix(prefix)
     under = (lambda path: path.startswith(prefix + "/")) if prefix else (lambda path: True)  # noqa: E731
+    # A feature package already on the branch where the step started stays valid, its feature listed or not (the
+    # domain's feature list may have been listed again since this run created it)
+    segments = {**{seg: seg for seg in _packages_at(root, base, prefix, base_package)}, **segments}
     out = []
     for c in changes(root, base):
         if c.status == "D" or not c.path.endswith(".java") or not under(c.path):
@@ -337,11 +340,32 @@ def layout_problems(root: Path, base: str, prefix: str, base_package: str, featu
                 seg = imp[len(base_package) + 1:].split(".")[0]
                 if seg != own and seg not in COMMON and seg in segments:
                     used.add(segments[seg])
-    missing = sorted(used - {str(u) for u in declared_uses})
+    declared = {feature_segment(str(u)) for u in declared_uses}
+    missing = sorted(u for u in used if feature_segment(u) not in declared)
     if missing:
         out.append(f"This feature's package uses {', '.join(missing)}: list {'it' if len(missing) == 1 else 'them'} "
                    "in uses_features, so the features' interactions are known")
     return out
+
+
+def _packages_at(root: Path, rev: str, prefix: str, base_package: str) -> set[str]:
+    """The feature packages (the part after `base_package`) that Java files of `root` at `rev` sit in, under
+    `prefix`: what is already on the branch."""
+    try:
+        listed = git_ops.git(root, "ls-tree", "-r", "--name-only", rev, "--", *([prefix] if prefix else []))
+    except git_ops.GitError:
+        return set()
+    out = set()
+    start = base_package.split(".")
+    for path in listed.splitlines():
+        if not path.endswith(".java"):
+            continue
+        parts = path.split("/")[:-1]
+        java = max((i for i, p in enumerate(parts) if p == "java"), default=None)
+        package = parts[java + 1:] if java is not None else []
+        if package[:len(start)] == start and len(package) > len(start):
+            out.add(package[len(start)])
+    return out - set(COMMON)
 
 
 def _segments(project: str, domain: str, feature: str) -> dict[str, str]:

@@ -217,6 +217,22 @@ def _missing_prefix(project: str, stages: list[dict]) -> str | None:
     return "Set the base package prefix (Project → Settings, e.g. com.acme): the domain's packages are named from it"
 
 
+def _fresh_branch(project: str, urls: list[str], name: str) -> str:
+    """The feature branch a new run works on: `name`, or, when git already has it (an earlier run of the feature,
+    deleted or reset since, left it there) or a run uses it, the next free version (-v2, -v3, ...), so the new run
+    starts from the base branch rather than on that earlier work. Naming the old branch when starting continues on it.
+    Checked as the repositories were last fetched."""
+    with session_scope() as s:
+        used = set(s.scalars(select(Run.branch).where(Run.project == project)))
+    taken = lambda b: b in used or any(repos.has_branch(project, u, b) for u in urls)  # noqa: E731
+    if not taken(name):
+        return name
+    version = 2
+    while taken(f"{name}-v{version}") and version < 1000:
+        version += 1
+    return f"{name}-v{version}"
+
+
 def plan(project: str, workflow: dict, domain: str, feature: str, base_branches: dict | None = None,
          feature_branch: str | None = None) -> dict:
     """Where a new run of the workflow works: each repository with its base branch (the user's choices, else the
@@ -233,9 +249,11 @@ def plan(project: str, workflow: dict, domain: str, feature: str, base_branches:
     for r in code_repositories(stages, domain, project):
         listed.append({**r, "name": r["key"], "root": False,
                        "base_branch": (base_branches.get(r["key"]) or "").strip() or r["base_branch"]})
+    default = branch_name(cfg["branch_pattern"], domain, feature)
+    chosen = (feature_branch or "").strip() or _fresh_branch(project, [r["url"] for r in listed], default)
     out = {"commit": cfg["commit"] and bool(listed), "domain": domain,
            "missing": missing_repositories(stages, domain, project) or _missing_prefix(project, stages),
-           "feature_branch": (feature_branch or "").strip() or branch_name(cfg["branch_pattern"], domain, feature),
+           "feature_branch": chosen, "earlier_branch": default if chosen != default else None,
            "repositories": []}
     for r in listed:
         info = {**r, "default_branch": None, "feature_branch_exists": None, "base_branch_exists": None}

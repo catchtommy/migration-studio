@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PendingBranches } from "../lib/api";
 import { useCan } from "../lib/hooks";
 import { BranchIcon } from "./icons";
+import { nextBranch } from "./RestartPanel";
 
 /** A step is about to change code (every code step asks, each time it runs): confirm (or change) the feature branch,
  * and the base branch it is cut from when the repository isn't checked out yet. Says when the branch already exists. */
@@ -78,9 +79,14 @@ export function BranchConfirmation({ runId, pending }: { runId: string; pending:
         (renamed ? (
           <p className="text-xs text-subtle">Whether {feature.trim() || "the new name"} already exists is checked when you confirm.</p>
         ) : (
-          <p role="status" className="rounded-md border border-accent/40 bg-accent/5 px-3 py-2 text-sm">
+          <div role="status" className="rounded-md border border-accent/40 bg-accent/5 px-3 py-2 text-sm">
             <span className="font-medium">An existing branch already exists.</span> {pending.existing_branch.message}
-          </p>
+            {!pending.existing_branch.in_run && (
+              <button type="button" className="ml-2 text-accent hover:underline" onClick={() => setFeature(nextBranch(pending.feature_branch))}>
+                Start fresh on {nextBranch(pending.feature_branch)} instead
+              </button>
+            )}
+          </div>
         ))}
       {confirm.error && <p className="text-sm text-bad">{(confirm.error as Error).message}</p>}
       {canStart ? (

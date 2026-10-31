@@ -620,3 +620,48 @@ def test_modernise_converts_what_was_pushed_to_the_lift_by_hand_too(client, tmp_
     assert domain_modules.lifted(project, "loan", run_id, ws)["files"] == ["Approve.java", "HandFix.java"]
 
 
+
+
+def test_feature_and_domain_keys_that_would_share_a_package_are_refused(client):
+    from app import discovery_store
+    from tests.test_projects import as_project
+
+    project = _features(client, "create-loan")
+    proj = as_project(client, project)
+    for clash in ("create_loan", "CreateLoan", "createloan"):
+        r = proj.post("/api/domains/loan/features", json={"key": clash, "name": clash})
+        assert r.status_code == 409 and "would share the package createloan" in r.json()["detail"], clash
+    assert proj.post("/api/domains/loan/features", json={"key": "close-loan", "name": "x"}).status_code == 201
+
+    listing = ("features:\n  - {key: view-loan, name: View}\n  - {key: View_Loan, name: View again}\n")
+    try:
+        discovery_store.parse_features(listing)
+        raise AssertionError("a listing with two keys of one package was accepted")
+    except discovery_store.InvalidDocument as e:
+        assert "would share the package viewloan" in str(e)
+
+    proj.post("/api/domains", json={"key": "customer-comm", "name": "Comm", "description": ""})
+    r = proj.post("/api/domains", json={"key": "customercomm", "name": "Comm 2", "description": ""})
+    assert r.status_code == 409 and "would share the package customercomm" in r.json()["detail"]
+
+
+def test_a_feature_package_already_on_the_branch_stays_valid_when_the_feature_list_changes(client, tmp_path):
+    """create-loan's run created view-loan's package (it uses it); the domain's features were listed again since and
+    view-loan isn't on the list any more: what is on the branch where the step started is still a feature package."""
+    import subprocess
+
+    project = _features(client, "create-loan")  # view-loan no longer listed
+    ws, _ = _repo(tmp_path)
+    _java(ws, "com.acme.loan.viewloan", "LoanReader")  # made by an earlier step of this run
+    subprocess.run(["git", "add", "-A"], cwd=ws, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "earlier step"], cwd=ws,
+                   check=True)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ws, check=True, capture_output=True, text=True).stdout.strip()
+    _java(ws, "com.acme.loan.viewloan", "LoanReader", "// one more method")
+    _java(ws, "com.acme.loan.createloan", "CreateLoanService", "import com.acme.loan.viewloan.LoanReader;")
+    check = lambda decl: domain_modules.package_problems(project, "loan", "create-loan", ws, base,  # noqa: E731
+                                                          "domain", "loan-domain", decl)
+    assert any("uses viewloan: list it in uses_features" in p for p in check(DECL))
+    assert check({**DECL, "uses_features": ["view-loan"]}) == []  # listed by its key: the same package
+    _java(ws, "com.acme.loan.repayloan", "Unknown")  # new, and no feature of the domain: still refused
+    assert any("repayloan, which is no feature of the domain" in p for p in check({**DECL, "uses_features": ["view-loan"]}))

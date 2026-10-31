@@ -1,6 +1,7 @@
 """Committing a run's code changes to git: feature branches, the review, conflicts, per-user credentials."""
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -1496,3 +1497,68 @@ def test_confirming_a_branch_another_run_of_the_same_domain_works_on_is_refused(
     second = wait_for(proj, second["id"], {"awaiting_branches"}, timeout=30)
     r = proj.post(f"/api/runs/{second['id']}/branches", json={"feature_branch": first["branch"]})
     assert r.status_code == 422 and "Another unfinished run works on branch" in r.json()["detail"]
+
+
+def test_a_step_the_scope_decision_skips_asks_for_no_branches(client, tmp_path):
+    """A domain-only feature skips the orchestrator steps: they change no code, so they don't ask to confirm branches
+    (nor check a repository out) before finding out."""
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    domain_repo(proj, upstream, "modular_monolith", also={"monolith_orchestrator": upstream})
+    wf = proj.get("/api/workflows/standard").json()
+    steps = [{**st, "code": {"changes_code": True}} if st.get("key") in ("modular_monolith", "monolith_orchestrator")
+             else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    asked = []
+
+    def confirm(pending):
+        asked.append(pending["stage"])
+        return {"feature_branch": pending["feature_branch"]}
+
+    run_id = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()["id"]
+    while True:  # a reviewer edits the scope decision to domain-only before the design is approved
+        run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_publish"}, timeout=30)
+        if run["status"] == "awaiting_publish":
+            assert proj.post(f"/api/runs/{run_id}/docs/skip").status_code == 204
+            continue
+        deps = next((a for a in proj.get(f"/api/runs/{run_id}/artifacts").json()
+                     if a["name"] == "domain-dependencies.yaml"), None)
+        if deps:
+            break
+        proj.post(f"/api/runs/{run_id}/decision", json={"decision": "approve"})
+    text = proj.get(f"/api/artifacts/{deps['id']}").json()["content"]
+    text = text.replace("scope: cross-domain", "scope: domain-only")
+    text = re.sub(r"(?ms)^dependencies:\n(?:[ -].*\n)*", "dependencies: []\n", text)  # domain-only: none
+    assert proj.put(f"/api/artifacts/{deps['id']}", json={"content": text}).status_code == 200
+    run = finish_workflow(proj, run_id, confirm)
+    assert "modular_monolith" in asked and "monolith_orchestrator" not in asked
+    skipped = next(e for e in run["stages"] if e["stage"] == "monolith_orchestrator")
+    assert skipped["status"] == "completed"
+
+
+def test_a_new_run_starts_fresh_beside_a_branch_an_earlier_run_of_the_feature_left_in_git(client, tmp_path):
+    """Reset or Start over delete a feature's runs, not its branches in git: a new run doesn't silently continue on
+    the old work, it starts on the next free version of the name (and says so); naming the old branch continues on
+    it."""
+    from app import repos
+
+    upstream, key, proj = setup_project(client, tmp_path)
+    git(upstream, "checkout", "-q", "-b", "migration/loan/approve")
+    (upstream / "OLD.md").write_text("an earlier run's work\n")
+    git(upstream, "add", "-A")
+    git(upstream, "commit", "-qm", "earlier run")
+    git(upstream, "checkout", "-q", "main")
+    repos.fetch(key, str(upstream), None)  # the server's copy has it
+
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    assert run["branch"] == "migration/loan/approve-v2"
+    from app.db.models import AuditEvent
+    with session_scope() as s:
+        log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == run["id"])))
+    assert "this run starts fresh on migration/loan/approve-v2" in log
+    run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
+    proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
+    run = wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
+    assert not (Path(run["workspace"]) / "OLD.md").exists()  # from the base branch, not the old work
+
+    plan = proj.get("/api/runs-git-plan", params={"domain": "loan", "feature": "approve"}).json()
+    assert plan["feature_branch"] == "migration/loan/approve-v3"  # -v2 is this run's now

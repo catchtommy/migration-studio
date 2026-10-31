@@ -114,6 +114,9 @@ def parse_features(text: str) -> list[dict]:
             raise InvalidDocument(f"{where}: key {key!r} must be letters, digits, - or _, starting with a letter")
         if any(f["key"] == key for f in out):
             raise InvalidDocument(f"{where}: duplicate key {key}")
+        clash = _package_clash(key, [f["key"] for f in out])
+        if clash:
+            raise InvalidDocument(f"{where}: {clash}")
         feature = {"key": key, "name": str(item["name"]).strip(),
                    "description": str(item.get("description") or "").strip(),
                    **{f: _strings(item, f, where) for f in ("entry_points", "tables", "calls")}}
@@ -207,6 +210,11 @@ def _record_features(run_id: str, domain: str, features: list[dict]) -> str:
                                                              MIGRATION_RUN)))
         existing = {f.key: f for f in s.scalars(select(Feature).where(Feature.project == project,
                                                                       Feature.domain == domain))}
+        listed = {f["key"] for f in features}
+        for f in features:  # a feature kept from before (already migrating) keeps its package
+            clash = _package_clash(f["key"], [k for k in existing if k not in listed and k in migrated])
+            if clash:
+                raise InvalidDocument(f"{FEATURES_FILE}: {clash}")
         for f in features:
             row = existing.pop(f["key"], None)
             if row is None:
@@ -255,12 +263,29 @@ def feature(domain: str, key: str) -> dict | None:
     return next((f for f in features_of(domain) if f["key"] == key), None)
 
 
+def _package_clash(key: str, others: list[str]) -> str | None:
+    """Why `key` can't be one of a domain's features beside `others`: its package (the key in lower case without
+    dashes or underscores, app/domain_modules.py) would be another feature's. None when it is its own."""
+    from app.domain_modules import feature_segment
+
+    other = next((o for o in others if o != key and feature_segment(o) == feature_segment(key)), None)
+    if other is None:
+        return None
+    return (f"the keys {key} and {other} would share the package {feature_segment(key)} (a feature's package is its key "
+            "in lower case without dashes or underscores): give them keys that differ in more than that")
+
+
 def save_feature(domain: str, key: str, values: dict, create: bool) -> dict:
     project = projects.current()
     with session_scope() as s:
         row = s.scalar(select(Feature).where(Feature.project == project, Feature.domain == domain, Feature.key == key))
         if create and row is not None:
             raise DiscoveryError(f"{domain} already has a feature {key}")
+        if create:
+            clash = _package_clash(key, list(s.scalars(select(Feature.key).where(Feature.project == project,
+                                                                                 Feature.domain == domain))))
+            if clash:
+                raise DiscoveryError(f"{domain} can't have a feature {key}: {clash}")
         if not create and row is None:
             raise KeyError(key)
         if row is None:

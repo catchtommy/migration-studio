@@ -273,6 +273,24 @@ def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
     return [ArtifactOut(name=note.name, path=ctx.rel(note), kind="markdown")]
 
 
+def _skipped_before_start(run_id: str, stage_key: str, domain: str, operation: str) -> str | None:
+    """Why the step will be skipped (modulith_scope.skip_reason), known before it starts: from the run's documents in
+    the database (the documents folder is only on disk while a step runs)."""
+    if stage_key not in modulith_scope.SKIPPABLE:
+        return None
+    import tempfile
+
+    folder = docs_dir(domain, operation)
+    names = {contracts_store.DOMAIN_DEPENDENCIES_FILE, contracts_store.ORCHESTRATOR_EXTRACTION_FILE}
+    with tempfile.TemporaryDirectory() as tmp:
+        for path, content in workspace.effective_documents(run_id).items():
+            if path.startswith(folder + "/") and Path(path).name in names:
+                f = Path(tmp) / path
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(content, encoding="utf-8")
+        return modulith_scope.skip_reason(stage_key, Path(tmp) / folder)
+
+
 def _code_dir(stage: StageDef | dict, nested: list[dict], domain: str, project: str | None = None,
               monolith: str | None = None) -> str | None:
     """Where the step changes code, relative to the workspace: the root (the monolith; also a step that writes
@@ -334,7 +352,10 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         # Before the first code change in a repository, a person confirms its base branch and the feature branch.
         # (Everything before interrupt() runs again on resume, so nothing above has side effects.)
         from app import delivery
-        proposal = delivery.confirmation_needed(run_id, stage.key)
+        # A step its scope decision skips (an orchestrator step of a domain-only feature) changes no code: no branches
+        # to confirm, no repository to check out for it.
+        skipping = _skipped_before_start(run_id, stage.key, state["domain"], state["operation"])
+        proposal = None if skipping else delivery.confirmation_needed(run_id, stage.key)
         if proposal:
             answer = interrupt(proposal)  # the runner shows the run as awaiting_branches
             delivery.apply_confirmation(run_id, proposal["repository"]["key"], answer,
