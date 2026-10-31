@@ -170,7 +170,6 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
         db.refresh(run)  # the workflow's current code settings, picked up while it waits
     detail = RunDetail.model_validate(run)
     if run.scope == "operation":
-        detail.branch_per = domain_modules.branch_per(run.project, run_id)
         detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
                                   if run.legacy else
                                   repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha))
@@ -408,14 +407,10 @@ def restart(run_id: str, body: Restart, db: Session = Depends(get_db),
 
 
 def _check_new_branch(run: Run, branch: str, fresh: bool) -> None:
-    """A fresh re-run on a new feature branch: only per-feature branching (a domain's branch holds its other features'
-    work too), and a valid name other than the run's branch and its base branches."""
+    """A fresh re-run on a new feature branch: a valid name other than the run's branch and its base branches."""
     from app.tools.git_ops import valid_branch
     if not fresh:
         raise HTTPException(422, "A new branch is only cut for a fresh re-run")
-    if domain_modules.branch_per(run.project, run.id) != "feature":
-        raise HTTPException(422, "A new branch is only cut when each feature has its own branch: in this workflow the "
-                                 "domain's features share one")
     if not delivery.run_repos(run):
         raise HTTPException(422, "The run hasn't checked out any repository yet, so there is no branch to cut again")
     bases = {run.base_branch, *(r.get("base_branch") for r in run.repositories or [])}

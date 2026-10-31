@@ -113,24 +113,21 @@ shared_code: []
 """
     if "domain-design.yaml" in outputs:
         owned = (ctx.ownership.get(ctx.domain) or {}).get("tables") or []
-        from app import domain_modules, projects
+        from app import domain_modules
 
-        project = projects.current_or_none()
-        module = domain_modules.pattern_path(project, "domain", ctx.domain) if project else f"{ctx.domain}-domain"
-        base_package = f"com.example.{_ident(ctx.domain).lower()}.domain"
+        n = _naming(ctx)
+        module, base_package = n["domain"]["path"], n["domain"]["package"]
         orchestrator = "orchestrator_module: none\n"
         if _scope(ctx) == "cross-domain":
-            path = domain_modules.pattern_path(project, "orchestrator", ctx.domain) if project \
-                else f"{ctx.domain}-orchestrator"
-            package = f"com.example.{_ident(ctx.domain).lower()}.orchestrator"
-            orchestrator = (f"orchestrator_module:\n  module: {path}\n  artifact: com.example:{ctx.domain}-orchestrator\n"
-                            f"  base_package: {package}\n"
-                            f"  feature_package: {package}.{domain_modules.feature_segment(ctx.operation)}\n")
+            o = n["orchestrator"]
+            orchestrator = (f"orchestrator_module:\n  module: {o['path']}\n  artifact: {o['artifact']}\n"
+                            f"  base_package: {o['package']}\n"
+                            f"  feature_package: {o['package']}.{domain_modules.feature_segment(ctx.operation)}\n")
         files["domain-design.yaml"] = f"""# [stub] sample guardrail declaration
 domain: {ctx.domain}
 feature: {ctx.operation}
 module: {module}
-artifact: com.example:{ctx.domain}-domain
+artifact: {n["domain"]["artifact"]}
 base_package: {base_package}
 feature_package: {base_package}.{domain_modules.feature_segment(ctx.operation)}
 {orchestrator}owned_tables: [{', '.join(owned)}]
@@ -155,7 +152,7 @@ exceptions: []
         files["microservice-extraction.yaml"] = "\n".join([
             "# [stub] sample microservice declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
             "module_commit: \"0000000000000000000000000000000000000000\"",
-            f"base_package: com.example.{_ident(ctx.domain).lower()}.service", "uses_features: []", "operations:",
+            f"base_package: {_naming(ctx)['domain']['package']}", "uses_features: []", "operations:",
             f"  - {{method: {ctx.domain.title()}Service#{ctx.operation.replace('-', '_')}, operation_id: {ctx.operation}}}",
             "replaced: []", "open_decisions: []", f"events: [{', '.join(events)}]"]) + "\n"
     if "module-extraction.yaml" in outputs:
@@ -166,30 +163,31 @@ exceptions: []
                 scope = contracts_store.load_domain_dependencies(deps.read_text(encoding="utf-8"))["decision"]["scope"]
             except contracts_store.InvalidDocument:
                 pass
-        modules = [("domain", f"{ctx.domain}-domain", f"com.example:{ctx.domain}-domain")]  # the domain's one module
+        n = _naming(ctx)
+        modules = [("domain", n["domain"]["path"], n["domain"]["artifact"])]  # the domain's one module
         lines = ["# [stub] sample module extraction declaration", f"feature: {ctx.operation}", f"domain: {ctx.domain}",
                  f"scope: {scope}", "modules:"]
         for kind, path, artifact in modules:
             lines += [f"  - path: {path}", f"    kind: {kind}", f"    artifact: {artifact}"]
         bridge = f"src/main/java/com/example/{ctx.domain}/legacybridge"
         name = _ident(ctx.domain)
-        lines += [f"base_package: com.example.{_ident(ctx.domain).lower()}.domain", "uses_features: []",
+        lines += [f"base_package: {n['domain']['package']}", "uses_features: []",
                   f"bridge_dir: {bridge}", "routing:", f"  property: migration.{ctx.domain}.{ctx.operation}.route",
                   "  default: legacy", f"  router: {bridge}/{name}ServiceRouter.java", "  routes:",
                   f"    - bean: {ctx.domain}Service", f"      legacy_bean: {ctx.domain}ServiceLegacy",
                   f"      interface: com.example.{ctx.domain}.{name}Service",
-                  f"      module: com.example.{ctx.domain}.domain.{name}Service",
+                  f"      module: {n['domain']['package']}.{_segment(ctx.operation)}.{name}Service",
                   "outside_changes: []", "events: []"]
         files["module-extraction.yaml"] = "\n".join(lines) + "\n"
     if "orchestrator-extraction.yaml" in outputs:  # the orchestrator of a cross-domain feature, beside its domain module
         lines = ["# [stub] sample orchestrator extraction declaration", f"feature: {ctx.operation}",
                  f"domain: {ctx.domain}"]
         if _scope(ctx) == "cross-domain":
-            name = _ident(ctx.domain)
+            name, o = _ident(ctx.domain), _naming(ctx)["orchestrator"]
             lines += ["orchestrator: module", "module:",
-                      f"  path: {ctx.domain}-orchestrator",  # the domain's one orchestrator module
-                      f"  artifact: com.example:{ctx.domain}-orchestrator",
-                      f"base_package: com.example.{_ident(ctx.domain).lower()}.orchestrator", "uses_features: []",
+                      f"  path: {o['path']}",  # the domain's one orchestrator module
+                      f"  artifact: {o['artifact']}",
+                      f"base_package: {o['package']}", "uses_features: []",
                       "operations:",
                       f"  - method: {name}Orchestrator#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
                       f"    replaces: {name}Service#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
@@ -218,7 +216,7 @@ exceptions: []
             methods = [*taken, *(f"{name}Orchestrator#{verb}" for verb in ("list", "get", "delete"))]
             ids = [f"{verb}{resource}" for verb in ("create", "list", "get", "delete")]
             lines += ["orchestrator: service", "module_commit: \"0000000000000000000000000000000000000000\"",
-                      f"base_package: com.example.{_ident(ctx.domain).lower()}.orchestrator.service",
+                      f"base_package: {_naming(ctx)['orchestrator']['package']}",
                       "uses_features: []",
                       "openapi: orchestrator-openapi.yaml", "operations:",
                       *(f"  - {{method: '{m}', operation_id: {i}}}" for m, i in zip(methods, ids)),
@@ -707,14 +705,33 @@ def _sample_code_change(ctx: AgentContext, stage: StageDef) -> None:
     _sample_service(ctx)
 
 
+def _segment(feature: str) -> str:
+    from app import domain_modules
+    return domain_modules.feature_segment(feature)
+
+
+def _naming(ctx: AgentContext) -> dict:
+    """The domain's modules as the project's settings name them (app/domain_modules.py): {"domain" | "orchestrator":
+    {"path", "artifact", "package"}}; com.example while the project has no base package prefix."""
+    from app import domain_modules, projects
+
+    project = projects.current_or_none()
+    prefix = (domain_modules.prefix(project) if project else None) or "com.example"
+    seg = domain_modules.domain_segment(ctx.domain)
+    out = {}
+    for kind, package in (("domain", f"{prefix}.{seg}"), ("orchestrator", f"{prefix}.orchestrator.{seg}")):
+        path = domain_modules.pattern_path(project, kind, ctx.domain) if project else f"{ctx.domain}-{kind}"
+        out[kind] = {"path": path, "artifact": f"{prefix}:{path.split('/')[-1]}", "package": package}
+    return out
+
+
 def _sample_service(ctx: AgentContext) -> None:
     """The service steps add a placeholder class to the domain's service project (the repository the domain sets), in
     this feature's package under the base package their declarations name (app/domain_modules.py)."""
     kind = {"microservice_scaffold": "service", "orchestrator_service": "orchestrator.service"}.get(ctx.stage)
     if kind is None or ctx.code_dir in (".", "") or (kind != "service" and _scope(ctx) != "cross-domain"):
         return
-    from app import domain_modules
-    package = f"com.example.{_ident(ctx.domain).lower()}.{kind}.{domain_modules.feature_segment(ctx.operation)}"
+    package = f"{_naming(ctx)['domain' if kind == 'service' else 'orchestrator']['package']}.{_segment(ctx.operation)}"
     name = f"{_ident(ctx.operation)}{'Orchestration' if kind != 'service' else 'Service'}Stub"
     java = ctx.workspace / ctx.code_dir / "src/main/java" / package.replace(".", "/") / f"{name}.java"
     java.parent.mkdir(parents=True, exist_ok=True)
@@ -733,13 +750,14 @@ def _sample_module(ctx: AgentContext) -> None:
     project = projects.current_or_none()
     if project is None:
         return
-    root = ctx.workspace / domain_modules.pattern_path(project, kind, ctx.domain)
+    named = _naming(ctx)[kind]
+    root = ctx.workspace / named["path"]
     pom = root / "pom.xml"
     if not pom.exists():
         root.mkdir(parents=True, exist_ok=True)
-        pom.write_text(f"<!-- [stub] the {ctx.domain} {kind} module -->\n<project>\n  <artifactId>{ctx.domain}-{kind}"
-                       "</artifactId>\n</project>\n", encoding="utf-8")
-    package = f"com.example.{_ident(ctx.domain).lower()}.{kind}.{domain_modules.feature_segment(ctx.operation)}"
+        pom.write_text(f"<!-- [stub] the {ctx.domain} {kind} module -->\n<project>\n  <artifactId>"
+                       f"{named['artifact'].split(':')[-1]}</artifactId>\n</project>\n", encoding="utf-8")
+    package = f"{named['package']}.{_segment(ctx.operation)}"
     name = f"{_ident(ctx.operation)}{'Orchestrator' if kind == 'orchestrator' else ''}Stub"
     java = root / "src/main/java" / package.replace(".", "/") / f"{name}.java"
     java.parent.mkdir(parents=True, exist_ok=True)

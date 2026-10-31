@@ -76,7 +76,7 @@ def setup_project(client, tmp_path, monolith_step=True):
 def test_a_run_cuts_its_feature_branch_and_the_review_commits_and_pushes_it(client, tmp_path):
     upstream, key, proj = setup_project(client, tmp_path)
     plan = proj.get("/api/runs-git-plan", params={"domain": "loan", "feature": "approve"}).json()
-    assert plan["repositories"][0]["url"] == str(upstream) and plan["feature_branch"] == "migration/loan/modules"
+    assert plan["repositories"][0]["url"] == str(upstream) and plan["feature_branch"] == "migration/loan/approve"
     assert plan["commit"] is True
 
     bad = proj.post("/api/runs", json={"domain": "loan", "operation": "approve", "feature_branch": "main"})
@@ -182,7 +182,7 @@ def test_finishing_without_committing_and_who_may_commit(client, tmp_path):
     assert proj.post(f"/api/runs/{run['id']}/finish").status_code == 204
     done = proj.get(f"/api/runs/{run['id']}").json()
     assert done["status"] == "completed" and done["delivery"]["repos"]["monolith"]["status"] == "skipped"
-    assert "migration/loan/modules" not in git(upstream, "branch", "--list")
+    assert "migration/loan/approve" not in git(upstream, "branch", "--list")
 
 
 def test_each_code_step_works_in_its_own_repository_on_the_same_feature_branch(client, tmp_path):
@@ -591,7 +591,7 @@ def test_an_existing_branch_in_a_repository_not_checked_out_yet_is_continued_on(
     first = next(st["key"] for st in wf["steps"] if st["kind"] == "agent")
     steps = [{**st, "code": {"repository": domain_repo(proj, service, first)}} if st.get("key") == first else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
-    git(service, "checkout", "-q", "-b", "migration/loan/modules")
+    git(service, "checkout", "-q", "-b", "migration/loan/approve")
     (service / "EARLIER.md").write_text("work from an earlier attempt\n")
     git(service, "add", "-A")
     git(service, "commit", "-q", "-m", "earlier work")
@@ -600,7 +600,7 @@ def test_an_existing_branch_in_a_repository_not_checked_out_yet_is_continued_on(
 
     run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
     run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
-    assert run["branch"] == "migration/loan/modules"
+    assert run["branch"] == "migration/loan/approve"
     r = proj.post(f"/api/runs/{run['id']}/branches", json={"feature_branch": run["branch"]})
     assert r.status_code == 200, r.text  # was refused: "already has a branch"
     wait_for(proj, run["id"], {"awaiting_commit"}, timeout=30)
@@ -609,7 +609,7 @@ def test_an_existing_branch_in_a_repository_not_checked_out_yet_is_continued_on(
         started = {r["url"]: r["base_sha"] for r in s.get(Run, run["id"]).repositories}
         log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == run["id"])))
     assert started[str(service)] == tip  # on the existing branch, not cut afresh from main
-    assert "the existing branch migration/loan/modules" in log
+    assert "the existing branch migration/loan/approve" in log
 
 
 
@@ -652,7 +652,7 @@ def test_a_step_never_falls_back_to_the_monolith_for_a_repository_the_run_has_no
 
 def test_an_existing_branch_in_the_monolith_is_shown_and_continued_on(client, tmp_path):
     upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
-    git(upstream, "checkout", "-q", "-b", "migration/loan/modules")
+    git(upstream, "checkout", "-q", "-b", "migration/loan/approve")
     (upstream / "EARLIER.md").write_text("work from an earlier attempt\n")
     git(upstream, "add", "-A")
     git(upstream, "commit", "-q", "-m", "earlier work")
@@ -788,7 +788,7 @@ def test_a_rerun_step_starts_from_the_latest_of_the_branch_in_git(client, tmp_pa
     with session_scope() as s:
         from app.db.models import AuditEvent
         log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == run["id"])))
-    assert "Fetched the latest of migration/loan/modules in Monolith" in log
+    assert "Fetched the latest of migration/loan/approve in Monolith" in log
     changes = proj.get(f"/api/runs/{run['id']}/changes", params={"repo": "monolith"}).json()
     r = proj.post(f"/api/runs/{run['id']}/commit", json={  # the step's change goes on top of the colleague's work
         "repo": "monolith", "message": "Second attempt", "branch": run["branch"], "files": [path],
@@ -981,14 +981,14 @@ def test_a_change_the_base_branch_already_has_is_not_listed(client, tmp_path):
     assert changes["unchanged_in_git"] == 1
 
 
-def test_the_features_of_a_domain_share_its_branch_and_build_on_each_others_pushed_work(client, tmp_path):
-    """One branch per domain: a later feature's run continues on the branch the earlier one pushed, so its code steps
-    start from the earlier feature's work (the domain's module, app/domain_modules.py), even while that run is still
-    unfinished. Another domain's runs can't share it."""
+def test_the_features_of_a_domain_run_on_their_own_branches_and_never_share_one(client, tmp_path):
+    """Each feature on its own branch, cut from the base branch: a later feature's run doesn't start from an earlier
+    one's pushed work (only from the base branch, once it is merged there), and no run may take a branch an unfinished
+    run works on, the same domain's included."""
     upstream, key, proj = setup_project(client, tmp_path)
     proj.post("/api/domains/loan/features", json={"key": "reject", "name": "reject"})
     first = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
-    assert first["branch"] == "migration/loan/modules"
+    assert first["branch"] == "migration/loan/approve"
     first = wait_for(proj, first["id"], {"awaiting_branches"}, timeout=30)
     proj.post(f"/api/runs/{first['id']}/branches", json={"feature_branch": first["branch"]})
     step = wait_for(proj, first["id"], {"awaiting_commit"}, timeout=30)["current_stage"]
@@ -1001,34 +1001,35 @@ def test_the_features_of_a_domain_share_its_branch_and_build_on_each_others_push
     wait_for(proj, first["id"], {"awaiting_approval", "awaiting_publish"}, timeout=30)  # unfinished
 
     second = proj.post("/api/runs", json={"domain": "loan", "operation": "reject"})
-    assert second.status_code == 201, second.text  # the same branch as an unfinished run of the domain: fine
+    assert second.status_code == 201, second.text
     second = wait_for(proj, second.json()["id"], {"awaiting_branches"}, timeout=30)
-    assert second["branch"] == "migration/loan/modules"
-    assert second["pending_branches"]["existing_branch"]["in_run"] is False  # it continues on the pushed branch
+    assert second["branch"] == "migration/loan/reject" and not second["pending_branches"]["existing_branch"]
     proj.post(f"/api/runs/{second['id']}/branches", json={"feature_branch": second["branch"]})
     wait_for(proj, second["id"], {"awaiting_commit"}, timeout=30)
     detail = proj.get(f"/api/runs/{second['id']}").json()
-    assert git(Path(detail["workspace"]), "show", f"{detail['base_sha']}:{path}") == \
-        git(upstream, "show", f"migration/loan/modules:{path}")  # it started from approve's pushed work
+    pushed = git(upstream, "rev-parse", first["branch"])
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", pushed, "HEAD"],
+                          cwd=detail["workspace"]).returncode != 0  # nothing of approve's branch in reject's
 
-    proj.post("/api/domains", json={"key": "card", "name": "Card", "description": ""})
-    proj.post("/api/domains/card/features", json={"key": "issue", "name": "issue"})
-    domain_repo(proj, upstream, step, domain="card")
-    other = proj.post("/api/runs", json={"domain": "card", "operation": "issue", "feature_branch": "migration/loan/modules"})
-    assert other.status_code == 422 and "Another unfinished run" in other.json()["detail"]
+    proj.post("/api/domains/loan/features", json={"key": "cancel", "name": "cancel"})
+    taken = proj.post("/api/runs", json={"domain": "loan", "operation": "cancel",
+                                         "feature_branch": "migration/loan/approve"})
+    assert taken.status_code == 422 and "Another unfinished run" in taken.json()["detail"]
 
 
-def test_a_branch_shared_by_the_domains_features_cant_name_the_feature(client, tmp_path):
+def test_each_feature_has_its_own_branch_so_the_pattern_names_it(client, tmp_path):
     upstream, key, proj = setup_project(client, tmp_path)
     wf = proj.get("/api/workflows/standard").json()
     put = lambda git: proj.put("/api/workflows/standard?library=project", json={"steps": wf["steps"], "git": git})  # noqa: E731
-    r = put({"commit": True, "branch_per": "domain", "branch_pattern": "mig/{domain}/{feature}"})
-    assert r.status_code == 422 and "can't name the feature" in r.json()["detail"]
-    assert put({"commit": True, "branch_per": "feature", "branch_pattern": ""}).status_code == 200
+    r = put({"commit": True, "branch_pattern": "mig/{domain}/modules"})
+    assert r.status_code == 422 and "must name {feature}" in r.json()["detail"]
+    assert put({"commit": True, "branch_pattern": ""}).status_code == 200
     assert proj.get("/api/runs-git-plan", params={"domain": "loan", "feature": "approve"}).json()["feature_branch"] == \
         "migration/loan/approve"
-    assert put({"commit": True, "branch_pattern": "mig/{domain}-{feature}"}).status_code == 200  # inferred: per feature
-    assert proj.get("/api/workflows/standard").json()["git"]["branch_per"] == "feature"
+    assert put({"commit": True, "branch_pattern": "mig/{domain}-{feature}"}).status_code == 200
+    from app import delivery
+    assert delivery.git_settings({"git": {"branch_per": "domain", "branch_pattern": "migration/{domain}/modules"}}) \
+        == {"commit": True, "branch_pattern": "migration/{domain}/{feature}"}  # saved before: per feature now
 
 
 def test_each_domain_sets_its_agents_repositories_whatever_their_names(client, tmp_path):
@@ -1278,7 +1279,6 @@ def test_a_fresh_rerun_of_a_pushed_step_undoes_its_pushed_code_on_the_next_commi
 def test_a_fresh_rerun_can_cut_a_new_feature_branch_from_the_latest_base(client, tmp_path, monkeypatch):
     """Per-feature branching: a fresh re-run can start on a new feature branch cut from the latest base branch. The old
     branch stays in git as it is, and the run's commits go to the new one, on top of the latest base."""
-    from app import domain_modules
     upstream, key, proj = setup_project(client, tmp_path)
     run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
     run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
@@ -1298,11 +1298,6 @@ def test_a_fresh_rerun_can_cut_a_new_feature_branch_from_the_latest_base(client,
     main = git(upstream, "rev-parse", "HEAD")
 
     url = f"/api/runs/{run['id']}/restart"
-    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "domain")
-    r = proj.post(url, json={"stage": first, "fresh": True, "new_branch": f"{old}-v2"})
-    assert r.status_code == 422 and "share one" in r.json()["detail"]  # a domain's branch holds other features' work
-    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "feature")
-    assert proj.get(f"/api/runs/{run['id']}").json()["branch_per"] == "feature"
     assert proj.post(url, json={"stage": first, "new_branch": f"{old}-v2"}).status_code == 422  # fresh only
     assert proj.post(url, json={"stage": first, "fresh": True, "new_branch": old}).status_code == 422
     assert proj.post(url, json={"stage": first, "fresh": True, "new_branch": "main"}).status_code == 422
@@ -1336,8 +1331,6 @@ def test_a_fresh_rerun_can_cut_a_new_feature_branch_from_the_latest_base(client,
 
 
 def test_a_new_branch_from_a_later_step_replays_the_earlier_steps_code(client, tmp_path, monkeypatch):
-    from app import domain_modules
-    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "feature")
     upstream, proj, run, first, second = _two_monolith_steps(client, tmp_path)
     run = proj.get(f"/api/runs/{run['id']}").json()
     old, step = run["branch"], run["current_stage"]
@@ -1379,8 +1372,7 @@ def finish_workflow_until_gate(proj, run_id) -> dict:
 
 
 def test_retry_after_a_failed_cut_cuts_the_new_branch_again(client, tmp_path, monkeypatch):
-    from app import domain_modules, workspace
-    monkeypatch.setattr(domain_modules, "branch_per", lambda p, rid: "feature")
+    from app import workspace
     upstream, proj, run, first, path = _pushed_first_step(client, tmp_path)
     original, calls = workspace.rebuild, []
 
@@ -1411,3 +1403,32 @@ def test_a_fresh_rerun_after_the_push_does_not_mark_the_pushed_code_for_undoing(
     assert proj.post(f"/api/runs/{run['id']}/restart", json={"stage": step, "fresh": True}).status_code == 200
     run = wait_for(proj, run["id"], {"awaiting_branches"}, timeout=30)
     assert "replaces" not in run["delivery"]["repos"]["monolith"]
+
+
+def test_a_new_run_reads_the_latest_base_branch_with_features_merged_since(client, tmp_path):
+    """A feature started after another was merged into the base branch gets that code: the run fetches the base branch
+    when it starts, without anyone fetching on the Project page first."""
+    upstream, key, proj = setup_project(client, tmp_path)
+    proj.post("/api/domains/loan/features", json={"key": "reject", "name": "reject"})
+    first = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    wait_for(proj, first["id"], {"awaiting_branches"}, timeout=30)
+    (upstream / "Merged.java").write_text("class Merged {}\n")  # approve's work, merged into main by hand
+    git(upstream, "add", "-A")
+    git(upstream, "commit", "-qm", "merge approve")
+    merged = git(upstream, "rev-parse", "HEAD")
+    second = proj.post("/api/runs", json={"domain": "loan", "operation": "reject"}).json()
+    second = wait_for(proj, second["id"], {"awaiting_branches"}, timeout=30)
+    assert second["legacy"]["sha"] == merged  # it reads the base branch with approve's merge
+    proj.post(f"/api/runs/{second['id']}/branches", json={"feature_branch": second["branch"]})
+    second = wait_for(proj, second["id"], {"awaiting_commit"}, timeout=30)
+    assert (Path(second["workspace"]) / "Merged.java").exists()  # and its code branch is cut from there
+
+
+def test_a_migration_needs_the_base_package_prefix(client, tmp_path):
+    upstream, key, proj = setup_project(client, tmp_path)
+    assert client.put(f"/api/projects/{key}/settings", json={"base_package_prefix": "Com.Acme"}).status_code == 422
+    assert client.put(f"/api/projects/{key}/settings", json={"base_package_prefix": ""}).status_code == 200
+    r = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"})
+    assert r.status_code == 422 and "Set the base package prefix" in r.json()["detail"]
+    assert client.put(f"/api/projects/{key}/settings", json={"base_package_prefix": "com.acme"}).status_code == 200
+    assert proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).status_code == 201

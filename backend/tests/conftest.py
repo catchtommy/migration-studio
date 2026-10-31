@@ -39,6 +39,8 @@ def client():
         r = c.post("/api/auth/bootstrap", json={"username": "admin", "display_name": "Test Admin",
                                                 "password": ADMIN_PASSWORD})
         assert r.status_code == 200, r.text
+        from app import settings_store
+        settings_store.update_project(projects.DEFAULT, {"base_package_prefix": "com.acme"})  # names the domains' packages
         yield c
 
 

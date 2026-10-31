@@ -26,16 +26,14 @@ def _commit_step(proj, run, files):
 
 def test_two_features_change_the_same_repository_on_their_own_branches(client, tmp_path):
     upstream, key, proj = setup_project(client, tmp_path)  # the first agent step changes the monolith
-    wf = proj.get("/api/workflows/standard").json()  # one branch per feature (the default shares the domain's)
-    assert proj.put("/api/workflows/standard?library=project",
-                    json={"steps": wf["steps"], "git": {"commit": True, "branch_per": "feature"}}).status_code == 200
     a, b = _to_first_code_step(proj, "approve"), _to_first_code_step(proj, "reject")
     assert a["branch"] != b["branch"]
     assert proj.post(f"/api/runs/{a['id']}/branches", json={"feature_branch": a["branch"]}).status_code == 200
     first = wait_for(proj, a["id"], {"awaiting_commit"}, timeout=30)["current_stage"]
 
-    b = proj.get(f"/api/runs/{b['id']}").json()  # the other feature is working in the monolith too: said so
-    assert [r["subject"] for r in b["pending_branches"]["parallel_runs"]] == ["loan / approve"]
+    b = proj.get(f"/api/runs/{b['id']}").json()  # each feature on its own: nothing of the other's run
+    assert "parallel_runs" not in b["pending_branches"]
+    assert a["branch"] == "migration/loan/approve" and b["branch"] == "migration/loan/reject"
     assert proj.post(f"/api/runs/{b['id']}/branches", json={"feature_branch": b["branch"]}).status_code == 200
     wait_for(proj, b["id"], {"awaiting_commit"}, timeout=30)
 

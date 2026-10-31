@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import (agent_store, contracts_store, discovery_store, document_export, domain_modules, domain_store,
-                 run_cleanup, workflow_store)
+from app import (agent_store, contracts_store, discovery_store, document_export, domain_store, run_cleanup,
+                 workflow_store)
 from app.api.discovery_api import start_features
 from app.api.schemas import (
     DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, FeatureCreate, FeatureIn,
@@ -62,10 +62,6 @@ def create_domain(body: DomainCreate, db: Session = Depends(get_db)):
 def _out(domain: Domain) -> DomainOut:
     out = DomainOut.model_validate(domain)
     out.workflows = workflow_store.domain_workflows(domain)
-    try:
-        out.module_renames = domain_modules.renames(domain.project, domain.key)
-    except Exception:  # noqa: BLE001 - the page shows the domain without them
-        out.module_renames = []
     return out
 
 

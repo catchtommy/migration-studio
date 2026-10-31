@@ -288,9 +288,6 @@ class DomainOut(ORM):
     owned_packages: list[str] | None
     # The migration workflows this domain uses (its new runs', then its earlier runs'): which agents to configure
     workflows: list[dict] = []
-    # Names earlier features gave the domain's modules or services after themselves: each is renamed to the domain's
-    # on that feature's branch before it is merged (app/domain_modules.py renames)
-    module_renames: list[dict] = []
     created_at: datetime
     updated_at: datetime
 
@@ -333,10 +330,9 @@ class WorkflowStep(BaseModel):
 
 class WorkflowGit(BaseModel):
     """Code changes (the repositories are on the steps that change code): review and commit them when the run
-    finishes, one branch per domain (shared by its features) or per feature, and the branch's name ({domain},
-    {feature}, {run}, {date}; a domain's branch can't use {feature} or {run})."""
+    finishes, each feature on its own branch, and the branch's name ({domain}, {feature}, {run}, {date}; it names
+    {feature} or {run})."""
     commit: bool = True
-    branch_per: Literal["domain", "feature"] | None = None  # None: per feature when the pattern names it, else domain
     branch_pattern: str = Field(default="", max_length=255)
 
 

@@ -361,16 +361,10 @@ function StepRow({ step, index, steps, agents, codeSteps, onChange, onMove, onRe
   );
 }
 
-/** Where a migration's code changes go: the repository, the base branch the feature branch is cut from, the feature
- * branch's name, and whether the run ends with a review and commit. */
-const BRANCH_DEFAULTS = { domain: "migration/{domain}/modules", feature: "migration/{domain}/{feature}" };
-
+/** Where a migration's code changes go: each feature on its own branch (named by the pattern), cut from the base
+ * branch, and whether the run ends with a review and commit. */
 export function GitSettings({ value, onChange }: { value: WorkflowGit; onChange: (git: WorkflowGit) => void }) {
   const set = (field: keyof WorkflowGit, v: string | boolean) => onChange({ ...value, [field]: v });
-  const per = value.branch_per ?? "domain";
-  const choose = (next: "domain" | "feature") =>
-    // A pattern still at the other choice's default follows the choice; a pattern of the user's own stays.
-    onChange({ ...value, branch_per: next, branch_pattern: value.branch_pattern === BRANCH_DEFAULTS[per] ? BRANCH_DEFAULTS[next] : value.branch_pattern });
   return (
     <section className="space-y-3">
       <h2 className="font-semibold">Git</h2>
@@ -388,34 +382,11 @@ export function GitSettings({ value, onChange }: { value: WorkflowGit; onChange:
         A step says whether it changes code (<em>Changes code</em>); each domain sets the repository and base branch of that step's agent in its Agent inputs. A run cuts the same feature branch in every repository its steps change, each from
         that repository's base branch (the monolith's is the project's base branch).
       </p>
-      <fieldset className="space-y-1 text-sm">
-        <legend className="mb-1 text-xs font-medium text-subtle">One branch per</legend>
-        <label className="flex items-start gap-2">
-          <input type="radio" name="branch-per" className="mt-0.5" checked={per === "domain"} onChange={() => choose("domain")} />
-          <span>
-            Domain <span className="text-xs text-subtle">(recommended)</span>
-            <span className="block text-xs text-subtle">
-              The domain's features share one branch, so each feature builds on the domain's module and orchestrator as the earlier features left them, reusing
-              their code.
-            </span>
-          </span>
-        </label>
-        <label className="flex items-start gap-2">
-          <input type="radio" name="branch-per" className="mt-0.5" checked={per === "feature"} onChange={() => choose("feature")} />
-          <span>
-            Feature
-            <span className="block text-xs text-subtle">Each feature on its own branch, cut from the base branch: it only sees earlier features once they are merged.</span>
-          </span>
-        </label>
-      </fieldset>
-      <Field
-        label="Branch name"
-        hint={
-          per === "domain"
-            ? "{domain} and {date} are filled in. It can be changed when starting a run."
-            : "{domain}, {feature}, {run} (short run id) and {date} are filled in. It can be changed when starting a run."
-        }
-      >
+      <p className="text-sm text-subtle">
+        <strong className="text-fg">Each feature runs on its own branch</strong>, cut from the base branch when the run starts, and is merged into the base branch by
+        hand when it is done. Features never share a branch: a feature sees another one's work only once that is merged into the base branch.
+      </p>
+      <Field label="Branch name" hint="It names {feature} (or {run}, the short run id); {domain} and {date} are filled in too. It can be changed when starting a run.">
         <input className={`${inputClass} max-w-md font-mono`} value={value.branch_pattern} onChange={(e) => set("branch_pattern", e.target.value.trim())} />
       </Field>
     </section>

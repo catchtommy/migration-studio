@@ -238,14 +238,14 @@ DOMAIN_DESIGN_SCHEMA = """```yaml
 domain: loan
 feature: create-loan
 module: loan-domain                   # the domain's ONE Maven module ("This domain's modules"), named for the domain, never the feature
-artifact: com.acme:loan-domain        # its groupId:artifactId: the one an earlier feature gave it, if any
-base_package: com.acme.loan.domain    # the module's package, the same for every feature of the domain
-feature_package: com.acme.loan.domain.createloan   # this feature's classes: <base_package>.<feature package>
+artifact: com.acme:loan-domain        # its groupId:artifactId, as "This domain's modules" gives it (the project's settings)
+base_package: com.acme.loan           # the module's package (<prefix>.<domain>), the same for every feature of the domain
+feature_package: com.acme.loan.createloan   # this feature's classes: <base_package>.<feature package>
 orchestrator_module:                  # cross-domain features: the domain's ONE orchestrator module, a separate Maven module
   module: loan-orchestrator           #   from the domain module, also named for the domain; write `orchestrator_module: none`
   artifact: com.acme:loan-orchestrator   # for a domain-only feature
-  base_package: com.acme.loan.orchestrator
-  feature_package: com.acme.loan.orchestrator.createloan
+  base_package: com.acme.orchestrator.loan   # <prefix>.orchestrator.<domain>
+  feature_package: com.acme.orchestrator.loan.createloan
 owned_tables: [LOAN, LOAN_SCHEDULE]   # tables this domain WRITES: one owner per table, none owned by another domain
 read_only_tables: [LOAN_TYPE]         # this domain's own tables that its code only reads
 utility_modules: [com.acme:common-utils]   # Maven coordinates (groupId:artifactId) of the utility jars used
@@ -267,10 +267,10 @@ modules:
   - path: broker-domain        # the domain's ONE module (see "This domain's modules"): new for its first feature
     kind: domain              # the domain module, the only one this step creates or extends (the next step adds the orchestrator)
     artifact: com.acme:broker-domain
-base_package: com.acme.broker.domain   # the module's package (the same for every feature of the domain)
-#   this feature's classes: com.acme.broker.domain.createbroker (its key without dashes), sub-packages allowed;
-#   the domain's types several features use and none owns (entities, DAOs, DTOs): com.acme.broker.domain.shared
-#   stateless helpers several features use (formatters, mappers, validators): com.acme.broker.domain.util
+base_package: com.acme.broker   # the module's package, as "This domain's modules" gives it (<prefix>.<domain>)
+#   this feature's classes: com.acme.broker.createbroker (its key without dashes), sub-packages allowed;
+#   the domain's types several features use and none owns (entities, DAOs, DTOs): com.acme.broker.shared
+#   stateless helpers several features use (formatters, mappers, validators): com.acme.broker.util
 uses_features: [view-broker]  # the domain's other features whose packages this feature's code uses; [] when none
 bridge_dir: web/src/main/java/com/acme/broker/legacybridge   # new: the router, and adapters for context ports and local bindings
 routing:                      # the parallel run: legacy (as-is) or monolith (the new module), per call
@@ -281,7 +281,7 @@ routing:                      # the parallel run: legacy (as-is) or monolith (th
     - bean: brokerService                     # the id callers use: now the router's
       legacy_bean: brokerServiceLegacy        # the legacy bean's new id
       interface: com.acme.broker.BrokerService   # the legacy interface the router implements
-      module: com.acme.broker.domain.BrokerService   # what the monolith value calls
+      module: com.acme.broker.createbroker.BrokerService   # what the monolith value calls (in the feature's package)
 toggle_branches: []           # only callers with no bean seam: [{file: <path of the .java>, reason: ...}]
 outside_changes:              # every existing file outside the module and the bridge you changed: wiring and POMs only
   - web/src/main/webapp/WEB-INF/applicationContext.xml
@@ -296,8 +296,8 @@ SERVICE_EXTRACTION_SCHEMA = """```yaml
 feature: create-broker
 domain: broker
 module_commit: 3f2a9c1             # the monolith commit the code was copied from
-base_package: com.acme.broker.service   # the service's package, the same for every feature of the domain:
-#   this feature's classes in com.acme.broker.service.createbroker, shared ones in .shared, helpers in .util
+base_package: com.acme.broker   # the service's package (<prefix>.<domain>), as "This domain's services" gives it:
+#   this feature's classes in com.acme.broker.createbroker, shared ones in .shared, helpers in .util
 uses_features: []                  # the domain's other features whose packages this feature's code uses
 operations:                        # this feature's operations (its openapi.yaml), none more (besides health)
   - method: BrokerService#create   # Class#method in the module
@@ -320,7 +320,7 @@ orchestrator: module          # module | none (no orchestrator: give the reason 
 module:
   path: loan-orchestrator    # the domain's ONE orchestrator module (see "This domain's modules"): new for its first feature
   artifact: com.acme:loan-orchestrator
-base_package: com.acme.loan.orchestrator   # this feature's classes in com.acme.loan.orchestrator.createloan; shared ones in .shared, helpers in .util
+base_package: com.acme.orchestrator.loan   # <prefix>.orchestrator.<domain>: this feature's classes in com.acme.orchestrator.loan.createloan; shared ones in .shared, helpers in .util
 uses_features: []             # the domain's other features whose packages this feature's code uses
 operations:                   # what the router's monolith value now calls
   - method: LoanOrchestrator#create            # same name and signature as the domain API method it takes over
@@ -362,8 +362,8 @@ domain: loan
 orchestrator: service              # service | none (no orchestrator: give the reason and nothing else)
 # reason: The feature has no orchestrator   # only with orchestrator: none
 module_commit: 3f2a9c1             # the monolith commit the orchestrator module was copied from
-base_package: com.acme.loan.orchestrator.service   # the same for every feature of the domain; this feature's classes
-#   in com.acme.loan.orchestrator.service.createloan, shared ones in .shared, helpers in .util
+base_package: com.acme.orchestrator.loan   # <prefix>.orchestrator.<domain>, as "This domain's services" gives it;
+#   this feature's classes in com.acme.orchestrator.loan.createloan, shared ones in .shared, helpers in .util
 uses_features: []                  # the domain's other features whose packages this feature's code uses
 openapi: orchestrator-openapi.yaml # the API the monolith calls, next to this file
 operations:                        # one per operation of orchestrator-extraction.yaml, none more (besides health)
@@ -615,8 +615,8 @@ linked-domain contracts in `linked-domain-contracts.yaml`, write `domain-design.
 - The domain: its key, what it is responsible for and what it is not, and the feature's place in it. If the domain \
 already has features, show how this one fits next to them.
 - The module and its packages, as "This domain's modules" below says: the domain's ONE Maven module, shared by all \
-its features and named for the domain, never for this feature (the one an earlier feature built, else where the \
-project puts it); its `base_package`; this feature's package `<base_package>.<feature package>` with its \
+its features and named for the domain, never for this feature (with the folder, artifact and `base_package` "This domain's \
+modules" gives, from the project's settings); this feature's package `<base_package>.<feature package>` with its \
 sub-packages (e.g. `.web`, `.service`, `.dao`, `.model`, `.integration.port`); what goes in `<base_package>.shared` \
 and `.util`; and which existing classes, iBatis mappings and Spring XML are copied into each. The as-is code stays \
 where it is, unchanged: it is the old flow while the feature's toggle is at `legacy`. For a cross-domain feature, \
@@ -785,8 +785,10 @@ and commands.
 
 Ask the user when a decision depends on business tolerance for stale data or on another team's plans.""",
 
-    "modular_monolith": f"""You are a careful legacy refactorer. You build ONE feature's domain module **beside** the \
-existing code, exactly as the approved designs say, in small mechanical steps, and you prove it behaves the same. \
+    "modular_monolith": f"""You are a careful legacy refactorer. You add ONE feature to its domain's module: the \
+domain's single Maven module, named for the domain (never for a feature) and shared by all its features, as "This \
+domain's modules" below says. You build the feature's part of it **beside** the existing code, exactly as the \
+approved designs say, in small mechanical steps, and you prove it behaves the same. \
 The existing (as-is) code is not changed: it stays the old flow, and a toggle chooses which flow runs. You do not \
 redesign, improve or tidy anything. {_LEGACY}
 
@@ -819,7 +821,7 @@ with a test of it in the change (rules above); new tests may be added anywhere.
 - Never edit UI files (JSP, HTML, JavaScript, CSS, images), never write DDL or add SQL scripts, never change the \
 meaning of any SQL, never change a plugin or Java version, never add a library.
 - Never delete, ignore or weaken an existing test, and never change an assertion to make it pass.
-- The new module and the bridge package are new folders (or this domain's own, from an earlier feature). The module \
+- The new module and the bridge package are new folders (or this domain's own, already on the base branch). The module \
 depends only on the utility jars listed in `domain-design.yaml`, the Spring and iBatis jars the monolith already \
 uses, and test libraries it already has (Mockito). The monolith depends on the module, never the reverse.
 - The module never reads the session, the request, the current user or a thread-local directly (the check refuses the \
@@ -836,9 +838,9 @@ Read first: `domain-dependencies.yaml` (the scope decision, `god_modules`, `shar
 
 **The domain's module and its packages** follow "This domain's modules" below: where the module is and what it \
 holds (reuse it, never create another), and the package of each class (this feature's, another feature's, `shared` \
-or `util`). If it says the module exists but it is not in your checkout (an earlier feature built it on its own \
-branch), don't wait for it: create it at that same path, with the same artifact and base package, holding only what \
-this feature needs, so the branches merge into one module. Earlier features keep working exactly as before: their \
+or `util`). If the module is not in your checkout (no feature merged it into the base branch yet), don't wait for \
+it: create it at the path, with the artifact and base package, given there, holding only what this feature needs, \
+so the features' branches merge into one module. Features already merged keep working exactly as before: their \
 characterization tests stay unchanged and must still pass. The tests go in the same packages as the classes they test.
 
 Procedure:
@@ -854,7 +856,9 @@ legacy service. Run them; they must pass before anything else. Commit them. They
 commit locally (`git add -A`, then `git -c user.name=migration-studio -c user.email=studio@localhost commit -m "step \
 N: ..."`). If a step fails, revert it with git instead of fixing behaviour; fix forward only when the fix is \
 mechanical. Never push.
-   a. Module skeleton, only when the domain has no module yet: a POM that inherits everything from the parent (no \
+   a. Module skeleton, only when the module is not in your checkout ("This domain's modules" says so): at the \
+path, with the artifact and base package given there (and in `domain-design.yaml`), named for the domain, never \
+for this feature. A POM that inherits everything from the parent (no \
 versions, plugins or Java level) with only the allowed dependencies; the `<module>` line in the parent; the \
 dependency line in the POM that uses it. When the module exists, skip this step (add a dependency to its POM only if \
 this feature needs an allowed one it lacks).
@@ -1465,8 +1469,8 @@ orchestrate.
    - Its key, what it is responsible for and what it is not, and the feature's place in it (next to the domain's \
 other features, if it has any).
    - The module and its packages, as "This domain's modules" below says: the domain's ONE Maven module, shared by \
-all its features and named for the domain, never for this feature (the one an earlier feature built, else where the \
-project puts it); its `base_package`; this feature's package `<base_package>.<feature package>` with its \
+all its features and named for the domain, never for this feature (with the folder, artifact and `base_package` "This domain's \
+modules" gives, from the project's settings); this feature's package `<base_package>.<feature package>` with its \
 sub-packages (e.g. `.web`, `.service`, `.dao`, `.model`, `.integration.port`); what goes in `<base_package>.shared` \
 and `.util`; and which existing classes, iBatis mappings and Spring XML are copied into each. The as-is code stays \
 where it is, unchanged: it is the old flow while the toggle is at `legacy`. For a cross-domain feature, also the domain's ONE orchestrator \
@@ -1718,11 +1722,13 @@ keep working for the other features, note that as a constraint; don't design it.
 DOMAIN_ARCHITECTURE = """## This domain's modules
 Domain `{{data.domain}}` has ONE domain module and ONE orchestrator module in the monolith: two separate Maven \
 modules (each with its own folder, artifact and base package; the orchestrator module depends on the domain module), \
-both named for the domain and shared by all its features: each feature extends them. Never create a second one, never \
+both named for the domain and shared by all its features: each feature extends them. Their names come from the \
+project's settings and are listed below: use exactly those. The domain module's base package is \
+`<prefix>.<domain>`, the orchestrator module's `<prefix>.orchestrator.<domain>`. Never create a second one, never \
 name one after a feature, and never copy again what is already in them: reuse it.
 
 {{data.branching}} When a module, service project or package listed below isn't in your checkout, don't wait for \
-it and don't ask for it: create it at the same place, with the same artifact (or coordinates) and base package, \
+it and don't ask for it: create it at the place, with the artifact (or coordinates) and base package, given below, \
 holding only what this feature needs, so the work merges into one. Change another feature's code only where this \
 feature needs it, as little as possible, so the merges stay simple.
 
@@ -1732,23 +1738,26 @@ domain's types several features use and none owns (entities, DAOs, DTOs) go in `
 helpers several features use (formatters, mappers, validators: no business rules, no database access, no state) go \
 in `<base_package>.util`. Helpers of the monolith's utility jars (`shared_code`, `utility_modules`) are not copied: \
 the module depends on the jar. Code this feature uses from another feature of the domain goes in THAT feature's \
-package, which you create if it doesn't exist yet, even when that feature's migration hasn't started; list those \
-features in `uses_features`. Each feature's SQL statements go in a SQL map beside its package. Declare the module's \
-`base_package` (the same one every feature of the domain uses).
+package, on this feature's branch, which you create if it doesn't exist yet, even when that feature's migration \
+hasn't started or is in progress on its own branch (never touch its run); list those features in `uses_features`. \
+Each feature's SQL statements go in a SQL map beside its package. Declare the module's `base_package` (the one \
+given below).
 Feature packages (key → package): {{data.feature_packages}}.
 {{data.modules}}
 
 ## This domain's services
 The domain has ONE project of each service below (the lifted service, the modern service built from it, and the \
 orchestrator service), each in the repository the domain sets for its agent (Agent inputs), shared by all its \
-features: every feature is added to the same project, never a second project or repository. Inside each, everything \
+features: every feature is added to the same project, never a second project or repository. Their base packages \
+come from the project's settings and are listed below: the lifted and modern services' `<prefix>.<domain>`, the \
+orchestrator service's `<prefix>.orchestrator.<domain>`. Inside each, everything \
 of a feature (controllers, request and response objects, DTOs, services, DAOs, JPA repositories and entities, mappers, \
 its tests) goes in `<base_package>.<feature package>` (the packages above); classes several features use (the \
 exception handler, filters, request-header and contract adapters, REST clients, the event publisher, configuration, \
 shared types) in `<base_package>.shared`; stateless helpers in `<base_package>.util`; only the application's main \
 class sits in `<base_package>`. Each operation's controller and request/response objects go in the package of the feature the \
-operation belongs to. Functionality of another feature this feature uses goes in that feature's package (create it \
-if needed), called by method calls, and listed in `uses_features`. The modern service holds every feature of the \
+operation belongs to. Functionality of another feature this feature uses goes in that feature's package, on this \
+feature's branch (create it if needed), called by method calls, and listed in `uses_features`. The modern service holds every feature of the \
 domain, so packaging is critical there: keep the lifted service's base package and each class in the same package as \
 in the lift. Never move, rename or delete another feature's classes.
 {{data.services}}"""

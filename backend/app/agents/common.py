@@ -393,11 +393,11 @@ def _design_module_problems(ctx: AgentContext) -> list[str]:
         with session_scope() as s:
             run = s.get(Run, ctx.run_id)
             project = run.project if run is not None else None
-    except Exception:  # noqa: BLE001 - without the database there are no earlier features to know
+    except Exception:  # noqa: BLE001 - without the database there are no project settings to name the modules from
         project = None
     if project is None:
         return []
-    return domain_modules.design_problems(project, ctx.domain, ctx.operation, ctx.run_id, ctx.output_dir)
+    return domain_modules.design_problems(project, ctx.domain, ctx.operation, ctx.output_dir)
 
 
 def finish_check(ctx: AgentContext, written: set[str], previous: list[str] | None) -> list[str]:

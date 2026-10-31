@@ -18,6 +18,7 @@ _ids = itertools.count()
 
 def new_project(client, **settings) -> str:
     key = f"proj-{next(_ids)}-{secrets.token_hex(3)}"  # unique even if this module is imported twice
+    settings = {"base_package_prefix": "com.acme", **settings}  # names the domains' packages (app/domain_modules.py)
     r = client.post("/api/projects", json={"key": key, "name": key.title(), "settings": settings})
     assert r.status_code == 201, r.text
     return key

@@ -19,9 +19,8 @@ export function RestartPanel({ run, stage, stages, completed }: { run: RunDetail
   const [open, setOpen] = useState(false);
   const [notes, setNotes] = useState("");
   const [fresh, setFresh] = useState(false);
-  // A fresh re-run on a new branch from the latest base: only where each feature has its own branch (a domain's
-  // branch holds its other features' work too), once the run has a repository checked out.
-  const canCut = run.branch_per === "feature" && !!run.branch && (!!run.base_sha || !!run.repositories?.some((r) => r.base_sha));
+  // A fresh re-run on a new branch from the latest base, once the run has a repository checked out.
+  const canCut = !!run.branch && (!!run.base_sha || !!run.repositories?.some((r) => r.base_sha));
   const [cut, setCut] = useState(false);
   const [newBranch, setNewBranch] = useState(() => nextBranch(run.branch ?? ""));
   const onNewBranch = fresh && canCut && cut;

@@ -74,7 +74,6 @@ export interface PendingBranches {
   // base_behind: commits of the base branch (as last fetched) the run's checkout doesn't have yet; null when unknown
   repository: { key: string; name: string; url: string; base_branch: string | null; checked_out: boolean; default_branch: string | null; base_behind?: number | null };
   existing_branch?: { in_run: boolean; message: string } | null; // the feature branch already exists there
-  parallel_runs?: { run_id: string; subject: string; branch: string; by: string | null; stage: string | null }[]; // others working in this repository
 }
 
 /** Approved AS-IS documents and how they compare with the monolith's base branch. */
@@ -236,7 +235,6 @@ export interface RunDetail extends Run {
   monolith_behind: number | null; // commits the base branch has gained since (as last fetched), docs folder aside
   workflow_update: WorkflowUpdate | null; // the run's workflow changed since it started: what updating it would do
   stopping?: boolean; // an admin asked the working run to stop: its agent ends at its next step
-  branch_per?: "feature" | "domain" | null; // the workflow's branching: a branch per feature, or one per domain
 }
 
 /** What bringing a waiting run up to date with its workflow would change (step titles), or why it can't. */
@@ -424,8 +422,7 @@ export interface Workflow {
 /** A workflow's code changes: review and commit them at the end; where; the feature branch's name. */
 export interface WorkflowGit {
   commit: boolean;
-  branch_per?: "domain" | "feature"; // one branch shared by the domain's features (default), or one per feature
-  branch_pattern: string; // {domain} {feature} {run} {date}; a domain's branch can't use {feature} or {run}
+  branch_pattern: string; // {domain} {feature} {run} {date}; it names {feature} or {run}: each feature on its own branch
 }
 
 export interface AgentCatalog {
@@ -433,17 +430,6 @@ export interface AgentCatalog {
   models: string[];
   efforts: string[];
   tools: { name: string; description: string }[];
-}
-
-export interface ModuleRename {
-  feature: string;
-  run_id: string | null;
-  where: string; // Domain module, Orchestrator module, Domain service, Orchestrator service
-  what: string; // folder, artifact, base package
-  old: string;
-  new: string;
-  step: string;
-  step_title: string;
 }
 
 export interface Domain {
@@ -458,7 +444,6 @@ export interface Domain {
   workflows?: { key: string; name: string; agents: string[]; code_agents: string[]; when_needed?: string[]; hints?: Record<string, string> }[]; // the workflows this domain uses; when_needed: code agents skipped for domain-only features; hints: which repository an agent's is
   /** Names earlier features gave the domain's modules or services after themselves: renamed to the domain's on that
    * feature's branch (its step re-run) before it is merged. */
-  module_renames?: ModuleRename[];
   created_at: string;
   updated_at: string;
 }

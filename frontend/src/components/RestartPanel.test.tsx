@@ -27,9 +27,9 @@ test("the next version of a branch name", () => {
   expect(nextBranch("feature/loan-approve-v2")).toBe("feature/loan-approve-v3");
 });
 
-test("a fresh re-run can go on a new branch from the latest base when each feature has its own branch", async () => {
+test("a fresh re-run can go on a new branch from the latest base", async () => {
   const restart = vi.spyOn(api, "restart").mockResolvedValue({} as Awaited<ReturnType<typeof api.restart>>);
-  show({ branch_per: "feature" });
+  show({});
   expect(screen.getByLabelText(/Continue on/)).toBeChecked();
   fireEvent.click(screen.getByLabelText(/New branch from the latest base branch/));
   expect(screen.getByLabelText("New branch")).toHaveValue("feature/loan-approve-v2");
@@ -37,7 +37,7 @@ test("a fresh re-run can go on a new branch from the latest base when each featu
   await waitFor(() => expect(restart).toHaveBeenCalledWith("r1", "modular_monolith", undefined, true, "feature/loan-approve-v2"));
 });
 
-test("no new branch where the domain's features share one", () => {
-  show({ branch_per: "domain" });
+test("no new branch before the run has checked out a repository", () => {
+  show({ base_sha: null, repositories: [] });
   expect(screen.queryByText(/New branch from the latest base branch/)).toBeNull();
 });

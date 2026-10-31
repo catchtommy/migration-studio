@@ -17,7 +17,7 @@ these changes may exist:
 - new tests anywhere, and lines added to existing tests (neither changes behaviour);
 - nowhere: a changed, moved or deleted legacy file otherwise (Java, JSP, SQL map, existing test), UI files, DDL.
 
-The module and bridge folders are new, or this domain's own from an earlier feature (`earlier`). The Orchestrator in
+The module and bridge folders are new, or this domain's own on the base branch (`earlier`, domain_folders). The Orchestrator in
 monolith step reuses the same rules (see orchestrator_guardrails.py). `check()` returns one line per violation.
 """
 
@@ -499,7 +499,7 @@ def _not_wiring(c: Change, word: re.Pattern | None, prop: str | None) -> str | N
 
 def _own_folders(root: Path, base: str, diff: list[Change], modules: list[str], bridge: list[str],
                  earlier: dict) -> list[str]:
-    """The module folders and the bridge package are new in this step, or this domain's own from an earlier feature:
+    """The module folders and the bridge package are new in this step, or this domain's own on the base branch:
     an existing folder can't be declared as one (everything in it would count as the step's)."""
     def existed(folder: str) -> bool:
         try:
@@ -511,11 +511,11 @@ def _own_folders(root: Path, base: str, diff: list[Change], modules: list[str], 
     for m in modules:
         if m not in (earlier.get("modules") or set()) and existed(m):
             problems.append(f"The module folder {m} already existed. The domain module is a new folder (or this "
-                            "domain's own, from an earlier feature)")
+                            "domain's own, on the base branch)")
     for b in bridge:
         if b not in (earlier.get("bridges") or set()) and existed(b):
             problems.append(f"The bridge package {b} already existed. It is a new package for the router and adapters "
-                            "(or this domain's own, from an earlier feature)")
+                            "(or this domain's own, on the base branch)")
     return problems
 
 
@@ -624,7 +624,7 @@ def for_context(ctx) -> list[str]:
                 "check needs"]
     root = (ctx.workspace / ctx.code_dir).resolve()
     return check(root, ctx.base_sha, declaration, design, ctx.ownership, ctx.domain, (finder or {}).get("god_modules"),
-                 earlier=earlier_folders(ctx.run_id, ctx.domain)) + one_per_domain(ctx, root, "domain", next(
+                 earlier=domain_folders(ctx, root)) + one_per_domain(ctx, root, "domain", next(
                      (str(m["path"]) for m in declaration["modules"] if m["kind"] == "domain"), ""), declaration)
 
 
@@ -638,7 +638,7 @@ def one_per_domain(ctx, root: Path, kind: str, declared: str, declaration: dict)
         with session_scope() as s:
             run = s.get(Run, ctx.run_id)
             project = run.project if run is not None else None
-    except Exception:  # noqa: BLE001 - without the database there are no earlier features to know
+    except Exception:  # noqa: BLE001 - without the database there are no project settings to name the module from
         project = None
     if project is None:
         return []
@@ -646,47 +646,23 @@ def one_per_domain(ctx, root: Path, kind: str, declared: str, declaration: dict)
         artifact = next((m.get("artifact") for m in declaration.get("modules") or [] if m.get("kind") == "domain"), None)
     else:
         artifact = (declaration.get("module") or {}).get("artifact")
-    return (domain_modules.against_design(ctx.output_dir, kind, declared, str(artifact) if artifact else None,
-                                          declaration.get("base_package"), project, ctx.domain)
-            + domain_modules.problems(project, ctx.domain, ctx.run_id, root, kind, declared,
-                                      str(artifact) if artifact else None, ctx.base_sha)
-            + domain_modules.package_problems(project, ctx.domain, ctx.operation, ctx.run_id, root, ctx.base_sha, kind,
-                                              declared, declaration))
+    return (domain_modules.problems(project, ctx.domain, root, kind, declared, str(artifact) if artifact else None,
+                                    ctx.base_sha)
+            + domain_modules.package_problems(project, ctx.domain, ctx.operation, root, ctx.base_sha, kind, declared,
+                                              declaration))
 
 
-def declarations(run_id: str, domain: str, name: str) -> list[str]:
-    """The texts of a declaration (`name`) the runs of the domain stored, this run's earlier attempts included."""
-    from sqlalchemy import select
+def domain_folders(ctx, root: Path) -> dict:
+    """The domain's module folder and bridge packages on the base branch (where the step started): a feature extends
+    them instead of creating new ones. Named from the project's settings and read from git, never from other features'
+    runs (app/domain_modules.py)."""
+    from app import domain_modules
 
-    from app.db.models import Artifact, Run
-    from app.db.session import session_scope
-
-    try:
-        with session_scope() as s:
-            run = s.get(Run, run_id)
-            if run is None:
-                return []
-            return [a.content for a in s.scalars(select(Artifact).join(Run, Run.id == Artifact.run_id).where(
-                Run.project == run.project, Run.domain == domain, Artifact.name == name))]
-    except Exception:  # noqa: BLE001 - without the database there is nothing earlier to know
-        return []
-
-
-def earlier_folders(run_id: str, domain: str) -> dict:
-    """The module folders and bridge packages declared by runs of the domain (this one's earlier attempts included):
-    a later feature, or a re-run, extends them instead of creating new ones."""
-    from app import contracts_store as cs
-
-    out = {"modules": set(), "bridges": set()}
-    for text in declarations(run_id, domain, cs.MODULE_EXTRACTION_FILE):
-        try:
-            data = cs.parse_module_extraction(text)
-        except cs.InvalidDocument:
-            continue
-        out["modules"] |= {str(m["path"]).strip("/") for m in data["modules"]}
-        if data.get("bridge_dir"):
-            out["bridges"].add(str(data["bridge_dir"]).strip("/"))
-    return out
+    project = domain_modules.project_of(ctx.run_id)
+    if project is None:
+        return {"modules": set(), "bridges": set()}
+    return {"modules": {domain_modules.names(project, ctx.domain)["domain"].path},
+            "bridges": domain_modules.domain_bridges(root, ctx.base_sha, ctx.domain)}
 
 
 def report(problems: list[str]) -> str:

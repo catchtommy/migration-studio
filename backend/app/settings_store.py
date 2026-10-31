@@ -43,6 +43,9 @@ PROJECT_DEFAULTS: dict[str, Any] = {
     # every feature of the domain extends (app/domain_modules.py)
     "domain_module_dir_pattern": "{domain}-domain",
     "orchestrator_module_dir_pattern": "{domain}-orchestrator",
+    # The company part of every package and the Maven groupId (com.acme): a domain's module and services use
+    # com.acme.<domain>.<feature>, its orchestrator module and service com.acme.orchestrator.<domain>.<feature>
+    "base_package_prefix": "",
     # The migration workflow a new run uses unless its domain has a default of its own; "" = the Standard migration
     "default_workflow": "",
 }
@@ -99,6 +102,9 @@ def _check(values: dict[str, Any], allowed: dict[str, Any], kind: str) -> None:
         if value is not None and not (_relative_folder(value) and "{domain}" in value
                                       and set(re.findall(r"{(\w+)}", value)) == {"domain"}):
             raise KeyError(f"The module folder must be a relative folder naming the domain, e.g. {example}")
+    prefix = values.get("base_package_prefix")
+    if prefix is not None and prefix != "" and not re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*", str(prefix)):
+        raise KeyError("The base package prefix must be a Java package in lower case, e.g. com.acme")
     branch = values.get("monolith_branch")
     if branch is not None and branch != "" and not valid_branch(branch):
         raise KeyError("The base branch must be a git branch or tag name, e.g. main or release/2.4")

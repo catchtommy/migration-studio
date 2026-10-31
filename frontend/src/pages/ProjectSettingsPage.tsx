@@ -340,6 +340,18 @@ function General({ project }: { project: string }) {
               <input className={input} value={form.service_dir_pattern as string} onChange={(e) => set("service_dir_pattern", e.target.value)} />
             </Field>
           </div>
+          <Field
+            label="Base package prefix"
+            hint={`The company part of every package and the Maven groupId. A domain's module and services use ${(form.base_package_prefix as string) || "com.acme"}.<domain>.<feature>, its orchestrator module and service ${(form.base_package_prefix as string) || "com.acme"}.orchestrator.<domain>.<feature>. Needed before a migration starts.`}
+          >
+            <input
+              aria-label="Base package prefix"
+              className={`${input} max-w-xs font-mono`}
+              placeholder="com.acme"
+              value={(form.base_package_prefix as string) ?? ""}
+              onChange={(e) => set("base_package_prefix", e.target.value.trim())}
+            />
+          </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Domain module folder" hint="In the monolith; {domain} is replaced. One per domain: every feature of the domain extends it.">
               <input className={input} value={form.domain_module_dir_pattern as string} onChange={(e) => set("domain_module_dir_pattern", e.target.value)} />

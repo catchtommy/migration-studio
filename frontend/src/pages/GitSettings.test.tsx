@@ -1,19 +1,14 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { vi } from "vitest";
-import type { WorkflowGit } from "../lib/api";
 import { GitSettings } from "./WorkflowsPage";
 
 vi.mock("../lib/hooks", () => ({}));
 
-test("one branch per domain by default; switching follows the default pattern but keeps a custom one", () => {
+test("each feature runs on its own branch: no branching choice, only the branch name", () => {
   const onChange = vi.fn();
-  const { rerender } = render(<GitSettings value={{ commit: true, branch_per: "domain", branch_pattern: "migration/{domain}/modules" }} onChange={onChange} />);
-  expect(screen.getByLabelText(/^Domain/)).toBeChecked();
-  fireEvent.click(screen.getByLabelText(/^Feature/));
-  expect(onChange).toHaveBeenLastCalledWith({ commit: true, branch_per: "feature", branch_pattern: "migration/{domain}/{feature}" });
-
-  const custom: WorkflowGit = { commit: true, branch_per: "domain", branch_pattern: "team/{domain}" };
-  rerender(<GitSettings value={custom} onChange={onChange} />);
-  fireEvent.click(screen.getByLabelText(/^Feature/));
-  expect(onChange).toHaveBeenLastCalledWith({ ...custom, branch_per: "feature" });
+  render(<GitSettings value={{ commit: true, branch_pattern: "migration/{domain}/{feature}" }} onChange={onChange} />);
+  expect(screen.getByText(/Each feature runs on its own branch/)).toBeInTheDocument();
+  expect(screen.queryByLabelText(/^Domain/)).toBeNull();
+  fireEvent.change(screen.getByDisplayValue("migration/{domain}/{feature}"), { target: { value: "team/{domain}/{feature}" } });
+  expect(onChange).toHaveBeenLastCalledWith({ commit: true, branch_pattern: "team/{domain}/{feature}" });
 });

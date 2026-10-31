@@ -55,7 +55,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                       "e5ac314731ee2cea532d10917f03304365e33b91c1f7358103bbe9d314ddd8db",
         "12b7b3cd2ffc888c21f10cd8fab6141eb9140dd450081f452843ddd0662b1e84",
         "a51508117bdc207fd09fc144f932d18a66638cf5bb683d4a76ca0d38943474f7",
-        "339578ac2087bbdb497644faf80d3f7ace56d0c9f60c86ffb940840d4a964ad6"},
+        "339578ac2087bbdb497644faf80d3f7ace56d0c9f60c86ffb940840d4a964ad6",
+                      "94017c67ed50785e4c739eb40fb064ce2305efc75fe06ea1cea7e7409b3f2e91"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
     "orchestrator_design": {"fec9b1a759bfbb513210a58472431041d014335317139309281fd8546c42b34a",
@@ -120,7 +121,9 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "5fa33af0b039ab07f2cb732abc0a97fad8bac30609f1aa366c42433f3900cb80",
         "c606bd6e69de66270b01248c20cd160602c92fafc5d0682783ae5998c34c825f",
         "0183c418952e37bbe42453d01ee323819fdaee85b694321e87a6bc36a4e6bc69",
-        "991b17db193a33d5329c3b2957f6fb182c7f9b557f25d48d97977435a74fb199"},
+        "991b17db193a33d5329c3b2957f6fb182c7f9b557f25d48d97977435a74fb199",
+                         "20369f074da4f5870c38bdea7c129dc92217a37a182b7e3dba3c983e3a226a09",
+                         "c3a678317498d3b0682c70f3a3b41727037b401f23c54713108a735babbd28fa"},
     "monolith_integration": {"b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
                              "29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
                              "11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
@@ -142,7 +145,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68",
         "e9a0a4f846d21ff3e0b360c6acd0d6017f453bfe9dc5c5ea937669b2c49c9be9"},
     "modulith_design": {"252cf4ec3774bac5dc90c8853ec400f96308cd88864ddc7f2d0d6c241e190c54",
-        "da774e69420c666793587dc7f0e433e7a06e56c3f3ca5bf203e672cc98a53739"},
+        "da774e69420c666793587dc7f0e433e7a06e56c3f3ca5bf203e672cc98a53739",
+                        "3082df6c03384325fd257008848ad68ee4420b1bbf92388e51f2901161690271"},
     "service_tests": {"92748bd2b1cb6f490d603714dc95bd9067baead0f79409ac43927cf7a1f81149"},
     "modernise_and_test": {"f344e3a8168e60d7ce6aff5aaaafe61ef51c0687c994261490c708af0cb135cf",
         "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f",
@@ -150,7 +154,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v28"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v30"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
 GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails

@@ -53,8 +53,15 @@ owned or read directly if another domain owns it, and `other_domain_dependencies
 
 ### Module in monolith
 
-The *Module in monolith* agent is a careful legacy refactorer: it builds one feature's **domain** module (a new Maven
-module) exactly as the designs say, in small mechanical steps, and proves that behaviour is unchanged. It is a
+The *Module in monolith* agent is a careful legacy refactorer: it adds one feature to its domain's **domain** module
+(one Maven module per domain, shared by its features) exactly as the designs say, in small mechanical steps, and proves
+that behaviour is unchanged. The names come from the project's settings alone, the same for every feature, so the
+features' branches merge into one module: the folders `domain_module_dir_pattern` and
+`orchestrator_module_dir_pattern`, the artifacts `<prefix>:<folder>`, and the packages `<prefix>.<domain>.<feature>`
+(domain module, lifted and modern services) and `<prefix>.orchestrator.<domain>.<feature>` (orchestrator module and
+service), with `.shared` and `.util` for what several features use. The prefix is the project's **Base package
+prefix** (Project → Settings, e.g. `com.acme`), needed before a migration starts. Code one feature uses from another
+goes in the other feature's package, on this feature's branch, created when it isn't there yet. It is a
 **parallel run**: the as-is code is never changed. It stays the old flow, and the new module is built **beside** it as
 a copy. One toggle per feature (`migration.<domain>.<feature>.route`) chooses the flow on every call:
 
@@ -109,7 +116,7 @@ new SQL scripts; SQL in the module that is not a copy, text for text, of the mon
 `<module>` line and a dependency on the new module; a new module that declares plugins, a Java level, a dependency on a
 module of the monolith itself, a library the monolith does not already use, or a version it does not use (the
 exceptions are the utility jars listed in `domain-design.yaml`); a module or bridge folder that already existed (unless
-an earlier feature of the domain declared it); a class in the bridge that is neither the router, an adapter of a
+it is the domain's own on the base branch); a class in the bridge that is neither the router, an adapter of a
 port, nor a helper (mapper) the router or an adapter uses, or a helper with database access; a missing router, or a toggle configured to anything but `legacy`; ignored tests; any use of another domain's
 tables or packages or of a God module; and more than 10 changed files outside the module (stop and ask). The built-in
 agent always runs it; tick the *Module guardrails* check on the Agents page to give it to a custom agent.
@@ -502,15 +509,18 @@ commit in every repository it changed.
    *Changes code* write documents only. Steps sharing a repository must use the same base branch. Save for **This
    project only** when the URLs are specific to a project.
 2. **Workflow → Git** sets whether runs end with a review and commit, and the **feature branch name**
-   (`migration/{domain}/{feature}` by default; `{run}` and `{date}` also work).
+   (`migration/{domain}/{feature}` by default; `{run}` and `{date}` also work). **Each feature runs on its own
+   branch**, cut from the base branch when the run starts (the latest of it is fetched then, so features merged into
+   it since are included), and is merged into the base branch by hand when done. Features never share a branch, and a
+   run never reads what another feature's run is doing: it knows the base branch and the domain's feature list only.
+   The pattern must name `{feature}` (or `{run}`).
 3. **New migration** starts the run on a feature branch named by that pattern, in every repository it will change.
    A name another unfinished run uses there is refused; a branch that already exists is continued on (next point). **Add / show entry
    points** shows the feature's entry points, pre-filled, to change for this run, with notes for the agents.
 4. **Before every step that changes code** (each time it runs), the run pauses as **Confirm branches**: the run page
    shows the repository, its base branch (editable while it isn't checked out yet) and the feature branch (renaming it
    renames it in every repository of the run), with the workflow's current settings for the step. It says when the
-   branch **already exists** (the step then continues on it), and lists **other unfinished runs changing the same
-   repository** (their branches may conflict when merged). **Confirm and start** (needs *Run migrations*) checks the
+   branch **already exists** (the step then continues on it). **Confirm and start** (needs *Run migrations*) checks the
    names, then **brings in the latest of the feature branch from git** (fast-forward, or a merge: where only this run
    pushed, git's version wins; work not pushed yet is kept, and a conflict with it stops the step) and starts it.
    The run checks out the monolith at the workspace root when it starts, and the other repositories inside it

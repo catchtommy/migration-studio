@@ -30,13 +30,11 @@ from app.db.session import emit, session_scope
 from app.text import decode
 from app.tools import git_ops
 
+# Every migration runs on its own branch, cut from the base branch and merged into it by hand when done: features never
+# share a branch, so one never affects another's run (app/domain_modules.py).
 DEFAULT_PATTERN = "migration/{domain}/{feature}"
-# One branch per domain: every feature of the domain adds its work to it, so a later feature builds on the domain's
-# module as the earlier ones left it (app/domain_modules.py). Not migration/{domain}: git can't have that branch beside
-# the domain's per-feature ones.
-DOMAIN_PATTERN = "migration/{domain}/modules"
 PLACEHOLDERS = ("domain", "feature", "run", "date")
-PER_FEATURE = ("feature", "run")  # placeholders a branch shared by the domain's features can't use
+PER_FEATURE = ("feature", "run")  # a branch pattern names one of them, so each feature (or run) gets its own branch
 MAX_TEXT = 1_000_000  # larger files are shown as "too large" and can only be taken whole
 ROOT = "monolith"  # the key of the workspace root's repository
 NESTED_DIR = ".studio/repos"  # where a run's other repositories are checked out, inside the workspace
@@ -64,32 +62,27 @@ def _placeholders(pattern: str) -> set[str]:
 
 
 def git_settings(workflow: dict | None) -> dict:
-    """A workflow's git settings, with defaults: migrations review and commit their changes; discovery doesn't. The
-    branch is one per domain unless the workflow says one per feature (a workflow saved before the choice existed with
-    a pattern naming the feature keeps one per feature)."""
+    """A workflow's git settings, with defaults: migrations review and commit their changes; discovery doesn't. Each
+    feature has its own branch: a pattern saved before (one branch shared by the domain's features, naming neither
+    {feature} nor {run}) gives way to the default."""
     stored = (workflow or {}).get("git") or {}
     migration = (workflow or {}).get("scope", "operation") == "operation"
     pattern = stored.get("branch_pattern", "") or ""
-    per = stored.get("branch_per") or ("feature" if _placeholders(pattern) & set(PER_FEATURE) else "domain")
-    return {"commit": bool(stored.get("commit", migration)) and migration, "branch_per": per,
-            "branch_pattern": pattern or (DOMAIN_PATTERN if per == "domain" else DEFAULT_PATTERN)}
+    if not _placeholders(pattern) & set(PER_FEATURE):
+        pattern = DEFAULT_PATTERN
+    return {"commit": bool(stored.get("commit", migration)) and migration, "branch_pattern": pattern}
 
 
 def validate_git(values: dict) -> dict:
     """Clean a workflow's git settings, or ValueError."""
-    pattern = str(values.get("branch_pattern") or "").strip()
-    per = values.get("branch_per") or ("feature" if _placeholders(pattern) & set(PER_FEATURE) else "domain")
-    if per not in ("domain", "feature"):
-        raise ValueError("branch_per must be 'domain' or 'feature'")
-    out = {"commit": bool(values.get("commit", True)), "branch_per": per,
-           "branch_pattern": str(values.get("branch_pattern") or "").strip()}
+    out = {"commit": bool(values.get("commit", True)), "branch_pattern": str(values.get("branch_pattern") or "").strip()}
     if out["branch_pattern"]:
         unknown = _placeholders(out["branch_pattern"]) - set(PLACEHOLDERS)
-        if per == "domain" and _placeholders(out["branch_pattern"]) & set(PER_FEATURE):
-            raise ValueError("A branch shared by the domain's features can't name the feature or the run; leave out "
-                             "{feature} and {run}, or choose one branch per feature")
         if unknown:
             raise ValueError(f"Unknown placeholder {{{sorted(unknown)[0]}}}; use {', '.join('{%s}' % p for p in PLACEHOLDERS)}")
+        if not _placeholders(out["branch_pattern"]) & set(PER_FEATURE):
+            raise ValueError("Each feature runs on its own branch: the pattern must name {feature} (or {run}), e.g. "
+                             "migration/{domain}/{feature}")
         if not git_ops.valid_branch(branch_name(out["branch_pattern"], "domain", "feature", "run")):
             raise ValueError("The feature branch pattern doesn't make a valid branch name")
     return out
@@ -97,7 +90,7 @@ def validate_git(values: dict) -> dict:
 
 def branch_name(pattern: str, domain: str, feature: str, run_id: str = "") -> str:
     safe = lambda v: re.sub(r"[^A-Za-z0-9._-]+", "-", v).strip("-.") or "x"  # noqa: E731
-    return (pattern or DOMAIN_PATTERN).format(domain=safe(domain), feature=safe(feature), run=safe(run_id[:8] or "run"),
+    return (pattern or DEFAULT_PATTERN).format(domain=safe(domain), feature=safe(feature), run=safe(run_id[:8] or "run"),
                                                date=datetime.now(UTC).strftime("%Y%m%d"))
 
 
@@ -212,6 +205,18 @@ def missing_repositories(stages: list[dict], domain: str, project: str, when_nee
     return f"Set the repository of {', '.join(titles)} in {name}'s Agent inputs"
 
 
+def _missing_prefix(project: str, stages: list[dict]) -> str | None:
+    """A workflow with a step that builds the domain's modules or services names their packages and artifacts from the
+    project's base package prefix (app/domain_modules.py): it is needed before such a run starts."""
+    from app import domain_modules
+
+    if not any(st.get("key") in (*domain_modules.STEPS, *domain_modules.DESIGN_STEPS) for st in stages):
+        return None
+    if domain_modules.prefix(project):
+        return None
+    return "Set the base package prefix (Project → Settings, e.g. com.acme): the domain's packages are named from it"
+
+
 def plan(project: str, workflow: dict, domain: str, feature: str, base_branches: dict | None = None,
          feature_branch: str | None = None) -> dict:
     """Where a new run of the workflow works: each repository with its base branch (the user's choices, else the
@@ -228,8 +233,8 @@ def plan(project: str, workflow: dict, domain: str, feature: str, base_branches:
     for r in code_repositories(stages, domain, project):
         listed.append({**r, "name": r["key"], "root": False,
                        "base_branch": (base_branches.get(r["key"]) or "").strip() or r["base_branch"]})
-    out = {"commit": cfg["commit"] and bool(listed), "domain": domain, "branch_per": cfg["branch_per"],
-           "missing": missing_repositories(stages, domain, project),
+    out = {"commit": cfg["commit"] and bool(listed), "domain": domain,
+           "missing": missing_repositories(stages, domain, project) or _missing_prefix(project, stages),
            "feature_branch": (feature_branch or "").strip() or branch_name(cfg["branch_pattern"], domain, feature),
            "repositories": []}
     for r in listed:
@@ -252,9 +257,9 @@ def check_branches(project: str, info: dict) -> None:
     if info.get("missing"):
         raise ValueError(info["missing"])
     with session_scope() as s:
-        # The domain's own runs share its branch (one per domain); another domain's never.
+        # Each run has its own branch: never one an unfinished run works on.
         unfinished = s.scalars(select(Run).where(Run.project == project, Run.branch == feature,
-                                                 Run.status != "completed", Run.domain != info["domain"])).all()
+                                                 Run.status != "completed")).all()
         busy = {url for run in unfinished for url in [_monolith_url(run), *(r["url"] for r in run.repositories or [])]
                 if url}
     for r in info["repositories"]:
@@ -421,28 +426,7 @@ def confirmation_needed(run_id: str, stage_key: str) -> dict | None:
         if ws is not None:
             repo["base_behind"] = _base_behind(ws, mirror, repo["base_branch"])
     return {"kind": "branches", "stage": stage_key, "stage_title": title, "feature_branch": feature, "repository": repo,
-            "existing_branch": existing_branch(project, repo, feature, title),
-            "parallel_runs": parallel_runs(run_id, project, repo["url"])}
-
-
-def parallel_runs(run_id: str, project: str, url: str) -> list[dict]:
-    """Other unfinished runs of the project that have checked out the same repository (each on its own branch). Their
-    work and this run's are merged later: changes to the same files will conflict then, so the person confirming
-    knows who else is working there."""
-    from app import discovery_store
-
-    with session_scope() as s:
-        others = s.scalars(select(Run).where(Run.project == project, Run.id != run_id, Run.status != "completed",
-                                             Run.scope.is_(None) | (Run.scope == "operation"))).all()
-        out = []
-        for o in others:
-            urls = ([o.repository] if o.repository and o.base_sha else []) + \
-                   [r["url"] for r in o.repositories or [] if r.get("base_sha")]
-            if url in urls:
-                by = s.get(User, o.started_by).display_name if o.started_by else None
-                out.append({"run_id": o.id, "subject": discovery_store.subject(o.domain, o.operation),
-                            "branch": o.branch, "by": by, "stage": o.current_stage})
-        return out
+            "existing_branch": existing_branch(project, repo, feature, title)}
 
 
 def existing_branch(project: str, repo: dict, feature: str, title: str) -> dict | None:

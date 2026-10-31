@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PendingBranches } from "../lib/api";
 import { useCan } from "../lib/hooks";
@@ -83,23 +82,6 @@ export function BranchConfirmation({ runId, pending }: { runId: string; pending:
             <span className="font-medium">An existing branch already exists.</span> {pending.existing_branch.message}
           </p>
         ))}
-      {!!pending.parallel_runs?.length && (
-        <div className="rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm">
-          <p className="font-medium">Other runs are changing code in {repo.name} too.</p>
-          <ul className="mt-1 list-disc pl-5">
-            {pending.parallel_runs.map((r) => (
-              <li key={r.run_id}>
-                <Link to={`/runs/${r.run_id}`} className="text-accent hover:underline">
-                  {r.subject}
-                </Link>{" "}
-                on <span className="font-mono text-xs">{r.branch}</span>
-                {r.by && <> (started by {r.by})</>}
-              </li>
-            ))}
-          </ul>
-          <p className="mt-1 text-xs text-subtle">Each works on its own branch; where they change the same files, the branches will conflict when they are merged.</p>
-        </div>
-      )}
       {confirm.error && <p className="text-sm text-bad">{(confirm.error as Error).message}</p>}
       {canStart ? (
         <button type="submit" disabled={!feature.trim() || confirm.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">

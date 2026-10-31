@@ -10,7 +10,7 @@ and POM lines outside the module and the bridge; in the bridge, the router, adap
 UI, DDL or version changes, no other domain's code or tables, no God module, no ambient inputs), and in addition:
 
 - the orchestrator holds no database access (DAO, iBatis, JDBC, JPA, SQL maps) and no transaction of its own;
-- the orchestrator module is a new folder (or this domain's own, from an earlier feature);
+- the orchestrator module is a new folder (or this domain's own, named from the project's settings);
 - the domain module does not change;
 - the orchestrator module depends on the domain module;
 - a feature declared without an orchestrator (`orchestrator: none`) changes no code at all.
@@ -135,18 +135,11 @@ def for_context(ctx) -> list[str]:
 
 
 def _earlier(run_id: str, domain: str) -> set[str]:
-    """The orchestrator module folders runs of the domain declared: extended, not created again."""
-    from app import contracts_store as cs
+    """The domain's orchestrator module folder (named from the project's settings): extended, not created again."""
+    from app import domain_modules
 
-    out = set()
-    for text in mg.declarations(run_id, domain, cs.ORCHESTRATOR_EXTRACTION_FILE):
-        try:
-            data = cs.parse_orchestrator_extraction(text)
-        except cs.InvalidDocument:
-            continue
-        if data["orchestrator"] == "module":
-            out.add(str(data["module"]["path"]).strip("/"))
-    return out
+    project = domain_modules.project_of(run_id)
+    return {domain_modules.names(project, domain)["orchestrator"].path} if project else set()
 
 
 def report(problems: list[str]) -> str:

@@ -12,7 +12,7 @@ from sqlalchemy import delete
 
 from app.db.models import Run, StageExecution
 from app.db.session import emit, session_scope
-from app import delivery, legacy, projects, repos
+from app import delivery, git_auth, legacy, projects, repos
 from app.orchestrator import questions
 from app.orchestrator.checkpointer import SqlAlchemySaver
 from app.orchestrator.graph import build_graph, node_before
@@ -174,6 +174,15 @@ class Runner:
                 # documents (and other repositories it changes). A step that changes the monolith's code gets the
                 # run its own checkout just before it starts (workspace.check_out_monolith); the base branch chosen
                 # for that is kept until then.
+                # The base branch as it is now (features merged into it since included): fetched first, so the run
+                # reads, and later cuts its branch from, its latest commit. When git can't be reached, the copy last
+                # fetched (said in the log).
+                try:
+                    repos.fetch(projects.current(), None, started_by)
+                    legacy.refresh(projects.current())
+                except Exception as e:  # noqa: BLE001 - network, credentials: the last fetched copy
+                    emit(run_id, "log", f"Could not fetch the latest of the monolith, so this run reads the copy last "
+                                        f"fetched: {git_auth.scrub(str(e))}")
                 shared = legacy.snapshot(projects.current(), started_by, source_branch)
                 git_ops.init_workspace(Path(workspace), None, branch)
                 with session_scope() as s:
