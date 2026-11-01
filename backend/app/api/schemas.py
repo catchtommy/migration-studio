@@ -115,6 +115,8 @@ class RunDetail(RunOut):
     # The run's workflow has changed since it started: what updating its upcoming steps would do (run_workflow.plan)
     workflow_update: dict | None = None
     stopping: bool = False  # an admin asked the working run to stop: its agent ends at its next turn
+    # top down: agent steps that can't be re-run yet (an earlier step failed or was rolled back), with the reason
+    rerun_blocked: dict[str, str] = {}
     branch_per: str | None = None  # the workflow's branching: "feature" (a branch per feature) or "domain"
 
 

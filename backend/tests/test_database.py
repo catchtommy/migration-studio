@@ -67,7 +67,7 @@ def test_every_document_and_the_stage_diff_are_stored(client, monkeypatch, code_
     ex = next(s for s in run["stages"] if s["stage"] == "deep_dive")
     diff = client.get(f"/api/runs/{run_id}/stages/{ex['id']}/diff").json()["diff"]
     assert "src/deep_dive.java" in diff
-    assert f"b/.migration/loan/{run['operation']}/deep_dive.md" in diff  # document changes, from the stored versions
+    assert f"b/.migration/loan/{run['operation']}/deep-dive.md" in diff  # document changes, from the stored versions
 
     shutil.rmtree(ws)  # the diff is served from the database, not the workspace
     assert client.get(f"/api/runs/{run_id}/stages/{ex['id']}/diff").json()["diff"] == diff
@@ -92,7 +92,7 @@ def test_lost_workspace_is_rebuilt_for_a_rejection(client, monkeypatch, code_ste
     assert (ws / "src" / "as_is_doc.java").read_text() == "class as_is_doc { int attempt = 1; }\n"
     assert (ws / "src" / "domain_dependencies.java").read_text() == "class domain_dependencies { int attempt = 2; }\n"
     from app.workspace import effective_documents
-    assert "Rebuild me" in effective_documents(run_id)[f".migration/loan/{run['operation']}/domain_dependencies.md"]
+    assert "Rebuild me" in effective_documents(run_id)[f".migration/loan/{run['operation']}/domain-dependencies.md"]
     assert not (ws / ".migration").exists()
 
 

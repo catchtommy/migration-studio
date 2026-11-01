@@ -38,6 +38,20 @@ export function RestartPanel({ run, stage, stages, completed }: { run: RunDetail
   const later = stages.slice(at + 1).filter((s) => s.kind === "agent");
   const gates = stages.slice(at + 1).filter((s) => s.kind === "gate").length;
 
+  const blocked = run.rerun_blocked?.[stage.key];
+  if (blocked)
+    return (
+      <span className="ml-auto flex flex-col items-end gap-0.5">
+        <button
+          disabled
+          className="rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium opacity-50"
+          title={blocked}
+        >
+          ↻ Re-run from here
+        </button>
+        <span className="max-w-xs text-right text-xs text-subtle">{blocked}</span>
+      </span>
+    );
   if (!open)
     return (
       <button

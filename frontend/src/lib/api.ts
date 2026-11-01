@@ -222,6 +222,7 @@ export interface RunDetail extends Run {
   monolith_behind: number | null; // commits the base branch has gained since (as last fetched), docs folder aside
   workflow_update: WorkflowUpdate | null; // the run's workflow changed since it started: what updating it would do
   stopping?: boolean; // an admin asked the working run to stop: its agent ends at its next step
+  rerun_blocked?: Record<string, string>; // top down: steps that can't be re-run yet, with the reason (an earlier step failed)
 }
 
 /** What bringing a waiting run up to date with its workflow would change (step titles), or why it can't. */

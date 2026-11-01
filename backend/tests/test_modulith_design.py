@@ -158,9 +158,9 @@ def test_a_run_goes_through_the_sub_flow_and_leaves_the_documents_for_later_step
 
     # The orchestrator step is told about exactly the documents it builds on.
     orchestrator = client.get(f"/api/artifacts/{by_stage['orchestrator_design']['id']}").json()["content"]
-    for stage in ("domain_dependencies", "linked_domain_contracts", "domain_design"):
-        assert f"{stage}.md`" in orchestrator
-    assert "deep_dive.md`" not in orchestrator and "as_is_doc.md`" not in orchestrator
+    for doc in ("domain-dependencies.md", "linked-domain-contracts.md", "domain-design.md"):  # their main documents
+        assert f"{doc}`" in orchestrator
+    assert "deep-dive.md`" not in orchestrator and "as-is.md`" not in orchestrator
     from app.workspace import effective_documents
     assert by_stage["domain_dependencies"]["path"] in effective_documents(run["id"])  # left for later steps
 

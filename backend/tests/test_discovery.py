@@ -94,7 +94,7 @@ def test_discovery_runs_get_paths_and_notes(client):
     inputs = {"paths": ["docs/architecture/*.md", " "], "notes": "Docs may be out of date; the code wins."}
     run_id = client.post("/api/discovery/bounded-contexts", json={"inputs": inputs}).json()["id"]
     wait_for(client, run_id, {"awaiting_approval"})
-    doc = _artifact(client, run_id, "bounded_contexts.md")
+    doc = _artifact(client, run_id, "bounded-contexts.md")
     content = client.get(f"/api/artifacts/{doc['id']}").json()["content"]
     assert "Entry points and files for this discovery run" in content and "docs/architecture/*.md" in content
     assert "the code wins" in content

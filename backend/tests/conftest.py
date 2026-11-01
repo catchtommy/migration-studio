@@ -83,4 +83,13 @@ class Document:
 
 
 def document(run: dict, stage: str, name: str | None = None) -> Document:
-    return Document(run["id"], f".migration/{run['domain']}/{run['operation']}/{name or stage + '.md'}")
+    """A step's document; by default its main one, as the stub writes it: its first required Markdown output (e.g.
+    as-is.md), else one named after the step."""
+    if name is None:
+        from app.agents.defaults import default_config
+        try:
+            outputs = default_config(stage)["outputs"]
+        except KeyError:
+            outputs = []
+        name = next((o for o in outputs if o.endswith(".md")), f"{stage}.md")
+    return Document(run["id"], f".migration/{run['domain']}/{run['operation']}/{name}")

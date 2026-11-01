@@ -24,11 +24,11 @@ def test_a_runs_documents_download_as_one_zip_a_folder_per_agent(client):
     response = client.get(f"/api/runs/{run['id']}/documents.zip")
     assert f'loan-{operation}-documents.zip' in response.headers["content-disposition"]
     names = _zip(response).namelist()
-    assert "01-as_is_doc/as_is_doc.md" in names
-    assert "02-deep_dive/deep_dive.md" in names and "02-deep_dive/cross-domain.yaml" in names
+    assert "01-as_is_doc/as-is.md" in names
+    assert "02-deep_dive/deep-dive.md" in names and "02-deep_dive/cross-domain.yaml" in names
     # The contents are the documents as the run has them, reviewers' edits included.
     artifact = next(a for a in client.get(f"/api/runs/{run['id']}/artifacts").json() if a["stage"] == "as_is_doc")
-    assert _zip(client.get(f"/api/runs/{run['id']}/documents.zip")).read("01-as_is_doc/as_is_doc.md").decode() == \
+    assert _zip(client.get(f"/api/runs/{run['id']}/documents.zip")).read("01-as_is_doc/as-is.md").decode() == \
         client.get(f"/api/artifacts/{artifact['id']}").json()["content"]
 
 
@@ -38,7 +38,7 @@ def test_a_domains_documents_download_with_a_folder_per_feature(client):
     wait_for(client, run["id"], {"awaiting_approval"})
 
     names = _zip(client.get("/api/domains/broker/documents.zip")).namelist()
-    assert f"{operation}/01-as_is_doc/as_is_doc.md" in names
+    assert f"{operation}/01-as_is_doc/as-is.md" in names
     assert all(not n.startswith((".", "/")) and ".." not in n for n in names)
 
 

@@ -140,10 +140,12 @@ def test_steps_receive_only_the_outputs_they_use(client):
     run = wait_for(client, run["id"], {"completed"})
     assert "Inputs from earlier steps" not in _doc(run, "boundary_design")
     deep = _doc(run, "deep_dive")
-    assert "AS-IS documentation: `" in deep and "as_is_doc.md` (contents included)" in deep
+    assert "AS-IS documentation: `" in deep and "as-is.md` (contents included)" in deep
     assert "boundary_design" not in deep
     modern = _doc(run, "modernise")
-    assert all(f"{s}.md`" in modern for s in ("as_is_doc", "boundary_design", "deep_dive"))
+    from tests.conftest import document
+    assert all(f"{document({'id': '', 'domain': '', 'operation': ''}, s).path.rsplit('/', 1)[-1]}`" in modern
+               for s in ("as_is_doc", "boundary_design", "deep_dive"))  # their main documents
     assert "contents included" not in modern
 
 

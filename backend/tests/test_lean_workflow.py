@@ -183,3 +183,49 @@ def test_the_lean_workflow_takes_over_the_code_flags_set_on_the_standard_one_sin
             s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)).steps = lean_before
             for key in (workflow_store.STANDARD_KEY, workflow_store.LEAN_KEY):
                 s.delete(s.get(WorkflowDef, (project, key)))
+
+
+def test_top_down_a_step_after_a_failed_one_cant_be_re_run_until_it_completes(client, monkeypatch):
+    """Lean: Analysis re-run fresh fails (its work is rolled back). Modulith design builds on it, so it can't be re-run
+    (refused, and shown blocked) until Analysis completes again; Analysis itself, re-run in place, starts fresh as it
+    has nothing in effect to update."""
+    from sqlalchemy import select
+
+    from app.agents import stub
+    from app.db.models import AuditEvent
+    from app.db.session import session_scope
+    from tests.conftest import start_run, wait_for
+
+    r = start_run(client, {"domain": "customer", "operation": "top-down", "workflow": "lean"})
+    run_id = r.json()["id"]
+    wait_for(client, run_id, {"awaiting_approval"})
+    client.post(f"/api/runs/{run_id}/decision", json={"decision": "approve"})
+    wait_for(client, run_id, {"awaiting_approval"})  # at the design gate
+    original, seen, fail = stub.StubAgent.run, {}, {"analysis": True}
+
+    def run(self, ctx):
+        seen[self.stage] = sorted(f.name for f in ctx.output_dir.glob("*")) if ctx.output_dir.is_dir() else []
+        if fail.get(self.stage):
+            fail[self.stage] = False
+            raise RuntimeError("Claude API overloaded")
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", run)
+    assert client.post(f"/api/runs/{run_id}/restart", json={"stage": "analysis", "fresh": True}).status_code == 200
+    detail = wait_for(client, run_id, {"failed"})
+    assert "Analysis's latest attempt failed" in detail["rerun_blocked"]["modulith_design"]
+    assert "analysis" not in detail["rerun_blocked"]  # the top step itself can be re-run
+    r = client.post(f"/api/runs/{run_id}/restart", json={"stage": "modulith_design"})
+    assert r.status_code == 409 and "can't be re-run yet" in r.json()["detail"]
+
+    assert client.post(f"/api/runs/{run_id}/restart", json={"stage": "analysis"}).status_code == 200  # in place
+    detail = wait_for(client, run_id, {"awaiting_approval"})
+    with session_scope() as s:
+        log = " ".join(e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == run_id)))
+    assert "starts fresh rather than updating its documents in place" in log
+    blocked = detail["rerun_blocked"]  # completed again: the next step can run; the ones after it wait for it
+    assert "modulith_design" not in blocked and "analysis" not in blocked
+    assert "Modulith design's work was undone" in blocked["modular_monolith"]
+    client.post(f"/api/runs/{run_id}/decision", json={"decision": "approve"})
+    wait_for(client, run_id, {"awaiting_approval"})
+    assert {"as-is.md", "test-scenarios.md", "domain-dependencies.yaml"} <= set(seen["modulith_design"])

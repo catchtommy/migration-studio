@@ -47,6 +47,43 @@ def _effective(executions: list[StageExecution], stage_defs: list[dict],
     return chain
 
 
+def rerun_blocked(run: Run, executions: list[StageExecution]) -> dict[str, str]:
+    """Top down: the agent steps that can't be re-run yet, each with the earlier step that stops it. A step whose
+    latest attempt failed, or whose completed work is no longer in effect (a fresh re-run or redo of it failed and
+    rolled it back), must complete again before any step after it runs: they build on its documents and code. The
+    step itself can still be retried or re-run."""
+    stage_defs = run.stage_defs
+    in_effect = {ex.stage for ex in _effective(executions, stage_defs, None)}
+    latest: dict[str, StageExecution] = {}
+    for ex in sorted(executions, key=lambda e: (e.started_at, e.id)):
+        latest[ex.stage] = ex
+    completed = {ex.stage for ex in executions if ex.status == "completed"}
+    out: dict[str, str] = {}
+    blocker = None
+    for d in stage_defs:
+        if d["kind"] != "agent":
+            continue
+        if blocker is not None:
+            out[d["key"]] = blocker
+            continue
+        last = latest.get(d["key"])
+        if last is not None and last.status == "failed":
+            blocker = (f"{d['title']}'s latest attempt failed: steps after it build on its documents and code, so "
+                       f"they can't run until it completes. Retry {d['title']}, or re-run from it or an earlier step")
+        elif d["key"] in completed and d["key"] not in in_effect:
+            blocker = (f"{d['title']}'s work was undone (an earlier step was re-run from scratch): steps after it "
+                       f"build on its documents and code, so they can't run until it runs again. Let the workflow "
+                       f"reach it, or re-run from it")
+    return out
+
+
+def own_work_rolled_back(run: Run, executions: list[StageExecution], stage: str) -> bool:
+    """Whether `stage` completed before but its work is no longer in effect (a fresh re-run or redo of it failed): a
+    re-run that updates its documents in place has nothing to update."""
+    completed = any(ex.stage == stage and ex.status == "completed" for ex in executions)
+    return completed and stage not in {ex.stage for ex in _effective(executions, run.stage_defs, None)}
+
+
 def _chain(s, run: Run, before_stage: str | None) -> list[StageExecution]:
     executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run.id)).all()
     return _effective(executions, run.stage_defs, before_stage)

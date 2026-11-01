@@ -41,3 +41,17 @@ test("no new branch before the run has checked out a repository", () => {
   show({ base_sha: null, repositories: [] });
   expect(screen.queryByText(/New branch from the latest base branch/)).toBeNull();
 });
+
+test("a step after a failed one can't be re-run: the button is disabled with the reason", () => {
+  const run = {
+    id: "r1", status: "failed", branch: "feature/loan-approve", base_sha: "abc", repositories: [],
+    rerun_blocked: { modular_monolith: "AS-IS documentation's latest attempt failed: steps after it build on its documents and code" },
+  } as unknown as RunDetail;
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <RestartPanel run={run} stage={stages[1]} stages={stages} completed />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByRole("button", { name: /Re-run from here/ })).toBeDisabled();
+  expect(screen.getByText(/latest attempt failed: steps after it build on/)).toBeInTheDocument();
+});

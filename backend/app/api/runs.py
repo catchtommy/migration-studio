@@ -174,6 +174,7 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
     if branches:
         db.refresh(run)  # the workflow's current code settings, picked up while it waits
     detail = RunDetail.model_validate(run)
+    detail.rerun_blocked = workspace.rerun_blocked(run, list(run.stages))
     if run.scope == "operation":
         detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
                                   if run.legacy else
@@ -435,6 +436,14 @@ def _restart(db: Session, run: Run, stage: str, user: CurrentUser, notes: str | 
     step = next((s for s in run.stage_defs if s["key"] == stage), None)
     if step is None or step["kind"] != "agent":
         raise HTTPException(422, f"{stage} is not an agent step of this run's workflow")
+    executions = list(db.scalars(select(StageExecution).where(StageExecution.run_id == run_id)))
+    blocked = workspace.rerun_blocked(run, executions).get(stage)
+    if blocked:  # top down: an earlier step must complete first
+        raise HTTPException(409, f"{step['title']} can't be re-run yet: {blocked}")
+    if not fresh and workspace.own_work_rolled_back(run, executions, stage):
+        fresh = True  # nothing of it to update in place: it starts over
+        emit(run_id, "log", f"{step['title']}'s earlier work was rolled back (its latest attempt failed), so it "
+                            "starts fresh rather than updating its documents in place", stage)
     if must_have_run and not db.scalar(select(StageExecution.id).where(
             StageExecution.run_id == run_id, StageExecution.stage == stage, StageExecution.status == "completed").limit(1)):
         raise HTTPException(422, f"{step['title']} hasn't completed yet, so there is nothing to re-run")

@@ -28,7 +28,9 @@ class StubAgent(StageAgent):
             answer = ctx.ask(f"[stub] Anything {stage.title} should know about {ctx.operation}?",
                              ["Nothing to add", "See the notes on the domain"])
 
-        out = ctx.output_dir / f"{self.stage}.md"
+        # The step's own document: its first required Markdown output (as-is.md, ...), else one named after it
+        main = next((o for o in ctx.config.get("outputs") or [] if o.endswith(".md")), f"{self.stage}.md")
+        out = ctx.output_dir / main
         lines = [
             f"# {stage.title} — {ctx.domain} / {ctx.operation}",
             "",
@@ -57,6 +59,7 @@ class StubAgent(StageAgent):
         artifacts += _sample_cross_domain_files(ctx)
         artifacts += _sample_api_files(ctx)
         artifacts += _sample_discovery_files(ctx)
+        artifacts += _required_placeholders(ctx, stage)
         _sample_code_change(ctx, stage)
         time.sleep(STUB_DELAY)
         ctx.log(f"[stub] wrote {', '.join(a.path for a in artifacts)}")
@@ -703,6 +706,23 @@ def _sample_code_change(ctx: AgentContext, stage: StageDef) -> None:
     ctx.log(f"[stub] changed code: {ctx.rel(code)}")
     _sample_module(ctx)
     _sample_service(ctx)
+
+
+def _required_placeholders(ctx: AgentContext, stage) -> list[ArtifactOut]:
+    """The agent's required Markdown documents (its outputs, e.g. as-is.md and test-scenarios.md) that the stub wrote
+    nothing else for: a placeholder each, so a stub run produces the documents a real run does and the later steps'
+    instructions name. Required YAML declarations come from the samples above, valid for the checks that read them."""
+    out = []
+    for name in ctx.config.get("outputs") or []:
+        f = ctx.output_dir / name
+        if not name.endswith(".md") or f.exists():
+            continue
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f"# {name[:-3].replace('-', ' ').capitalize()}: {ctx.domain} / {ctx.operation}\n\n"
+                     f"_Placeholder written by the stub agent for {stage.title}; with an AI agent this is the real "
+                     f"document._\n", encoding="utf-8")
+        out.append(ArtifactOut(name=name, path=ctx.rel(f), kind="markdown"))
+    return out
 
 
 def _segment(feature: str) -> str:
