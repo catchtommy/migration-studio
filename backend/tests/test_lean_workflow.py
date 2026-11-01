@@ -145,3 +145,41 @@ def test_lean_agents_get_the_domain_guidance_given_to_the_agents_they_replace(cl
         assert "Where to look (domain)" in given.as_markdown()
     finally:
         client.put("/api/domains/payments", json={"agent_inputs": domain["agent_inputs"]})
+
+
+def test_the_lean_workflow_takes_over_the_code_flags_set_on_the_standard_one_since(client):
+    """The lean workflow copied the standard one's "Changes code" flags only when it was added: flags set on the
+    standard workflow since, the shared one or a project's copy, are taken over once; a lean step already marked is
+    left as it is."""
+    from app.db.models import GLOBAL, SHARED, Setting, WorkflowDef
+    from app.db.session import session_scope
+    from tests.test_projects import new_project
+
+    flag = {"changes_code": True}
+    project = new_project(client)
+    with session_scope() as s:
+        standard = s.get(WorkflowDef, (SHARED, workflow_store.STANDARD_KEY))
+        lean = s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY))
+        before, lean_before = standard.steps, lean.steps
+        standard.steps = [{**st, "code": flag} if st.get("key") in ("modular_monolith", "modernise") else st
+                          for st in before]
+        lean.steps = [{k: v for k, v in st.items() if k != "code"} for st in lean_before]
+        s.add(WorkflowDef(project=project, key=workflow_store.STANDARD_KEY, name="Standard migration",
+                          steps=[{**st, "code": flag} if st.get("key") == "microservice_scaffold" else st for st in before]))
+        s.add(WorkflowDef(project=project, key=workflow_store.LEAN_KEY, name="Lean migration",
+                          steps=[{k: v for k, v in st.items() if k != "code"} for st in lean_before]))
+        s.delete(s.get(Setting, (GLOBAL, "_lean_code_flags_synced")))
+    try:
+        workflow_store.seed()
+        with session_scope() as s:
+            shared = {st["key"]: st.get("code") for st in s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)).steps}
+            copy = {st["key"]: st.get("code") for st in s.get(WorkflowDef, (project, workflow_store.LEAN_KEY)).steps}
+        assert shared["modular_monolith"] == flag and shared["modernise_and_test"] == flag  # (from modernise)
+        assert not shared["microservice_scaffold"] and not shared["analysis"]
+        assert copy["microservice_scaffold"] == flag and not copy["modular_monolith"]  # the project's own standard
+    finally:
+        with session_scope() as s:
+            s.get(WorkflowDef, (SHARED, workflow_store.STANDARD_KEY)).steps = before
+            s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)).steps = lean_before
+            for key in (workflow_store.STANDARD_KEY, workflow_store.LEAN_KEY):
+                s.delete(s.get(WorkflowDef, (project, key)))

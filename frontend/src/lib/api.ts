@@ -427,7 +427,7 @@ export interface Domain {
   default_workflow: string | null;
   owned_tables: string[] | null;
   owned_packages: string[] | null;
-  workflows?: { key: string; name: string; agents: string[]; code_agents: string[]; when_needed?: string[]; hints?: Record<string, string> }[]; // the workflows this domain uses; when_needed: code agents skipped for domain-only features; hints: which repository an agent's is
+  workflows?: { key: string; name: string; agents: string[]; code_agents: string[]; when_needed?: string[]; monolith_agents?: string[]; repository_from?: Record<string, string>; hints?: Record<string, string> }[]; // the workflows this domain uses; when_needed: code agents skipped for domain-only features; hints: which repository an agent's is
   /** Names earlier features gave the domain's modules or services after themselves: renamed to the domain's on that
    * feature's branch (its step re-run) before it is merged. */
   created_at: string;

@@ -180,6 +180,23 @@ def seed() -> None:
                 if steps != row.steps:
                     row.steps = steps
             s.add(Setting(key="_removed_publish_docs", value=True))
+        if s.get(Setting, (GLOBAL, "_lean_code_flags_synced")) is None:
+            # The lean workflow took the standard one's "Changes code" flags once, when it was added: a flag set on the
+            # standard workflow since (the project's copy, or the shared one) is taken over now, for each step that
+            # does a standard step's work. Steps the lean workflow already marks are left alone.
+            rows = list(s.scalars(select(WorkflowDef)))
+            standards = {r.project: r for r in rows if r.key == STANDARD_KEY}
+            for lean in (r for r in rows if r.key == LEAN_KEY):
+                standard = standards.get(lean.project) or standards.get(SHARED)
+                code = {st["key"]: st["code"] for st in (standard.steps if standard else [])
+                        if st.get("kind") == "agent" and st.get("code")}
+                steps = [{**st, "code": code.get(st["key"]) or code.get(_LEAN_CODE_FROM.get(st["key"], ""))}
+                         if st.get("kind") == "agent" and not st.get("code")
+                         and (code.get(st["key"]) or code.get(_LEAN_CODE_FROM.get(st["key"], ""))) else st
+                         for st in lean.steps or []]
+                if steps != lean.steps:
+                    lean.steps = steps
+            s.add(Setting(key="_lean_code_flags_synced", value=True))
         if s.get(Setting, (GLOBAL, "_added_lean_workflow")) is None:
             if s.get(WorkflowDef, (SHARED, LEAN_KEY)) is None:
                 standard = s.get(WorkflowDef, (SHARED, STANDARD_KEY))
@@ -548,9 +565,14 @@ def domain_workflows(domain: Domain) -> list[dict]:
         code = [st["key"] for st in wf["steps"] if st.get("kind") == "agent" and st.get("code")]
         # A step skipped for domain-only features (the orchestrator, linked contracts) needs its repository only when
         # a cross-domain feature runs it: optional on the domain, asked for by the step itself.
+        from app.delivery import MONOLITH_AGENTS, REPOSITORY_FROM
         from app.domain_modules import REPOSITORY_HINTS
         out.append({"key": key, "name": wf["name"], "agents": agents, "code_agents": code,
                     "when_needed": [k for k in code if k in SKIPPABLE],
+                    # always the project's monolith: no repository to set
+                    "monolith_agents": [k for k in code if k in MONOLITH_AGENTS],
+                    # without a repository of its own, the agent works in this other agent's
+                    "repository_from": {k: REPOSITORY_FROM[k] for k in code if k in REPOSITORY_FROM},
                     "hints": {k: REPOSITORY_HINTS[k] for k in code if k in REPOSITORY_HINTS}})
     return out
 

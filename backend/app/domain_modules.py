@@ -809,9 +809,15 @@ def brief(project: str, domain: str, run_id: str | None, ws: Path | None, stage:
     try:
         from app import delivery
         inputs = delivery.domain_inputs(project, domain)
-        modern = next((k for k in ("modernise", "modernise_and_test", "service_tests")
-                       if (inputs.get(k) or {}).get("repository")), "modernise")
-        repositories = {k: (inputs.get(k) or {}).get("repository") for k in (LIFT_AGENT, "orchestrator_service", modern)}
+        steps = []
+        if run_id:
+            with session_scope() as s:
+                run = s.get(Run, run_id)
+                steps = [d["key"] for d in run.stage_defs] if run is not None else []
+        # The modern service: the repository of the run's own modernisation step (inherited ones included)
+        modern = next((k for k in MODERN_AGENTS if k in steps), "modernise")
+        repositories = {k: delivery.agent_repository(inputs, k)[0] or None
+                        for k in (LIFT_AGENT, "orchestrator_service", modern)}
         repositories["modern"] = repositories.get(modern)
     except Exception:  # noqa: BLE001 - the brief goes on without them
         pass

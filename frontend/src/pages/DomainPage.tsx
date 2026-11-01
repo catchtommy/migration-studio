@@ -244,6 +244,10 @@ export function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Ag
   const codeAgents = new Set(domainWorkflows.flatMap((w) => w.code_agents));
   // Skipped for domain-only features (the orchestrator): their repository is only needed for a cross-domain feature
   const whenNeeded = new Set(domainWorkflows.flatMap((w) => w.when_needed ?? []));
+  // Always the project's monolith (its repository in Project settings): nothing to set for them
+  const monolithAgents = new Set(domainWorkflows.flatMap((w) => w.monolith_agents ?? []));
+  // Without a repository of its own, an agent works in another agent's (the lean workflow's merged step)
+  const repositoryFrom: Record<string, string> = Object.assign({}, ...domainWorkflows.map((w) => w.repository_from ?? {}));
   // Which repository an agent works in, relative to the others (e.g. the modern service is not the lifted one)
   const hints: Record<string, string> = Object.assign({}, ...domainWorkflows.map((w) => w.hints ?? {}));
   const hasInputs = (key: string) => {
@@ -283,9 +287,32 @@ export function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Ag
     ...(i.base_branch?.trim() ? { base_branch: i.base_branch.trim() } : {}),
   });
   // Mandatory where the project has a monolith repository (a project without one works in a blank workspace).
-  const missing = monolith ? agents.filter((s) => codeAgents.has(s.key) && !whenNeeded.has(s.key) && !form.inputs[s.key]?.repository?.trim()) : [];
-  const payload = { context: form.context, agent_inputs: Object.fromEntries(Object.entries(form.inputs).map(([k, v]) => [k, clean(v)])) };
-  const saved = { context: domain.context, agent_inputs: Object.fromEntries(agents.map((s) => [s.key, clean(domain.agent_inputs[s.key] ?? EMPTY_INPUTS)])) };
+  const inherited = (key: string) => {
+    const from = repositoryFrom[key];
+    const url = from ? form.inputs[from]?.repository?.trim() : "";
+    return from && url ? { from, url, title: agents.find((a) => a.key === from)?.title ?? from } : null;
+  };
+  const missing = monolith
+    ? agents.filter(
+        (s) => codeAgents.has(s.key) && !whenNeeded.has(s.key) && !monolithAgents.has(s.key) && !form.inputs[s.key]?.repository?.trim() && !inherited(s.key),
+      )
+    : [];
+  const payload = {
+    context: form.context,
+    agent_inputs: Object.fromEntries(
+      // the monolith agents have no repository of their own: the project's monolith
+      Object.entries(form.inputs).map(([k, v]) => [k, monolithAgents.has(k) ? { paths: clean(v).paths, notes: clean(v).notes } : clean(v)]),
+    ),
+  };
+  const saved = {
+    context: domain.context,
+    agent_inputs: Object.fromEntries(
+      agents.map((s) => {
+        const c = clean(domain.agent_inputs[s.key] ?? EMPTY_INPUTS);
+        return [s.key, monolithAgents.has(s.key) ? { paths: c.paths, notes: c.notes } : c];
+      }),
+    ),
+  };
   const dirty = JSON.stringify(payload) !== JSON.stringify(saved);
 
   const save = useMutation({
@@ -339,7 +366,14 @@ export function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Ag
               <span className="mr-2 text-xs tabular-nums text-subtle">{i + 1}</span>
               {s.title}
             </h3>
-            {codeAgents.has(s.key) && (
+            {codeAgents.has(s.key) && monolithAgents.has(s.key) && (
+              <p className="text-sm text-subtle">
+                Changes code in <strong className="text-fg">the project&apos;s monolith</strong>
+                {monolith && <span className="ml-1 font-mono text-xs">({monolith})</span>}: in the run&apos;s own checkout of it, on the feature branch, never in
+                the read-only copy analysis reads. Nothing to set here.
+              </p>
+            )}
+            {codeAgents.has(s.key) && !monolithAgents.has(s.key) && (
               <div className="grid gap-2 sm:grid-cols-[1fr_12rem]">
                 <Field
                   label={whenNeeded.has(s.key) ? "Repository (only needed for cross-domain features)" : "Repository"}
@@ -354,7 +388,7 @@ export function AgentInputsForm({ domain, agents }: { domain: Domain; agents: Ag
                       aria-label={`${s.title} repository`}
                       className={`${inputClass} font-mono text-xs`}
                       value={form.inputs[s.key]?.repository ?? ""}
-                      placeholder="https://github.com/acme/…"
+                      placeholder={inherited(s.key) ? `Inherited from ${inherited(s.key)!.title}: ${inherited(s.key)!.url}` : "https://github.com/acme/…"}
                       onChange={(e) => setForm({ ...form, inputs: { ...form.inputs, [s.key]: { ...form.inputs[s.key], repository: e.target.value } } })}
                     />
                     {monolith && (

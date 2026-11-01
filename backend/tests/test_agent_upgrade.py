@@ -125,3 +125,12 @@ def test_a_shared_text_keeps_its_run_data_and_takes_none_the_studio_does_not_fil
     assert r.status_code == 422 and "{{data.lifted_file}}" in r.json()["detail"]
     r = client.put("/api/shared-texts/preamble", json={"text": "Hello {{data.feature}}"})
     assert r.status_code == 422 and "takes none" in r.json()["detail"]
+
+
+def test_every_built_in_agent_can_follow_a_release():
+    """A built-in agent missing from PREVIOUS_DEFAULT_HASHES never gets a newer release's default instructions, even
+    when nobody edited them (the lean workflow's analysis was missing)."""
+    from app.agent_store import PREVIOUS_DEFAULT_HASHES
+    from app.orchestrator.stages import BUILTIN_STAGES
+
+    assert [k for k in BUILTIN_STAGES if k not in PREVIOUS_DEFAULT_HASHES] == []

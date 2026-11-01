@@ -112,6 +112,30 @@ def domain_inputs(project: str, domain: str) -> dict[str, dict]:
 
 
 MONOLITH = "<monolith>"  # a step from before steps were a flag that named the monolith, when the project has none
+# The built-in agents that change code by nature: a workflow step of one without "Changes code" has its code changes
+# undone after it, which the workflow editor and the run's log warn about.
+CODE_AGENTS = ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service",
+               "independent_tests", "modernise", "modernise_and_test", "service_tests", "monolith_integration")
+# The steps that change the monolith's own code: they always work in the project's monolith (its repository in the
+# project settings), in the run's own checkout of it on its feature branch (never the shared read-only copy analysis
+# reads). A domain doesn't set a repository for them.
+MONOLITH_AGENTS = ("modular_monolith", "monolith_orchestrator", "monolith_integration")
+# An agent doing the work of another one (the lean workflow's merged step, Service tests after Modernise) works in the
+# same repository as it, unless the domain sets one of its own.
+REPOSITORY_FROM = {"modernise_and_test": "modernise", "modernise": "modernise_and_test", "service_tests": "modernise"}
+
+
+def agent_repository(inputs: dict, key: str) -> tuple[str, str, str | None]:
+    """The repository the domain's Agent inputs give an agent: (repository, base branch, the agent it is inherited
+    from or None). ("", "", None) when there is none."""
+    own = inputs.get(key) or {}
+    if own.get("repository"):
+        return own["repository"], own.get("base_branch") or "", None
+    other = REPOSITORY_FROM.get(key)
+    given = (inputs.get(other) or {}) if other else {}
+    if given.get("repository"):
+        return given["repository"], given.get("base_branch") or "", other
+    return "", "", None
 
 
 def _same(a: str | None, b: str | None) -> bool:
@@ -122,7 +146,14 @@ def _same(a: str | None, b: str | None) -> bool:
         local = bool(re.match(r"^[A-Za-z]:[\\/]|^\\\\|^//", u))  # a drive, or a UNC share (either slash)
         u = u.replace("\\", "/") if local else u
         u = u.rstrip("/").removesuffix(".git").rstrip("/")
-        return u.casefold() if local else u
+        if local:
+            return u.casefold()
+        # A remote, however it is spelled: https://host/org/repo, https://user@host/org/repo, ssh://git@host:22/org/repo
+        # and git@host:org/repo name the same repository (host in any case, port and user aside).
+        scp = re.match(r"^(?:[^@/]+@)?([^:/]+):(?!//)(.+)$", u)
+        url = re.match(r"^[a-z+]+://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", u, re.IGNORECASE)
+        m = url or scp
+        return f"{m.group(1).lower()}/{m.group(2).strip('/')}" if m else u
     return bool(a and b) and norm(a) == norm(b)
 
 
@@ -138,9 +169,11 @@ def stage_repository(stage: dict, domain: str, inputs: dict, monolith: str | Non
     code = stage.get("code") or {}
     if stage.get("kind") != "agent" or not code:
         return None, ""
-    own = inputs.get(stage["key"]) or {}
-    if own.get("repository"):
-        return own["repository"], own.get("base_branch") or ""
+    if stage["key"] in MONOLITH_AGENTS:  # always the project's monolith, whatever spelling a domain once gave it
+        return monolith or MONOLITH, ""
+    repository, base, _from = agent_repository(inputs, stage["key"])
+    if repository:
+        return repository, base
     if "changes_code" in code:  # the domain must set it; a project with no monolith works in a blank workspace
         return (None, "") if monolith else (MONOLITH, "")
     named = code.get("repository") or ""

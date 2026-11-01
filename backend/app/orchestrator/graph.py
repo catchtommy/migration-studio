@@ -393,6 +393,10 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             how = f"continuing where attempt {stopped['attempt']} stopped" + ("" if code_kept or not stage.code else
                                                                               " (its documents; its code was not kept)")
         emit(run_id, "status", f"{stage.title} {how} (attempt {attempt})", stage.key)
+        if not stage.code and stage.key in delivery.CODE_AGENTS:
+            emit(run_id, "error", f"{stage.title} changes code, but this workflow's step isn't marked \"Changes code\": "
+                                  "the code it changes is undone when it finishes. Tick \"Changes code\" on the step "
+                                  "(Workflows page), then re-run it", stage.key)
 
         try:
             config = agent_store.get(stage.key)
@@ -618,13 +622,26 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
         feedback = {**state.get("feedback", {}), target: comments}
         if decision.get("scope", "amend") == "amend":
             # Only the requested change: nothing is rolled back. The target step updates its documents (and code) in
-            # place, changing just what the comments ask; the steps between it and the gate keep what they did.
+            # place, changing just what the comments ask; the steps between it and the gate keep what they did, except
+            # those that change code on top of a step that changes code (below).
             keys = workflow.keys
             between = [k for k in keys[keys.index(target) + 1:keys.index(gate.key)] if workflow.by_key[k].kind == "agent"]
+            # A step that changes code is built on by the later steps that change code (the lifted service copies the
+            # module, the tests run against it): they follow the change, updating their work in place. Steps that
+            # write documents only stay as they are.
+            follow = [k for k in between if workflow.by_key[target].code and workflow.by_key[k].code]
+            skip = [k for k in between if k not in follow]
+            for k in follow:  # what they follow, and nothing more
+                feedback[k] = (f"{workflow.by_key[target].title} was changed at the reviewer's request: {comments}\n"
+                               "Update your work only where it follows from that change (what you copied or built "
+                               "on from it); everything else stays exactly as it is.")
             emit(run_id, "approval", f"{gate.title}: rejected, {workflow.by_key[target].title} makes the requested "
-                                     "change only; everything else stays as it is", gate.key)
-            return {"route": target, "feedback": feedback, "refresh": [*(state.get("refresh") or []), target],
-                    "amend": {"stage": target, "skip": between}}
+                                     "change only"
+                 + (f", and {', '.join(workflow.by_key[k].title for k in follow)} update their work to follow it"
+                    if follow else "") + "; everything else stays as it is", gate.key)
+            return {"route": target, "feedback": feedback,
+                    "refresh": [*(state.get("refresh") or []), target, *follow],
+                    "amend": {"stage": target, "skip": skip}}
         workspace.roll_back(run_id, Path(state["workspace"]), state["stage_shas"][target]["start"], target)
         emit(run_id, "approval", f"{gate.title}: rejected, re-running from {workflow.by_key[target].title}", gate.key)
         return {"route": target, "feedback": feedback, "amend": None}

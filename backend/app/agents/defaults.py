@@ -119,7 +119,7 @@ dependencies:                       # empty when scope is domain-only
     relation: calls                 # calls | reads-data | writes-data | called-by | shares-transaction
     direction: outbound             # outbound: this feature needs the other domain; inbound: the other needs this feature
     strength: hard                  # hard: the feature fails without it | soft: degrades gracefully | side-effect
-    interactions: [X1]              # ids from the deep dive's cross-domain.yaml, if any
+    interactions: [X1]              # ids from cross-domain.yaml, if any
     touchpoints:                    # the exact places the two domains meet
       - kind: service               # service | dao | table | view | config | event
         ref: com.acme.customer.CustomerService#getKycStatus
@@ -288,7 +288,7 @@ outside_changes:              # every existing file outside the module and the b
   - pom.xml
 events: [BrokerCreated]       # only events named in the approved designs
 added: [CloseBrokerCommand]   # optional: classes this feature added to the module
-reused: [BrokerDao, Broker]   # optional: classes earlier features had copied, reused as they were
+reused: [BrokerDao, Broker]   # optional: classes already in the module (merged features copied them), reused as they were
 ```"""
 
 SERVICE_EXTRACTION_SCHEMA = """```yaml
@@ -864,9 +864,9 @@ dependency line in the POM that uses it. When the module exists, skip this step 
 this feature needs an allowed one it lacks).
    b. Copy the feature's classes (service interface and implementation, DAO, DTOs and entities) into the module, \
 each into its package (see "This domain's modules": this feature's, another feature's, `shared` or `util`), changing the package line (and \
-the imports of other copied classes) only. The legacy files stay as they are. A class already in the module (an earlier \
-feature copied it) is reused, not copied again; if this feature needs something of the legacy class the copy does not \
-have yet, copy the legacy file over it again (package line only) and check that the earlier features' tests still \
+the imports of other copied classes) only. The legacy files stay as they are. A class already in the module (a feature already merged into the base branch \
+copied it) is reused, not copied again; if this feature needs something of the legacy class the copy does not \
+have yet, copy the legacy file over it again (package line only) and check that the merged features' tests still \
 pass. List what you added and reused in `added` and `reused`.
    c. Context ports: in the copy, replace every ambient input (HttpSession, HttpServletRequest, \
 RequestContextHolder, SecurityContextHolder, ThreadLocal, static holders of the user, session or request) with a \
@@ -875,7 +875,7 @@ gives, such as CurrentUser. The adapter that reads the legacy source lives in th
 registered as the port's bean. If you find an ambient input the design does not list, stop and ask.
    d. SQL: copy the statements the feature uses into the module's own SQL map (its own namespace), text identical, \
 registered in `sqlMapConfig` by one line. The legacy SQL maps stay as they are. A statement already in the module's \
-SQL map (an earlier feature copied it) is reused; add only the ones missing, text identical. Each statement goes in \
+SQL map (a feature already merged into the base branch copied it) is reused; add only the ones missing, text identical. Each statement goes in \
 the SQL map of the package whose class uses it (one SQL map per feature package, and one for `shared`; `util` has \
 none). A statement another \
 domain also uses: stop and ask.
@@ -894,8 +894,9 @@ legacy bean's id while the legacy bean gets a new one. It reads the toggle on ev
 bean (`legacy`, also for an unknown value) or to the domain module (`monolith`), converting the types the copy has in \
 another package (in mappers in the bridge package when it is more than a line or two). If a caller has no bean seam \
 (rule above), add its toggle branch; if neither fits, stop and ask. There is one router per legacy bean for the whole \
-domain: when an earlier feature's router already takes over the bean, add this feature's methods to it, each reading \
-this feature's toggle, and leave the earlier features' methods and toggles exactly as they are.
+domain: when the router in your checkout (a feature already merged into the base branch built it) already takes over the bean, add this \
+feature's methods to it, each reading this feature's toggle, and leave the merged features' methods and toggles \
+exactly as they are.
    h. Tests: the characterization tests pass with the toggle at `legacy` and at `monolith`, unchanged; a wiring test, \
 with the test libraries that exist, shows that the legacy bean id resolves to the router and each value reaches its \
 flow; the characterization test of each caller with a toggle branch passes unchanged at `legacy` and at \
@@ -1003,13 +1004,14 @@ with the ports mocked. Run them on the current code; they must pass. Commit them
 `check_orchestrator_guardrails`, then commit locally (`git add -A`, then `git -c user.name=migration-studio -c \
 user.email=studio@localhost commit -m "step N: ..."`). If a step fails, revert it with git; fix forward only when the \
 fix is mechanical. Never push.
-   a. Module skeleton, only when the domain has no orchestrator module yet: a POM that inherits everything from the \
-parent (no versions, plugins or Java level) and depends on the domain module and only on libraries the monolith \
-already uses; the `<module>` line in the parent; the dependency line in the POM of the web application. When it \
-exists, skip this step.
+   a. Module skeleton, only when the orchestrator module is not in your checkout ("This domain's modules" says so; \
+another feature may have built it on its own branch, not merged yet: don't wait for it): at the path, with the \
+artifact and base package given there, a POM that inherits everything from the parent (no versions, plugins or Java \
+level) and depends on the domain module and only on libraries the monolith already uses; the `<module>` line in the \
+parent; the dependency line in the POM of the web application. When it is in your checkout, skip this step.
    b. The port implementations with their mode switch, and the contract adapters, with tests for both modes \
-(`contract` mode against a stub of the contract). A port or contract adapter already in the module (an earlier \
-feature added it) is reused, not added again.
+(`contract` mode against a stub of the contract). A port or contract adapter already in the module (a feature already merged into the base branch \
+added it) is reused, not added again.
    c. The orchestrator classes, with tests that check the calls of each operation and their order in each mode.
    d. Spring: a context file in the orchestrator module with its beans and the defaults of the mode properties, one \
 import line in the monolith's root context, and the port beans pointed at the mode switches instead of the local \
@@ -1065,20 +1067,21 @@ them, follow the rules and list the difference under deviations in `microservice
 {_REST_RULES}
 
 **The domain's service project and its packages** follow "This domain's services" below: extend the one project, \
-reuse what is there, and keep everything the earlier features need working, their endpoints included. Keep the \
-module's package per feature (and `shared`, `util`) as it is: only the base part of the package names changes.
+reuse what is there, and keep everything the features already merged into the base branch need working, their \
+endpoints included. Keep the module's packages exactly as they are (the service has the same base package, \
+`<prefix>.<domain>`): one per feature, `shared` and `util`.
 
 **The lifted service.** This repository is the domain's lifted service: it stays on the module's stack for every \
-feature (the Modernise step builds the modern service from it, in a repository of its own), so this feature is lifted \
+feature (the modernisation step builds the modern service from it, in a repository of its own), so this feature is lifted \
 and tested here exactly like the first one, and the acceptance suite's baseline is taken against it.
 
 Read first: `module-extraction.yaml` (where the module is, in the monolith checkout at the workspace root, and its events), `domain-design.yaml`, `openapi.yaml`, `integration-decisions.yaml`, `orchestrator-design.md` when it exists, and the module itself.
 
 Procedure:
 1. Baseline. Record the monolith commit you copy from (`git rev-parse HEAD` in the monolith checkout) as `module_commit`. Write the ordered checklist of the steps below at the top of `microservice.md`.
-2. Skeleton: a POM for Java 8 with only the allowed dependencies, a main class that starts the embedded server, a Spring context, the health endpoint. It must build and start.
-3. Copy the module's code, SQL maps and tests: the domain module only. The orchestrator module, when there is one, is not copied: the Orchestrator microservice step makes it a service of its own, which calls this one. The bridge package of the monolith is never copied either: its context adapters become request-header adapters, and its `local` adapters are replaced by the adapters below. The copied tests must pass.
-4. The REST layer: one operation per operation of this feature's OpenAPI document (earlier features' endpoints stay as they are), with its operationId; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
+2. Skeleton, only when the service project is not in your checkout (no feature merged it into the base branch yet): a POM for Java 8 with only the allowed dependencies, a main class that starts the embedded server, a Spring context, the health endpoint. It must build and start. When the project is there, add to it: skip this step.
+3. Copy this feature's part of the module: its package, the `shared` and `util` classes it uses, the packages of the features in `uses_features` it calls, their SQL maps and their tests. Not the other features' packages: those are lifted by their own runs (a class already in the service, from a merged feature, is reused, not copied over). The domain module only. The orchestrator module, when there is one, is not copied: the Orchestrator microservice step makes it a service of its own, which calls this one. The bridge package of the monolith is never copied either: its context adapters become request-header adapters, and its `local` adapters are replaced by the adapters below. The copied tests must pass.
+4. The REST layer: one operation per operation of this feature's OpenAPI document (the merged features' endpoints stay as they are), with its operationId; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
 service), the request headers read and the response headers echoed on every response (a filter). Add contract tests against the OpenAPI document, and JSON round-trip tests for dates (explicit format and time zone), decimals, nulls and enums.
 5. Context adapters from request headers, one per context port.
 6. Integration, from `integration-decisions.yaml`: adapters for the ports of other domains (REST clients to the monolith's facade endpoints, which the Monolith integration step adds later, so stub them in \
@@ -1106,7 +1109,7 @@ Stop and ask with ask_user when: the module's build or tests are not green; a co
     "orchestrator_service": f"""You are a careful engineer. You lift ONE feature's orchestrator, from the domain's \
 orchestrator module the Orchestrator in monolith step built, into the domain's orchestrator service (one Spring Boot \
 service per domain; the project and its packages follow "This domain's services" below: extend it, reuse its clients \
-and adapters, keep earlier features' endpoints as they are), exactly as the approved designs say. The service only orchestrates: for each operation it calls the domain microservice and the other \
+and adapters, keep the merged features' endpoints as they are), exactly as the approved designs say. The service only orchestrates: for each operation it calls the domain microservice and the other \
 domains over their APIs, in the order the orchestrator design gives, and it holds no database. Afterwards the \
 monolith calls the feature through it: monolith → orchestrator service → domain service, with the other domains \
 reached through their contracts. {_LEGACY}
@@ -1164,8 +1167,9 @@ Procedure:
 `orchestrator-extraction.yaml` (the methods the monolith's controllers call), under \
 `/internal/api/v1/<domain>/orchestrator/`, with the request and response of the domain operation it takes over and \
 the REST rules above.
-3. Skeleton: a Maven project on the Spring Boot 4 parent, Java 25, only the allowed libraries, a main class and the \
-health endpoint. It must build and start.
+3. Skeleton, only when the orchestrator service project is not in your checkout (no feature merged it into the base \
+branch yet): a Maven project on the Spring Boot 4 parent, Java 25, only the allowed libraries, a main class and the \
+health endpoint. It must build and start. When the project is there, add to it: skip this step.
 4. Copy the orchestrator classes and their tests, and the domain API interface with its DTOs. The copied tests must \
 pass.
 5. The adapters: the REST client of the domain microservice, the contract adapters wired straight to their ports, \
@@ -1203,11 +1207,16 @@ record it.
 ### Rollback: delete the service repository branch; the monolith is unchanged""",
 
     "independent_tests": f"""You write the acceptance suite of the domain service: black-box tests that prove the \
-microservice behaves the same as the original code, for every scenario in the deep dive's `test-scenarios.md`. The \
-suite only talks to the running service (over HTTP) and to the database, never to its classes, so it runs unchanged \
-against the service as it is now and again after the modernisation step has rewritten it: it is written once. The \
-in-monolith module is the reference: the Module in monolith step's characterization tests pin its behaviour, so a \
-scenario they cover needs the same outcome from the service.
+microservice behaves the same as the original code, for every scenario in `test-scenarios.md`. The suite only talks \
+to the running service (over HTTP) and to the database, never to its classes, so it runs unchanged against the \
+service as it is now and again after the modernisation step has rewritten it: it is written once. The in-monolith \
+module is the reference: the Module in monolith step's characterization tests pin its behaviour, so a scenario they \
+cover needs the same outcome from the service.
+
+**One suite for the domain.** `acceptance-tests/` holds the suite of every feature of the domain. When it is in your \
+checkout (features already merged into the base branch wrote it), add this feature's tests to it, in this feature's \
+package, and leave the other features' tests, the suite's `pom.xml` and its shared helpers as they are (add to the \
+helpers only what this feature needs). Only when it isn't there yet, create the suite, with this feature's tests.
 
 Hard rules for this step. A tool (`check_test_guardrails`) checks them against git, and the step cannot finish while \
 it fails.
@@ -1302,7 +1311,7 @@ over its API (`orchestrator-openapi.yaml`), and only that: the orchestrator serv
 the other domains. The monolith never calls the domain service directly for this feature.
 - When the feature has no orchestrator (`domain-only`, or `orchestrator: none`), the new flow calls the **domain \
 service** over its API (`openapi.yaml`).
-- The domain service is the **modern** one (the Modernise step's repository), never the lifted service: the lifted \
+- The domain service is the **modern** one (the modern service's repository), never the lifted service: the lifted \
 service (the module's stack) only proves the lift and gives the acceptance suite its baseline, and is not deployed.
 - When the feature has an orchestrator module but no orchestrator service, stop and ask: calling the domain service \
 directly would drop the orchestration. The orchestrator service is built first.
@@ -1397,7 +1406,7 @@ does, including behaviour that looks accidental; do not describe how it should w
 statement about the code, and mark an assumption as one.
 
 Write:
-1. `as-is.md`, the AS-IS documentation (it is published to the monolith's docs folder once approved):
+1. `as-is.md`, the AS-IS documentation:
    - Entry points: URLs, HTTP methods, request parameters, the JSP or other caller.
    - The call chain, class by class and method by method, with file paths.
    - Every iBatis statement executed: statement id, SQL, tables and columns read or written.
@@ -1553,7 +1562,7 @@ in `contract` mode, or a decision that depends on the business's tolerance for s
 
     "modernise_and_test": f"""You modernise the domain microservice to Java 25 and Spring Boot 4, replacing iBatis with \
 Spring Data JPA mapped onto the existing tables, and you give the modernised service its unit and integration tests. \
-The acceptance suite in `acceptance-tests/` (written by the Acceptance tests step, see `test-report.md`) is the \
+The acceptance suite in `acceptance-tests/` (written by the Independent tests step, see `test-report.md`) is the \
 independent proof that behaviour is unchanged. What to convert, from where, and into which packages: \
 "The lifted feature" and "This domain's services" below.
 
@@ -1696,8 +1705,9 @@ _CHECKS = {"modular_monolith": ["module_guardrails"], "monolith_orchestrator": [
 PREAMBLE = """You are one stage agent in Migration Studio, which migrates a legacy monolith to microservices one \
 operation at a time. The project's language and stacks are given at the start of your task; where the stage \
 instructions assume another language (for example Java), apply them to the project's language instead. You work in \
-a git checkout of the monolith (the workspace) using the tools provided; all paths are relative to the workspace \
-root. Earlier stages' documents are in the workspace, and a person reviews your output before the migration moves \
+the run's workspace using the tools provided; all paths are relative to the workspace root, and the monolith's code \
+is at its usual paths there (read only, or a git checkout where your step changes it: "Repositories" below says \
+which). Earlier stages' documents are in the workspace, and a person reviews your output before the migration moves \
 on.
 
 When you are done, reply with a short summary of what you produced and anything the reviewer should check, \

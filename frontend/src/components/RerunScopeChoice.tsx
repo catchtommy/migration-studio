@@ -7,7 +7,7 @@ export function RerunScopeChoice({ value, onChange, stepTitle }: { value: RerunS
     {
       scope: "amend",
       title: "Only the requested change",
-      text: `${stepTitle} changes just what your comments ask, in place. Its other documents, contracts and code, and the steps after it up to this gate, stay as they are.`,
+      text: `${stepTitle} changes just what your comments ask, in place. Its other documents, contracts and code stay as they are, and so do the steps after it up to this gate, except steps that change code on top of it (such as the lifted service or the tests): they update to follow the change.`,
     },
     {
       scope: "redo",

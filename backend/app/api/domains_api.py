@@ -97,7 +97,11 @@ def update_domain(key: str, body: DomainUpdate, db: Session = Depends(get_db)):
         unknown = set(body.agent_inputs) - set(agent_store.titles())
         if unknown:
             raise HTTPException(422, f"Unknown agents: {', '.join(sorted(unknown))}")
+        from app.delivery import MONOLITH_AGENTS
         inputs = {stage: normalize_inputs(i.model_dump()) for stage, i in body.agent_inputs.items()}
+        for stage in MONOLITH_AGENTS:  # they always work in the project's monolith: no repository of their own
+            if stage in inputs:
+                inputs[stage] = {k: v for k, v in inputs[stage].items() if k not in ("repository", "base_branch")}
         problem = _repository_problem(inputs, domain)
         if problem:
             raise HTTPException(422, problem)
@@ -116,14 +120,16 @@ def _repository_problem(inputs: dict[str, dict], domain: Domain) -> str | None:
     used = [w["key"] for w in workflow_store.domain_workflows(domain)]
     required = workflow_store.code_agents(workflows=used) if settings_store.get("monolith_repo") else {}  # blank: none
     required = {k: v for k, v in required.items() if k not in SKIPPABLE}  # asked for when a cross-domain feature runs it
+    from app import delivery
+    required = {k: v for k, v in required.items() if k not in delivery.MONOLITH_AGENTS}  # the project's monolith
     for key, workflows in required.items():
-        repository = (inputs.get(key) or {}).get("repository", "")
+        repository = delivery.agent_repository(inputs, key)[0]
         if not repository:
             return (f"Set the repository of {titles.get(key, key)}: it changes code in "
                     f"{', '.join(dict.fromkeys(workflows))}")
-    from app import delivery, domain_modules
+    from app import domain_modules
     lift = (inputs.get(domain_modules.LIFT_AGENT) or {}).get("repository", "")
-    same = [k for k in domain_modules.MODERN_AGENTS if delivery._same((inputs.get(k) or {}).get("repository"), lift)]
+    same = [k for k in domain_modules.MODERN_AGENTS if delivery._same(delivery.agent_repository(inputs, k)[0], lift)]
     if same:  # the old stack and the new one can't share a project
         return (f"{titles.get(same[0], same[0])} builds the modern service from the lifted one "
                 f"({titles.get(domain_modules.LIFT_AGENT)}), so it needs a repository of its own, not {lift}")

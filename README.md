@@ -503,11 +503,20 @@ Agent steps can change code in different repositories: the monolith's changes go
 domain's microservice into its own repository, the orchestrator into another. Each migration ends with a reviewed
 commit in every repository it changed.
 
-1. **Workflows → a migration workflow → each agent step → Changes code**: choose **In the project's monolith** or
-   **In another repository**, with its URL and base branch. The URL can contain `{domain}`, filled in per run, so one
-   step serves every domain's own repository, e.g. `https://github.com/acme/{domain}-service.git`. Steps without
-   *Changes code* write documents only. Steps sharing a repository must use the same base branch. Save for **This
-   project only** when the URLs are specific to a project.
+1. **Workflows → a migration workflow → each agent step → Changes code** says whether the step changes code; steps
+   without it write documents only, and any code they change is undone after them. The built-in agents that change
+   code by nature (the module, orchestrator, microservice, test, modernisation and integration steps) are warned
+   about in the editor, and in the run's log, when their step isn't marked.
+   **Where** each step changes code is set per domain, on **Domain → Agent inputs**, per agent:
+   - *Module in monolith*, *Orchestrator in monolith* and *Monolith integration* always change **the project's
+     monolith** (Project settings): nothing to set. They work in the run's own checkout of it, on its feature branch,
+     never in the read-only copy the analysis reads.
+   - Every other code step's agent gets the domain's **repository** (any git URL or path) and, optionally, its base
+     branch. *Modernisation and service tests* (lean workflow) uses the repository set for *Modernise* unless it has
+     its own, and the other way round; *Service tests* uses *Modernise*'s. Agents sharing a repository use the same
+     base branch.
+   - A repository is recognised however its URL is spelled (`git@host:org/repo.git`, `https://host/org/repo`,
+     with a user name or `.git`).
 2. **Workflow → Git** sets whether runs end with a review and commit, and the **feature branch name**
    (`migration/{domain}/{feature}` by default; `{run}` and `{date}` also work). **Each feature runs on its own
    branch**, cut from the base branch when the run starts (the latest of it is fetched then, so features merged into
@@ -515,17 +524,26 @@ commit in every repository it changed.
    run never reads what another feature's run is doing: it knows the base branch and the domain's feature list only.
    The pattern must name `{feature}` (or `{run}`).
 3. **New migration** starts the run on a feature branch named by that pattern, in every repository it will change.
-   A name another unfinished run uses there is refused; a branch that already exists is continued on (next point). **Add / show entry
+   A name another unfinished run uses is refused. When the name already exists in git (an earlier, deleted or reset
+   run of the feature left it there), the run starts fresh on the next free version (`…-v2`, `…-v3`), cut from the
+   base branch, and its log says so; rename the branch back when confirming to continue on the earlier work instead.
+   A repository with no commit yet (created empty) is refused with that reason. **Add / show entry
    points** shows the feature's entry points, pre-filled, to change for this run, with notes for the agents.
 4. **Before every step that changes code** (each time it runs), the run pauses as **Confirm branches**: the run page
    shows the repository, its base branch (editable while it isn't checked out yet) and the feature branch (renaming it
    renames it in every repository of the run), with the workflow's current settings for the step. It says when the
-   branch **already exists** (the step then continues on it). **Confirm and start** (needs *Run migrations*) checks the
-   names, then **brings in the latest of the feature branch from git** (fast-forward, or a merge: where only this run
-   pushed, git's version wins; work not pushed yet is kept, and a conflict with it stops the step) and starts it.
-   The run checks out the monolith at the workspace root when it starts, and the other repositories inside it
-   (`.studio/repos/<name>`, kept out of the monolith's git) when they're confirmed, all on the same feature branch,
-   each cut from its own base branch. Agents can read
+   branch **already exists** (the step then continues on it, or **Start fresh on …-v2 instead**). When the base branch
+   has newer commits (features merged since), **Also bring in the latest of <base branch>** merges them into the
+   feature branch first (ticked by default; a conflict stops the step and names the files). **Confirm and start**
+   (needs *Run migrations*) checks the names, then **brings in the latest of the feature branch from git**
+   (fast-forward, or a merge: where only this run pushed, git's version wins; work not pushed yet is kept, and a
+   conflict with it stops the step; when git can't be reached, the step doesn't start) and starts it. A step its
+   scope decision skips (an orchestrator step of a domain-only feature) asks nothing.
+   The run reads the monolith from the shared read-only copy of its base branch (fetched when the run starts), gets
+   its own checkout of it at the workspace root just before its first step that changes the monolith's code, and
+   checks the other repositories out inside it (`.studio/repos/<name>`, kept out of the monolith's git) when they're
+   confirmed, all on the same feature branch, each cut from its own base branch. A checkout left without a commit (an
+   interrupted clone) is rebuilt from the database before the next step. Agents can read
    every repository and the documents. Each step changes code only in its own repository, and its commands run there.
    Each step's changes are committed per repository and stored in the database, so rejections, restarts and workspace
    rebuilds cover all of them.
@@ -550,7 +568,11 @@ Restarting a step picks up the workflow's current *Changes code* settings, so ru
 change code (or before git support) ask for branches and end with the review too. Their monolith changes can only be
 committed if the run's workspace was cloned from the monolith; otherwise start a new run. Restarting a step after
 committing checks the repository out from the feature branch it pushed (with anything others pushed there since), and
-the run comes back to *Ready to commit* with the new changes, committed on top. The studio's documents aren't
+the run comes back to *Ready to commit* with the new changes, committed on top. **Start fresh** (or a rejection's
+**Redo the step from scratch**) goes back to where the step started: code it already pushed isn't brought back from
+git, and its next commit undoes it on the branch (shown as *undo* in the review); or, choosing **New branch from the
+latest base branch**, the run is cut again on a new feature branch (`…-v2`) from the latest base branch, with the
+earlier steps' code replayed, leaving the old branch in git as it is. The studio's documents aren't
 committed: they stay in its database. Commits never force-push. If someone pushes to the feature branch meanwhile,
 the commit goes on top of their work, unless they changed a file you're committing (then leave it out, or re-run the
 step: the latest is brought in before it starts).

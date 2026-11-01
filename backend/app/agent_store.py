@@ -35,6 +35,10 @@ LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
 PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
+    # The lean workflow's analysis, and the feature listing: missing here before, so they never followed a release
+    "analysis": {"46f1c3485d5d38e5e5d88936028c3c040f34d3db2db8d1cabe158286713aae95",
+                 "d2a9bf9051ad9e47669594a1ca6d46cc857c088b676d872fe3659f5a7581316e"},
+    "domain_features": {"8d67a2c959d7590b0cdb369d65fe4265fc4a0291a8cc85fc1c00446eeb524e1f"},
     "boundary_design": {"0afe5047252464458ead3aac6b867502a91e1e62835dd59b7b7dcec8fbc8200d",
                         "f0df743aa52f57bfccb67748684cd0004993308476d3c5e538d94a3d9ba0ceea",
         "54005c5822e8c7380780ed9bd94127f80e83e35d8733616754436a17334070b5"},
@@ -85,7 +89,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                           "8a7b319eb255ecea335e60322b4e11c207a2c23e3e698999b749ea81f442b27a",
                           "97d564115dc60807860254fee3ecfa541ca999e29cf9870d487a5efe93031f02",
                           "4b1b34967d2944c200b2b4bd8c0a81768cd6292da94cac47c000f9ba30d0de8e",
-                          "d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47"},
+                          "d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47",
+                          "12aea52ce65e461164115980768436ac4e4a069abee71e9ff4a2f2bde6cfc548"},
     "microservice_scaffold": {"d10bb3879c92380cc05bd23f1c91a377749a367067c79bb40d4ad7c4733530e9",
                               "433fa24641180e7ee1a61b9c122707e5088afd85fcfff8238ad9953a37aafe56",
                               "181fe29546e7075f3e007a79554c5c168620b9e23364fea592f1aea97673972c",
@@ -97,7 +102,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "0c42c2258509f9ae8614d72c2986d867f5b7b15aaf6abad4b819fd43f24d24a5",
         "00c115ab87a501e11c920f31e31fae478abe33d069eaeb88c0d031965a252a17",
         "8f9d717d388659e72ae0fe70fe89fd704a75dd65b2f9a9448df57f32e074f79a",
-        "a1d026bc8b5619c5000bc18beea1da47643184820b8b845dfc80e6c1ba7c42ea"},
+        "a1d026bc8b5619c5000bc18beea1da47643184820b8b845dfc80e6c1ba7c42ea",
+                              "7b1cad20a4d8c306b309b9b3a689af000aa7562611a175dac76b108f11dfa7aa"},
     "modernise": {"f5199989f39ae16646acbf79d9c246d424fb9d507aeadc12217647c63b70aa41",
                   "3a97d57409eb272a0311e1bc55d47da3fa1ccf655e303b135937d7e3f8734366",
                   "a0185bf6df97033362944d60bf67817711ba448fda661677bec19d9f87f5a457",
@@ -123,7 +129,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "0183c418952e37bbe42453d01ee323819fdaee85b694321e87a6bc36a4e6bc69",
         "991b17db193a33d5329c3b2957f6fb182c7f9b557f25d48d97977435a74fb199",
                          "20369f074da4f5870c38bdea7c129dc92217a37a182b7e3dba3c983e3a226a09",
-                         "c3a678317498d3b0682c70f3a3b41727037b401f23c54713108a735babbd28fa"},
+                         "c3a678317498d3b0682c70f3a3b41727037b401f23c54713108a735babbd28fa",
+                         "8d67e4fd44f4bce07fa5d8aa0d6658c52c4bb703100914bc538267e060258dac"},
     "monolith_integration": {"b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
                              "29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
                              "11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
@@ -131,7 +138,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                              "08a60fa01d2f984772a8098e024a65cf5d680316227473e39125c87c0ac8b791",
         "b82822208202ff2dfd10ff0e77918503973178a46c10673641e4a95fad988f2c",
         "e031ab929248d9c9b40ade7b6f9b782f099ad0daefaa39db19e50624a7722887",
-        "7a7e4b31d4c37c57d308e9d6e371dc89808055ec284cadc51ad698532f23945e"},
+        "7a7e4b31d4c37c57d308e9d6e371dc89808055ec284cadc51ad698532f23945e",
+                             "673a0969f74f104d418d47b8e935f34ca65c6eeeca498425883cdda80006894b"},
     "as_is_doc": {"9fb0392d1747e6a478a3e0cd6d77ea8cd4564fd9e815959b5baf2f48ee52c892"},
     "bounded_contexts": {"0fe37358d0947d3a11a0fc7d5440eb9ebaa72ec9171caff82a4612112c073294"},
     "monolith_orchestrator": {"35a24835d71b95dc27b3516c23305bb5ba7eb9525e031f7931aa5d1fb4af382e",
@@ -140,21 +148,24 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "f8d6c72fa43ec08d5245ad37fcd0be1e83d52c32ea37296345ef2751a6fd496b",
         "2e6d1a954a8a63a21f10dbd5bdeec4af00bea1ee01a10142ada6f57fca975129",
         "5b1954381befa4b650c27376281f54dcdd5e53b1b8b844eb308f315dd59e632a",
-        "3179eeac8cf303ea388310a0c0c6c950c414a5aef1f1e9ed7101b39da4232903"},
+        "3179eeac8cf303ea388310a0c0c6c950c414a5aef1f1e9ed7101b39da4232903",
+                              "17eb8df57a93ef73c26dc2eb09ff90403eb57b0c52f8cbfde79a2fba511fec64"},
     "orchestrator_service": {"84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee",
         "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68",
-        "e9a0a4f846d21ff3e0b360c6acd0d6017f453bfe9dc5c5ea937669b2c49c9be9"},
+        "e9a0a4f846d21ff3e0b360c6acd0d6017f453bfe9dc5c5ea937669b2c49c9be9",
+                             "60e428368d945638916a3fd4a8fe75479eeca06e59a4cb3eed65fc861021c2ed"},
     "modulith_design": {"252cf4ec3774bac5dc90c8853ec400f96308cd88864ddc7f2d0d6c241e190c54",
         "da774e69420c666793587dc7f0e433e7a06e56c3f3ca5bf203e672cc98a53739",
                         "3082df6c03384325fd257008848ad68ee4420b1bbf92388e51f2901161690271"},
     "service_tests": {"92748bd2b1cb6f490d603714dc95bd9067baead0f79409ac43927cf7a1f81149"},
     "modernise_and_test": {"f344e3a8168e60d7ce6aff5aaaafe61ef51c0687c994261490c708af0cb135cf",
         "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f",
-        "a33d06bbba111d533ffd3973d9226f06ad3f072e13cf06e19ad366352edd7bdd"},
+        "a33d06bbba111d533ffd3973d9226f06ad3f072e13cf06e19ad366352edd7bdd",
+                           "3017cc168fb1c98e83afe8bcf0f31cd82894893a7fd92d47d909d523e49f71d8"},
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v30"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v31"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
 GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails

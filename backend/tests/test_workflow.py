@@ -499,3 +499,21 @@ def test_agents_are_told_of_the_monoliths_own_documentation(tmp_path):
     assert "This feature's is in `docs/loan/approve/`." in documentation_brief(ctx)
     ctx.settings = {"monolith_docs_dir": "documentation"}
     assert documentation_brief(ctx) == ""  # another folder, which this monolith doesn't have
+
+
+def test_a_code_agents_step_without_changes_code_says_its_code_is_undone(client):
+    from sqlalchemy import select
+
+    from app.db.models import AuditEvent
+    from app.db.session import session_scope
+
+    run_id = new_run(client)  # the default project's standard workflow: no step marked "Changes code"
+    for _ in range(2):
+        wait_for(client, run_id, {"awaiting_approval"})
+        decide(client, run_id, decision="approve")
+    wait_for(client, run_id, {"awaiting_approval"})  # the tests gate: Module in monolith has run
+    with session_scope() as s:
+        warned = [e.message for e in s.scalars(select(AuditEvent).where(AuditEvent.run_id == run_id,
+                                                                      AuditEvent.stage == "modular_monolith"))
+                  if "isn't marked \"Changes code\"" in e.message]
+    assert warned and "undone when it finishes" in warned[0]

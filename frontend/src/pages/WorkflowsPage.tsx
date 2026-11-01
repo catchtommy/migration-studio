@@ -230,7 +230,21 @@ function StepInputs({ label, step, earlierAgents, title, onChange }: {
 
 /** Whether an agent step changes code. Which repository, and its base branch, differ per domain: each domain sets them
  * for the step's agent in its Agent inputs. */
-function StepCodeSettings({ label, step, onChange }: { label: string; step: EditableStep; onChange: (step: EditableStep) => void }) {
+/** The built-in agents that change code by nature (app/delivery.py CODE_AGENTS): without "Changes code" their changes
+ * are undone after the step. */
+export const CODE_AGENTS = [
+  "modular_monolith",
+  "monolith_orchestrator",
+  "microservice_scaffold",
+  "orchestrator_service",
+  "independent_tests",
+  "modernise",
+  "modernise_and_test",
+  "service_tests",
+  "monolith_integration",
+];
+
+export function StepCodeSettings({ label, step, onChange }: { label: string; step: EditableStep; onChange: (step: EditableStep) => void }) {
   const changes = !!step.code;
   return (
     <fieldset className="w-full rounded-md border border-dashed border-border p-2 text-sm" aria-label={label}>
@@ -242,6 +256,11 @@ function StepCodeSettings({ label, step, onChange }: { label: string; step: Edit
           {changes ? "Each domain sets this agent's repository and base branch in its Agent inputs." : "Writes documents only."}
         </span>
       </label>
+      {!changes && step.kind === "agent" && CODE_AGENTS.includes(step.key) && (
+        <p role="alert" className="mt-1 text-xs text-warn">
+          This agent changes code: without “Changes code”, the code it changes is undone when the step finishes.
+        </p>
+      )}
     </fieldset>
   );
 }

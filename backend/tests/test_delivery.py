@@ -1548,3 +1548,79 @@ def test_a_new_run_starts_fresh_beside_a_branch_an_earlier_run_of_the_feature_le
 
     plan = proj.get("/api/runs-git-plan", params={"domain": "loan", "feature": "approve"}).json()
     assert plan["feature_branch"] == "migration/loan/approve-v3"  # -v2 is this run's now
+
+
+def test_amending_a_code_step_makes_the_later_code_steps_before_the_gate_follow_it(client, tmp_path):
+    """Rejected at the tests gate for a specific change in Module in monolith: the steps after it that change code on
+    top of it (here Orchestrator in monolith) re-run in place to follow the change; documents-only steps stay as they
+    are."""
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    domain_repo(proj, upstream, "modular_monolith", also={"monolith_orchestrator": upstream})
+    wf = proj.get("/api/workflows/standard").json()
+    steps = [{**st, "code": {"changes_code": True}} if st.get("key") in ("modular_monolith", "monolith_orchestrator")
+             else st for st in wf["steps"]]
+    assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
+    run_id = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()["id"]
+    while True:
+        run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit"}, timeout=60)
+        if run["status"] == "awaiting_branches":
+            proj.post(f"/api/runs/{run_id}/branches", json={"feature_branch": run["pending_branches"]["feature_branch"]})
+        elif run["status"] == "awaiting_commit":
+            assert proj.post(f"/api/runs/{run_id}/finish").status_code == 204
+        elif run["pending_gate"]["gate"] == "gate_tests":
+            break
+        else:
+            proj.post(f"/api/runs/{run_id}/decision", json={"decision": "approve"})
+    before = {k: len([e for e in run["stages"] if e["stage"] == k])
+              for k in ("modular_monolith", "monolith_orchestrator", "microservice_scaffold")}
+    r = proj.post(f"/api/runs/{run_id}/decision", json={"decision": "reject", "comments": "Rename LoanDao",
+                                                        "target_stage": "modular_monolith", "scope": "amend"})
+    assert r.status_code == 200, r.text
+    while True:
+        run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_branches", "awaiting_commit"}, timeout=60)
+        if run["status"] == "awaiting_branches":
+            proj.post(f"/api/runs/{run_id}/branches", json={"feature_branch": run["pending_branches"]["feature_branch"]})
+        elif run["status"] == "awaiting_commit":
+            assert proj.post(f"/api/runs/{run_id}/finish").status_code == 204
+        else:
+            break
+    count = lambda k: len([e for e in run["stages"] if e["stage"] == k])  # noqa: E731
+    assert count("modular_monolith") == before["modular_monolith"] + 1
+    followed = [e for e in run["stages"] if e["stage"] == "monolith_orchestrator"][-1]
+    assert count("monolith_orchestrator") == before["monolith_orchestrator"] + 1
+    assert "was changed at the reviewer's request: Rename LoanDao" in followed["feedback"]
+    assert count("microservice_scaffold") == before["microservice_scaffold"]  # documents only here: kept
+
+
+def test_the_monolith_steps_always_work_in_the_projects_monolith_however_a_domain_spelled_it(client, tmp_path):
+    """Module in monolith, Orchestrator in monolith and Monolith integration change the project's monolith, in the
+    run's own checkout: a repository a domain once gave them (another spelling of the monolith's URL, or another
+    repository) doesn't send them elsewhere, and saving the domain drops it."""
+    from app import delivery
+
+    upstream, key, proj = setup_project(client, tmp_path, monolith_step=False)
+    stage = {"kind": "agent", "key": "modular_monolith", "title": "Module in monolith", "code": {"changes_code": True}}
+    for given in (f"file://{upstream}", "git@github.com:acme/other.git", ""):
+        inputs = {"modular_monolith": {"repository": given}} if given else {}
+        assert delivery.stage_repository(stage, "loan", inputs, str(upstream)) == (str(upstream), "")
+    assert delivery.code_repositories([stage], "loan", key) == []  # the workspace root, not a second checkout
+
+    r = proj.put("/api/domains/loan", json={"agent_inputs": {"modular_monolith": {
+        "paths": ["src/x"], "notes": "n", "repository": "git@github.com:acme/other.git", "base_branch": "dev"}}})
+    assert r.status_code == 200, r.text
+    assert r.json()["agent_inputs"]["modular_monolith"] == {"paths": ["src/x"], "notes": "n"}
+    info = [w for w in proj.get("/api/domains/loan").json()["workflows"]]
+    assert all("modular_monolith" not in w["code_agents"] or "modular_monolith" in w["monolith_agents"] for w in info)
+
+
+def test_lean_modernisation_works_in_the_repository_the_domain_set_for_modernise(client, tmp_path):
+    from app import delivery
+
+    stage = {"kind": "agent", "key": "modernise_and_test", "title": "Modernisation", "code": {"changes_code": True}}
+    inputs = {"modernise": {"repository": "https://git.example.com/loan-modern.git", "base_branch": "main"}}
+    assert delivery.stage_repository(stage, "loan", inputs, "https://git.example.com/mono.git") == \
+        ("https://git.example.com/loan-modern.git", "main")
+    own = {**inputs, "modernise_and_test": {"repository": "https://git.example.com/loan-modern-2.git"}}
+    assert delivery.stage_repository(stage, "loan", own, None)[0] == "https://git.example.com/loan-modern-2.git"
+    assert delivery.agent_repository(inputs, "modernise_and_test")[2] == "modernise"  # shown as inherited
+    assert delivery.agent_repository(inputs, "service_tests")[0] == "https://git.example.com/loan-modern.git"
