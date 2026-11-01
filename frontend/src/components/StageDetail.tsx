@@ -7,11 +7,12 @@ import { ArtifactViewer } from "./ArtifactViewer";
 import { RestartPanel } from "./RestartPanel";
 import { chosen, DocumentPicker, type DocumentChoice } from "./DocumentPicker";
 import { DiffView } from "./DiffView";
+import { TokenUsage } from "./TokenUsage";
 import { DownloadButton } from "./DownloadButton";
 import { StatusBadge } from "./StatusBadge";
 import { useCan } from "../lib/hooks";
 
-type Tab = "output" | "changes" | "activity";
+type Tab = "output" | "changes" | "activity" | "tokens";
 
 function StageInputs({ stage, stages }: { stage: StageDef; stages: StageDef[] }) {
   const earlier = stages.slice(0, stages.findIndex((s) => s.key === stage.key)).filter((s) => s.kind === "agent");
@@ -142,7 +143,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
       ) : (
         <>
           <nav className="flex gap-4 border-b border-border text-sm">
-            {(["output", "changes", "activity"] as Tab[]).map((t) => (
+            {(["output", "changes", "activity", "tokens"] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -172,6 +173,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
             ))}
           {tab === "changes" && <DiffView runId={run.id} executionId={execution.id} />}
           {tab === "activity" && <ActivityLog events={events} stage={stage.key} />}
+          {tab === "tokens" && <TokenUsage execution={execution} attempts={attempts} />}
         </>
       )}
     </div>

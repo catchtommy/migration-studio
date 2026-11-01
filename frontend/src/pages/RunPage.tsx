@@ -15,6 +15,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { WorkflowUpdate } from "../components/WorkflowUpdate";
 import { StartOver } from "../components/StartOver";
+import { runTokens } from "../components/TokenUsage";
 import { FailedRun, StopRun } from "../components/RunControls";
 
 export function RunPage() {
@@ -37,6 +38,7 @@ export function RunPage() {
   if (!run) return <p className="text-subtle">Loading…</p>;
 
   const stages = run.workflow_stages;
+  const tokens = runTokens(run.stages);
   const workflowName = workflows.find((w) => w.key === run.workflow)?.name ?? run.workflow;
 
   const stage = stages.find((s) => s.key === selected);
@@ -78,10 +80,16 @@ export function RunPage() {
               · reads the monolith (read-only) at <span className="font-mono">{run.legacy.sha.slice(0, 10)}</span>
             </span>
           )}
+          {tokens.total > 0 && (
+            <span title={`${tokens.input.toLocaleString()} input + ${tokens.output.toLocaleString()} output, every step and attempt (each step's Tokens tab has the detail)`}>
+              {" "}
+              · {tokens.total.toLocaleString()} AI tokens
+            </span>
+          )}
         </p>
         {!!run.monolith_behind && run.status !== "awaiting_commit" && !run.delivery?.repos?.monolith && (
           <p className="mt-2 rounded-md bg-warn/10 px-3 py-1.5 text-sm text-warn">
-            The monolith's base branch has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"} outside the docs folder since this run started. This
+            The monolith's base branch has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"} since this run started. This
             run keeps working on the commit it started from; a new run, or <em>Start over</em>, starts from the latest.
           </p>
         )}

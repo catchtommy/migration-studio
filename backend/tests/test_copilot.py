@@ -193,3 +193,25 @@ def test_github_host_setting_is_normalised(client):
     r = client.put("/api/settings", json={"github_host": "acme.ghe.com/"})
     assert r.json()["github_host"] == "https://acme.ghe.com"
     client.put("/api/settings", json={"github_host": "https://github.com"})
+
+
+def test_copilot_reports_the_tokens_of_each_model_call_and_of_each_document(ctx):  # noqa: F811
+    from copilot.session_events import AssistantMessageToolRequest, AssistantUsageData
+
+    ctx, _, _ = ctx
+
+    async def turn(session):
+        session.emit(AssistantUsageData(model="gpt-5", input_tokens=2_000, output_tokens=120, cache_read_tokens=1_500,
+                                        cache_write_tokens=300))
+        session.emit(AssistantMessageData(content="", message_id="m1", output_tokens=120, tool_requests=[
+            AssistantMessageToolRequest(name="write_file", tool_call_id="t1",
+                                        arguments={"path": f"{OUT}/as-is.md", "content": "# AS-IS\n"})]))
+        await call(session.kwargs["tools"], "write_file", path=f"{OUT}/as-is.md", content="# AS-IS\n")
+        session.emit(AssistantUsageData(model="gpt-5", input_tokens=2_100, output_tokens=10))
+        session.emit(message("Done."))
+
+    CopilotAgent("as_is_doc", FakeService(FakeClient([turn]))).run(ctx)
+    used = ctx.usage.summary(docs_folder=OUT)
+    assert (used["calls"], used["input_tokens"], used["output_tokens"]) == (2, 4_100, 130)
+    assert (used["cache_read_tokens"], used["cache_write_tokens"], used["models"]) == (1_500, 300, ["gpt-5"])
+    assert used["documents"][f"{OUT}/as-is.md"] == {"output_tokens": 120, "writes": 1}

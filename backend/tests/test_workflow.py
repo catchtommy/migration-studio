@@ -518,3 +518,27 @@ def test_a_code_agents_step_without_changes_code_says_its_code_is_undone(client)
                                                                       AuditEvent.stage == "modular_monolith"))
                   if "isn't marked \"Changes code\"" in e.message]
     assert warned and "undone when it finishes" in warned[0]
+
+
+def test_each_steps_token_usage_is_stored_with_its_documents(client, monkeypatch):
+    """What a step's AI calls used is kept on the step attempt and shown with the run: totals, and per document the
+    output tokens spent writing it and its size. A stub step (no model call) has none."""
+    original = stub.StubAgent.run
+
+    def run(self, ctx):
+        artifacts = original(self, ctx)
+        if self.stage == "as_is_doc":  # as an AI agent would have: two model calls, the second writing as-is.md
+            ctx.usage.model_call(input_tokens=3_000, output_tokens=200, cache_read_tokens=2_000, model="m")
+            ctx.usage.model_call(input_tokens=3_400, output_tokens=900, model="m")
+            ctx.usage.wrote(900, [(ctx.rel(ctx.output_dir / "as-is.md"), 10)])
+        return artifacts
+
+    monkeypatch.setattr(stub.StubAgent, "run", run)
+    run_id = new_run(client)
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    used = executions(run, "as_is_doc")[0]["usage"]
+    assert (used["calls"], used["input_tokens"], used["output_tokens"], used["cache_read_tokens"]) == \
+        (2, 6_400, 1_100, 2_000)
+    doc = used["documents"][f".migration/customer/{run['operation']}/as-is.md"]
+    assert doc["output_tokens"] == 900 and doc["writes"] == 1 and doc["size_tokens"] > 0
+    assert executions(run, "deep_dive")[0]["usage"] is None  # the stub: no model call

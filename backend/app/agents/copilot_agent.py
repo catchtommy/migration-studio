@@ -11,6 +11,7 @@ from app.agents import common
 from app.agents.base_agent import AgentContext, ArtifactOut, StageAgent
 from app.agents.common import AgentFailed
 from app.agents.tools import SCHEMAS, Toolbox
+from app.agents.usage import writes_of
 from app.copilot_service import CopilotService, get_service
 
 SESSION_TIMEOUT = 6 * 3600  # seconds one message may take, including time spent waiting for answers
@@ -45,7 +46,7 @@ class CopilotAgent(StageAgent):
     async def _run(self, ctx: AgentContext) -> list[ArtifactOut]:
         from copilot import ToolSet
         from copilot.session import PermissionHandler
-        from copilot.session_events import AssistantMessageData, SessionErrorData
+        from copilot.session_events import AssistantMessageData, AssistantUsageData, SessionErrorData
 
         client = await self.service.client()
         auth = await client.get_auth_status()
@@ -75,8 +76,14 @@ class CopilotAgent(StageAgent):
 
         def on_event(event) -> None:
             data = event.data
-            if isinstance(data, AssistantMessageData):
+            if isinstance(data, AssistantUsageData):  # one model call
+                ctx.usage.model_call(input_tokens=data.input_tokens, output_tokens=data.output_tokens,
+                                     cache_read_tokens=data.cache_read_tokens,
+                                     cache_write_tokens=data.cache_write_tokens, model=data.model)
+            elif isinstance(data, AssistantMessageData):
                 common.log_text(ctx, data.content)
+                ctx.usage.wrote(data.output_tokens, writes_of([(r.name, r.arguments)
+                                                               for r in data.tool_requests or []]))
             elif isinstance(data, SessionErrorData):
                 errors.append(data.message)
                 ctx.log(f"Copilot error: {data.message}")

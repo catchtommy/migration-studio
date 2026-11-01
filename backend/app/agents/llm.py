@@ -4,6 +4,7 @@ from app.agents import common
 from app.agents.base_agent import AgentContext, ArtifactOut, StageAgent
 from app.agents.common import AgentFailed
 from app.agents.tools import Toolbox, definitions
+from app.agents.usage import writes_of
 from app.config import settings
 
 MAX_TOKENS = 64_000
@@ -53,6 +54,14 @@ class ClaudeAgent(StageAgent):
                 fallbacks="default",
             ) as stream:
                 response = stream.get_final_message()
+            used = getattr(response, "usage", None)
+            if used is not None:  # the tokens of this call; its output, to the files its tool calls write
+                ctx.usage.model_call(input_tokens=used.input_tokens, output_tokens=used.output_tokens,
+                                     cache_read_tokens=getattr(used, "cache_read_input_tokens", 0),
+                                     cache_write_tokens=getattr(used, "cache_creation_input_tokens", 0),
+                                     model=getattr(response, "model", None) or model)
+                ctx.usage.wrote(used.output_tokens, writes_of([(b.name, b.input) for b in response.content
+                                                               if b.type == "tool_use"]))
             # Append the full content unchanged: thinking blocks must be passed back as they came.
             messages.append({"role": "assistant", "content": response.content})
             for block in response.content:

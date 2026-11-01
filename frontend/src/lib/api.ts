@@ -174,8 +174,28 @@ export interface StageExecution {
   error: string | null;
   rerun?: boolean | null; // re-ran a completed step in place ("Re-run from here")
   checklist?: ChecklistTick[] | null; // gates: the checklist items ticked at this attempt
+  usage?: StepUsage | null; // the AI tokens the attempt used (null: no model call)
   started_at: string;
   finished_at: string | null;
+}
+
+/** One file's share of a step's tokens: the output tokens of the responses that wrote it. */
+export interface FileUsage {
+  output_tokens: number;
+  writes: number;
+  size_tokens?: number; // the document's size, about four characters a token
+}
+
+/** The AI tokens of one step attempt, as the provider reported them. */
+export interface StepUsage {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  models: string[];
+  documents: Record<string, FileUsage>;
+  code: Record<string, FileUsage>;
 }
 
 export interface ChecklistTick {

@@ -490,6 +490,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             with session_scope() as s:
                 ex = s.get(StageExecution, exec_id)
                 ex.status, ex.error, ex.finished_at = "failed", str(e), utcnow()
+                ex.usage = ctx.usage.summary(docs_folder=docs_dir(domain, state["operation"]))
                 ex.end_sha, ex.diff, ex.repos = end, root_diff, repos or None
                 kept = s.scalar(select(func.count()).where(Artifact.run_id == run_id, Artifact.stage == stage.key,
                                                           Artifact.attempt == attempt))
@@ -547,6 +548,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
                                kind=out.kind, content=contents[out.path]))
             ex = s.get(StageExecution, exec_id)
             ex.status, ex.end_sha, ex.finished_at = "completed", end_sha, utcnow()
+            ex.usage = ctx.usage.summary(contents, docs_dir(domain, state["operation"]))
             ex.diff = git_ops.diff(ws, start_sha, end_sha, binary=True)
             ex.repos = nested_changes or None
         emit(run_id, "status", f"{stage.title} completed: {len(outputs)} artifact(s)", stage.key)

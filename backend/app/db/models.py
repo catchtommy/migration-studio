@@ -104,6 +104,8 @@ class StageExecution(Base):
     rerun: Mapped[bool | None] = mapped_column(Boolean)
     # Gates only: the checklist items the approver ticked at this attempt, [{"item", "by", "at"}] (app/gate_checklist.py)
     checklist: Mapped[list | None] = mapped_column(JSONText)
+    # AI tokens the attempt used (app/agents/usage.py): totals per model call, and per document written
+    usage: Mapped[dict | None] = mapped_column(JSONText)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

@@ -3,6 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.agents.usage import TokenMeter
 from app.orchestrator.stages import StageDef
 
 
@@ -119,6 +120,7 @@ class AgentContext:
     resume: dict | None = None
     # A reviewer rejected this step for a specific change: make that change only, in place (see common.amend_brief).
     amend: bool = False
+    usage: TokenMeter = field(default_factory=TokenMeter)  # the AI tokens this step uses (app/agents/usage.py)
     # Documents of steps a gate before this one approved: this step may read them but not change them.
     locked_documents: set[str] = field(default_factory=set)
     # Asks a person a question (with optional suggested answers) and blocks until it is answered.

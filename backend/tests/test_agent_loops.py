@@ -170,3 +170,37 @@ def test_a_failing_tool_reports_its_error_to_the_agent_instead_of_ending_it(ctx,
     ctx.config = {**ctx.config, "checks": [*(ctx.config.get("checks") or []), "boundary"]}  # gives check_boundaries
     text, is_error = common.run_tool(ctx, Toolbox(ctx, None), "check_boundaries", {})
     assert is_error and "ZeroDivisionError" in text
+
+
+def test_a_steps_tokens_are_counted_per_model_call_and_per_document_written(ctx, monkeypatch):
+    """The Claude API's usage of each response adds up on the step; a response's output tokens go to the documents
+    its tool calls write, split by how much it wrote to each."""
+    from types import SimpleNamespace
+
+    from tests.test_agents_domains import _reply, _text, _tool
+
+    ctx, _, _ = ctx
+    out = ".migration/loan/approve"
+
+    def with_usage(reply, input_tokens, output_tokens, cache_read=0, cache_write=0):
+        reply.usage = SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens,
+                                      cache_read_input_tokens=cache_read, cache_creation_input_tokens=cache_write)
+        reply.model = "claude-opus-5-5"
+        return reply
+
+    client = ScriptedClient([
+        with_usage(_reply(_tool("read_file", path="README")), 1_000, 50, cache_write=900),
+        with_usage(_reply(_tool("write_file", path=f"{out}/as-is.md", content="# AS-IS\n" + "x" * 292),
+                          _tool("write_file", path=f"./{out}/notes.md", content="y" * 100)), 1_500, 400, 900),
+        with_usage(_reply(_tool("write_file", path=f"{out}/as-is.md", content="# AS-IS\nfixed\n")), 1_800, 30, 1_400),
+        with_usage(_reply(_text("Done."), stop="end_turn"), 1_900, 20, 1_700),
+    ])
+    monkeypatch.setattr(llm, "make_client", lambda: client)
+    llm.ClaudeAgent("as_is_doc").run(ctx)
+    used = ctx.usage.summary({f"{out}/as-is.md": "# AS-IS\nfixed\n"}, out)
+    assert (used["calls"], used["input_tokens"], used["output_tokens"]) == (4, 6_200, 500)
+    assert (used["cache_read_tokens"], used["cache_write_tokens"]) == (4_000, 900)
+    assert used["models"] == ["claude-opus-5-5"]
+    as_is, notes = used["documents"][f"{out}/as-is.md"], used["documents"][f"{out}/notes.md"]
+    assert as_is["writes"] == 2 and as_is["output_tokens"] == 300 + 30  # 3/4 of the 400, then all of the 30
+    assert notes == {"output_tokens": 100, "writes": 1} and as_is["size_tokens"] == 3
