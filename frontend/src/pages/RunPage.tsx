@@ -6,6 +6,7 @@ import { useRunEvents, useWorkflows, useCan } from "../lib/hooks";
 import { ActivityLog } from "../components/ActivityLog";
 import { AmendPanel } from "../components/AmendPanel";
 import { ApprovalPanel } from "../components/ApprovalPanel";
+import { FunctionalCoverage } from "../components/FunctionalCoverage";
 import { QuestionPanel } from "../components/QuestionPanel";
 import { StageDetail } from "../components/StageDetail";
 import { StageTimeline } from "../components/StageTimeline";
@@ -117,12 +118,13 @@ export function RunPage() {
       {run.status === "awaiting_input" && openQuestion && <QuestionPanel key={openQuestion.id} runId={run.id} question={openQuestion} stages={stages} />}
 
       {run.status === "awaiting_approval" && run.pending_gate && (
-        <ApprovalPanel key={run.pending_gate.gate + run.stages.length} runId={run.id} gate={run.pending_gate} stages={stages} />
+        <ApprovalPanel key={run.pending_gate.gate + run.stages.length} runId={run.id} gate={run.pending_gate} stages={stages} coverage={run.functional_coverage} />
       )}
 
       {run.status === "awaiting_branches" && run.pending_branches && <BranchConfirmation key={`${run.pending_branches.stage}:${run.pending_branches.repository.key}`} runId={run.id} pending={run.pending_branches} />}
       {run.status === "awaiting_commit" && <CommitReview run={run} />}
       {run.status === "completed" && <DeliverySummary run={run} />}
+      {run.status === "completed" && run.functional_coverage && <FunctionalCoverage coverage={run.functional_coverage} gate="completed" />}
 
       {run.status === "changes_requested" && run.pending_rerun && <AmendPanel key={run.pending_rerun.gate + run.stages.length} run={run} />}
 

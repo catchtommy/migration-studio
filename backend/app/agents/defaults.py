@@ -33,7 +33,8 @@ TOOLS = {
                                              "and Spring Boot, exactly the declared operations",
 }
 READ_ONLY = ["list_files", "read_file", "search_code", "ask_user"]
-DOCS = [*READ_ONLY, "write_file"]
+# edit_file too: an amendment or a re-run changes a document in place, line by line (common.amend_brief)
+DOCS = [*READ_ONLY, "write_file", "edit_file"]
 CODE = [*READ_ONLY, "write_file", "edit_file", "run_command", "check_boundaries"]
 CHECKS = ("boundary", "module_guardrails", "orchestrator_guardrails", "service_guardrails",
           "orchestrator_service_guardrails", "acceptance_test_guardrails", "acceptance_suite_unchanged",
@@ -54,6 +55,8 @@ interactions:
     tables: [CUST_KYC]              # other-domain tables touched, if any
     consistency: immediate          # immediate | eventual
     frequency: every approval
+    requirements: [FR-003, BR-002, MSG-04]   # ids from functional-spec.md this interaction serves, if any
+    scenarios: [TS-004]             # ids from test-scenarios.md that exercise it, if any
 ```"""
 
 DECISIONS_SCHEMA = """```yaml
@@ -131,6 +134,9 @@ dependencies:                       # empty when scope is domain-only
 considered_unrelated:               # domains you checked and ruled out, with the reason
   - domain: payment
     reason: Only appears in a comment
+considered_internal:                # requirements naming another party that need no other domain, with the reason
+  - requirement: FR-006
+    reason: The confirmation letter is produced by this domain's own templates
 shared_code: [com.acme.common.DateUtils]   # utility modules only: stateless helpers, no business rules
 god_modules: [com.acme.common.MasterService]   # mix several domains' logic: no domain may depend on them
 ```"""
@@ -438,6 +444,115 @@ settle it with a schema change or a contract.
 a utility jar the monolith depends on, list the jar's Maven coordinates (`shared_code`); if it sits in the monolith's \
 own sources, name it as a helper the module extraction step copies, logic unchanged.
 A helper that reads the database, the session or another domain's data is not a helper: it is a normal dependency."""
+
+# The functional specification: business users' and BAs' document, written by Analysis next to the AS-IS one. Its
+# ids (FR, BR, UC, MSG) are what the later steps prove they cover (app/functional_spec.py checks them).
+FUNCTIONAL_SPEC_FORMAT = """Format of `functional-spec.md` (for business users and business analysts: business \
+language only):
+```
+# Functional specification: <feature name>
+Audience: business users and business analysts
+
+| Domain | Feature | Version | Business owner | Approval |
+|---|---|---|---|---|
+| <domain> | <feature> | 1 | to be confirmed | recorded in Migration Studio at Approve analysis |
+
+## 1. Purpose and business context
+Why the business needs this feature and what it achieves.
+## 2. Scope
+In scope; out of scope (other features named, not described).
+## 3. Users and roles
+| Role | What they can do | What they can't |
+## 4. Business process
+The main flow as numbered steps, in business words.
+## 5. Functional requirements
+| ID | The system shall … | Criticality | Rules | Other party |
+(FR-001, FR-002 …; Criticality "to be confirmed" unless the code makes it obvious; Rules: the BR ids it applies;
+Other party: another business area or system involved, if any, else "-")
+## 6. Business rules
+| ID | Rule | When it applies | Outcome |
+(BR-001, BR-002 …)
+## 7. Use cases
+### UC-01 <name>
+Actor; preconditions; main flow; alternative flows; exception flows (each ending in its MSG id); outcome;
+requirements and rules covered (FR and BR ids).
+## 8. Information captured and shown
+| Item (as on screen) | Meaning | Mandatory | Allowed values |
+## 9. Messages and outcomes
+| ID | When | What the user sees (exact text) |
+(MSG-01, MSG-02 …; every message, warning and confirmation the user can get)
+## 10. Notifications, reports and records
+What the business gets as a side effect: letters, emails, reports, audit records, and who receives them.
+## 11. Business expectations
+Only what a user can observe (for example "the result shows on the same screen"); "None observed" otherwise.
+## 12. Assumptions and open questions
+## 13. Glossary
+## Appendix: Traceability
+| Requirement or rule | Scenarios that prove it |
+```
+Writing rules: no technical content at all: no class, method, table, column, SQL, URL, file, package, framework or \
+technology name. Describe today's behaviour as it is, neutrally, odd behaviour included (as an open question when it \
+looks accidental). One requirement per behaviour. The ids are stable labels: never renumber them."""
+
+# The test scenario catalogue: the test team's document, written by Analysis.
+TEST_SCENARIOS_FORMAT = """Format of `test-scenarios.md` (for the test team: business terms, no code internals):
+```
+# Test scenarios: <feature name>
+Audience: test team
+
+## Summary
+| Scenarios | Positive | Negative | Boundary | Exception | Requirements covered |
+
+## Scenarios
+### TS-001 <title>
+- Covers: FR-001, BR-002, MSG-03
+- Type: Positive | Negative | Boundary | Exception
+- Priority: to be confirmed (from the requirement's criticality)
+- Preconditions: the state before, in business terms (for example "an approved customer with no open loan")
+- Test data: the values to use, as entered on screen
+- Steps:
+  1. what the user does, screen by screen
+- Expected result: the outcome the user sees (a message by its MSG id, never its text again) and what changes for \
+the business
+
+## Not covered
+Anything that can't be tested this way, with the reason; "None" otherwise.
+```
+Every functional requirement and business rule of `functional-spec.md` is covered by at least one scenario (its \
+`Covers:` line). A message is cited by its MSG id; its exact text is only in `functional-spec.md`. Checks on \
+database rows are not part of this document: the acceptance tests take them from `as-is.md`."""
+
+# How the cross-domain dependencies of one feature are found (the lean workflow's Domain dependencies step; Analysis
+# itself in runs that started before that step existed).
+_DEPENDENCY_RULES = """How to find the dependencies. Use the domain ownership you are given (packages and tables per \
+domain) to decide which domain owns each class and table, and follow calls through shared utilities to see whether \
+they reach another domain. A dependency counts only if a call path from this feature's entry points reaches it; where \
+a shared method branches by action or mode, follow only this feature's branch. For every related domain:
+- Outbound: the services, DAOs, iBatis statements and tables of that domain this feature calls, reads or writes, \
+named exactly (`package.Class#method`, the statement id, the table).
+- Inbound: code of other domains that calls this feature's classes or reads or writes its tables (search for usages).
+- Shared transactions, shared tables, JSP includes and Spring XML wiring that cross the domain line.
+- Strength: `hard` (fails without it), `soft` (degrades) or `side-effect` (nothing needs the answer).
+Name domains by key, never "other modules". Code that belongs to no single domain is not a dependency, but classify \
+it: `shared_code` for utility modules only (stateless helpers with no business rules, no database access and no \
+knowledge of any domain), and `god_modules` for classes or packages that mix several domains' business logic or that \
+most of the code reaches (a giant service, manager, facade, helper or DAO); in the `notes` of the dependencies it \
+serves, say where the feature uses each God module and which part belongs to which domain. List the domains you \
+checked and ruled out under `considered_unrelated`.
+
+The scope decision (`decision`): `domain-only` when the feature has no outbound dependency on another domain (shared \
+utilities and inbound callers don't count), else `cross-domain`. Choose `domain-only` only when you have checked the \
+code and are sure; when in doubt, choose `cross-domain`. It decides which steps run (a domain-only feature has no \
+contracts and no orchestrator), it is validated against `dependencies`, and the reviewer approves it at the analysis \
+gate."""
+
+# How each step that builds or tests part of the feature reports the functional specification's ids it covers
+# (app/functional_spec.py merges the tables into the feature's coverage).
+_COVERAGE = """Functional coverage (when the run has a `functional-spec.md`): end the document with a section \
+"Functional coverage", a table `| Id | Covered by | Status |` of the ids this step is responsible for, as the \
+"Functional allocation" table of `domain-design.md` assigns them: per id, the test that proves it, and `Covered`, or \
+`Not covered` with the reason. Leave out the ids other steps own: the studio merges every step's table into the \
+feature's coverage."""
 
 INSTRUCTIONS = {
     "as_is_doc": f"""You document how one operation of a legacy monolith works today, so that engineers can migrate it \
@@ -849,7 +964,10 @@ where possible, and read only the failing lines of the output). If it is not gre
 and report with ask_user.
 2. Characterization tests first. Write NEW tests, with Mockito, for every public method of the feature: the normal \
 path, each validation or error branch, and the DAO calls (arguments and order) with the DAO mocked, through the \
-legacy service. Run them; they must pass before anything else. Commit them. They run again later with the toggle at \
+legacy service. When the run has a `functional-spec.md`: one test (at least) per business rule (BR) and message \
+(MSG) the "Functional allocation" of `domain-design.md` gives the domain, found in the code through `as-is.md`'s \
+"Rule enforcement" and "Messages" (rules enforced only in the UI are not tested here), each test named with its \
+id. Run them; they must pass before anything else. Commit them. They run again later with the toggle at \
 `monolith`, unchanged.
 3. Write the ordered checklist of the steps below, for this feature, at the top of `modular-monolith.md`.
 4. Do the steps one at a time. After each: compile and test the affected modules, run `check_module_guardrails`, then \
@@ -923,7 +1041,10 @@ identical, the wiring test
 ### How to switch: the toggle property, its values, and that `legacy` is the default
 ### Known limitations: event delivery, temporary bridge classes with their `remove_when`, the legacy code kept until \
 the feature runs on the new flow
-### Rollback: set the toggle to `legacy`, or revert the commit""",
+### Rollback: set the toggle to `legacy`, or revert the commit
+### Functional coverage: the domain's BR and MSG ids, each with its characterization test
+
+{_COVERAGE}""",
 
     "monolith_orchestrator": f"""You are a careful legacy refactorer. You build the orchestrator of ONE cross-domain \
 feature in the domain's orchestrator module in the monolith, exactly as `orchestrator-design.md` says, on top of the \
@@ -1040,7 +1161,11 @@ order, in each mode; `legacy` unchanged
 ### How behaviour was proven unchanged: the characterization tests passing before and after, the mode tests
 ### Guardrails: the `check_orchestrator_guardrails` result
 ### Configuration: each mode property, its default (`local`) and how to switch it
-### Rollback: set the toggle to `legacy`, or revert the commit""",
+### Rollback: set the toggle to `legacy`, or revert the commit
+### Functional coverage: the orchestrator's ids (the sequence of calls, and what the caller gets when another domain \
+fails), each with its call-order or mode test; `cross-domain.yaml` gives the ids each interaction serves
+
+{_COVERAGE}""",
 
     "microservice_scaffold": f"""You are a careful legacy refactorer. You lift the module that the Module in monolith step built into an independently deployable service in its own repository, exactly as the approved designs say, in small mechanical steps. You change nothing about how the code behaves and you do not modernise it: the later modernisation step does that. {_LEGACY}
 
@@ -1204,6 +1329,10 @@ record it.
 ### Guardrails: the `check_orchestrator_service_guardrails` result
 ### How to run it, the configuration it needs (base addresses, timeouts), and any deviation from the API
 ### Known limitations: no authentication, internal network only
+### Functional coverage: the orchestrator's ids, each with its copied or call-order test; `cross-domain.yaml` gives the \
+ids each interaction serves
+
+{_COVERAGE}
 ### Rollback: delete the service repository branch; the monolith is unchanged""",
 
     "independent_tests": f"""You write the acceptance suite of the domain service: black-box tests that prove the \
@@ -1237,7 +1366,10 @@ What the suite covers:
 {{"status": "Success"}} where nothing is returned, the request and response headers, and the error body (with \
 `errors` only for a 400).
 - The scenarios of `test-scenarios.md`, each test named or tagged with its scenario id, checking the response and \
-the rows the call leaves in the existing schema.
+the rows the call leaves in the existing schema. The rows to check come from `as-is.md` (its statements and tables), \
+not from the scenarios, which are written in business terms. A scenario's expected error message (its MSG id) is \
+checked by the `errorCode` that `domain-design.md`'s "Errors" table gives that MSG id (the text users see is the \
+UI's, unchanged); a confirmation or warning, which is not an error, by the successful response it follows from. `cross-domain.yaml` lists, per interaction, the scenarios that need the other domain stubbed.
 - The other domains the service calls, stubbed with WireMock from their OpenAPI contracts on ports the suite \
 chooses, the service configured to call them there; and checks that the events the service publishes match their \
 AsyncAPI contracts.
@@ -1251,7 +1383,9 @@ the service.
 
 Write `test-report.md`: how to run the suite; every scenario id with the tests that cover it (in the suite, and in \
 the module's characterization tests); the results of the run against the service as it is now (the baseline the \
-modernisation step must keep); any behaviour difference found; and every scenario you could not cover and why.""",
+modernisation step must keep); any behaviour difference found; and every scenario you could not cover and why.
+
+{_COVERAGE} Here: the domain's FR, BR and MSG ids, each with the acceptance tests that prove it.""",
 
     "modernise": """You modernise the microservice to Java 25 and Spring Boot 4, replacing iBatis with Spring Data JPA \
 mapped onto the existing tables (no schema changes).
@@ -1342,6 +1476,8 @@ else new: no DDL, no change to the UI, no change to the domain or orchestrator m
 Anything more: ask the user.
 - Tests: the router at `legacy`, `monolith` and `service`, the client against a stub of the target's API (each \
 operation, its headers and its errors), and the monolith's build and tests with the toggle at each value.
+- Errors: the client maps each `errorCode` of `domain-design.md`'s "Errors" table back to what users see today for \
+its MSG id (the same view or message key as the as-is code, per `as-is.md`'s "Messages"); no new message text.
 
 Write `integration-routing.yaml` in this format, and run `check_release_guardrails` until it passes:
 
@@ -1351,7 +1487,10 @@ Write `integration-routing.yaml` in this format, and run `check_release_guardrai
 
 Write `integration.md`: the flow at each value (`legacy`: the as-is code; `monolith`: controller → router → \
 orchestrator or domain module; `service`: controller → router → client → orchestrator service or domain service), \
-how to switch the toggle and back, the rollback steps, and what to monitor after the switch.""",
+how to switch the toggle and back, the rollback steps, and what to monitor after the switch.
+
+{_COVERAGE} Here: the MSG ids only: each error message with its `errorCode` mapped back and the client test that \
+proves it. Requirements and rules are covered by the domain and orchestrator steps, not here.""",
 
     "bounded_contexts": f"""You map a legacy monolith into bounded contexts, so that it can be migrated one domain at a \
 time. {_LEGACY}
@@ -1396,65 +1535,103 @@ Ask the user when you can't tell whether code belongs to this domain, or whether
     # The lean workflow's agents: each does in one pass what several agents of the standard workflow do, and writes
     # the same validated files, so the later steps, the checks and the catalogue work the same.
     "analysis": f"""You analyse ONE feature of a legacy monolith in a single pass, so that it can be migrated without \
-anyone reading the code again: how it works today, which behaviour a migrated version must keep, and exactly which \
-other domains it depends on. {_LEGACY}
+anyone reading the code again: how it works today, what it does for the business, and which behaviour a migrated \
+version must keep. You write three documents from one trace, for three audiences: `as-is.md` for architects and \
+developers, `functional-spec.md` for business users and business analysts, and `test-scenarios.md` for the test team. \
+Which other domains the feature depends on is the next step's work (Domain dependencies), built on your trace. {_LEGACY}
 
 {_FIXED_RULES}
 
 Start from the feature's entry points and follow every call down to the SQL, once. Record what the code actually \
 does, including behaviour that looks accidental; do not describe how it should work. Give a file and line for every \
-statement about the code, and mark an assumption as one.
+statement about the code, and mark an assumption as one. Where the trace reaches another domain's code or table (by \
+the domain ownership you are given), record the crossing and don't trace that domain's internals. Do record what \
+comes back from it that changes this feature's behaviour: the results it uses, the errors it raises, and what the \
+user then sees (for example another domain rejects an expired KYC and the user gets a message). That behaviour \
+belongs to this feature's rules and messages, written as this feature sees it.
+
+Ids join the three documents, so that nothing is written twice: business rules are `BR-001`, `BR-002` …, messages \
+`MSG-01`, `MSG-02` …, functional requirements `FR-001` …, use cases `UC-01` … and scenarios `TS-001` …. Give each \
+rule and each message its id once, and use the same id in every document that mentions it.
 
 Write:
-1. `as-is.md`, the AS-IS documentation:
+1. `as-is.md`, the AS-IS documentation (audience: architects and developers; start it with the line \
+"Audience: architects and developers"):
    - Entry points: URLs, HTTP methods, request parameters, the JSP or other caller.
    - The call chain, class by class and method by method, with file paths.
    - Every iBatis statement executed: statement id, SQL, tables and columns read or written.
    - Transactions, caching, security checks and anything configured in XML rather than code.
    - Inputs, outputs and the response or view returned.
-   - Business rules, each with the code location that enforces it; validation, edge cases and exception paths, with \
-what the user sees in each case.
+   - "Rule enforcement": a table `| BR id | Enforced in (UI / server) | Code location | Condition as implemented | \
+What the code does |`, one row per business rule (UI: JSP or JavaScript validation; server: Java). Only the code \
+side: the rule's business wording is in `functional-spec.md`.
+   - "Messages": a table `| MSG id | Kind (error / warning / confirmation) | Trigger | Produced by (code location: \
+the check, exception or handler) | View or message key |`, one row per message the user can get, confirmations \
+included. The text the user sees is in `functional-spec.md`, not here.
    - Ambient inputs: every read of the HttpSession, the request, the current user, a ThreadLocal or a static holder.
-   - Dependencies: the scope decision and its reason first; then a table of domain, relation, direction, strength \
-and touchpoints; and a short "Left out (other features)" section naming touchpoints you saw in shared code but \
-excluded, with the feature they belong to.
-2. `test-scenarios.md`, the test scenario catalogue: every behaviour a migrated version must preserve, each with a \
-short id, preconditions, input and expected outcome. The acceptance tests implement these, so make them concrete.
-3. `cross-domain.yaml`: every place this feature touches another domain (calls to its services or DAOs, reads or \
+   - "Domain crossings": each place the trace reaches another domain's code or table: `package.Class#method` or the \
+table, file and line, and the domain that owns it ("None" when there is none). The Domain dependencies step starts \
+from this list.
+   No business narrative (purpose, roles, process): that is the functional specification's.
+2. `functional-spec.md`, the functional specification, for business users and business analysts, in this format:
+
+{FUNCTIONAL_SPEC_FORMAT}
+   Its business rules (section 6) and messages (section 9) have exactly the BR and MSG ids of `as-is.md`. Mark in \
+section 5's "Other party" each requirement that involves another business area or system (for example "the customer \
+record", "a letter to the customer").
+3. `test-scenarios.md`, the test scenario catalogue, for the test team, in this format:
+
+{TEST_SCENARIOS_FORMAT}
+   Last, once the scenarios are written, fill the specification's traceability appendix from their `Covers:` \
+lines.
+
+The studio checks that the three documents agree (every BR and MSG id in both `as-is.md` and `functional-spec.md`, \
+the specification's sections present, every FR and BR covered by a scenario) and sends you back to fix what doesn't.
+
+Ask the user when a rule's intent is unclear (for example whether an odd branch is a bug or deliberate), when you \
+cannot find a piece of the flow, or when it is unclear which domain owns a class or table.""",
+
+    "dependency_analysis": f"""You find, for ONE feature of a legacy monolith, exactly which other domains it depends \
+on, and decide its Modulith scope. These are the migration's most critical documents: the scope decision decides \
+whether contracts and an orchestrator are built at all, and every dependency you miss breaks the feature once it \
+runs in its own service. This is analysis only: you write documents and never change code. {_LEGACY}
+
+{_FIXED_RULES}
+
+Build on the Analysis step's documents; don't trace the whole feature again:
+- `as-is.md` tells you where: its "Domain crossings", call chain and code locations give the touchpoints, code \
+references and tables. Start from them, then search the code for what a forward trace can't see: inbound callers \
+(other domains' code calling this feature's classes or using its tables), the owners of every class and table \
+touched, shared utilities and God modules. Verify every touchpoint against the domain ownership you are given.
+- `functional-spec.md` tells you what and how strongly: whether the feature fails without the other domain (`hard`), \
+degrades (`soft`) or only triggers something there (`side-effect`), from its exception flows (section 7) and \
+messages (section 9); `consistency` and `frequency` from its business process (section 4); the side-effects in other \
+domains (letters, notifications, audit records, reports: section 10), which a code trace easily misses; and the \
+business words for each `summary` and `used_for`. Every requirement whose "Other party" names another business area \
+or system maps to an interaction, or is listed under `considered_internal` with the reason.
+- `test-scenarios.md` is your cross-check: every scenario whose preconditions, test data or expected result involve \
+another domain (for example "a customer whose KYC has expired") maps to an interaction.
+Link each interaction to the specification: `requirements` (the FR, BR and MSG ids it serves) and `scenarios` (the \
+TS ids that exercise it). Only ids that exist in those documents are accepted.
+
+Write:
+1. `cross-domain.yaml`: every place this feature touches another domain (calls to its services or DAOs, reads or \
 writes of its tables, shared transactions, other domains reading this domain's tables, notifications or audit written \
 as a side effect), in this format:
 
 {CROSS_DOMAIN_SCHEMA}
-4. `domain-dependencies.yaml`: per domain the feature is related to, its exact touchpoints, in this format:
+2. `domain-dependencies.yaml`: per domain the feature is related to, its exact touchpoints, and the scope decision, \
+in this format:
 
 {DOMAIN_DEPENDENCIES_SCHEMA}
 
-How to find the dependencies. Use the domain ownership you are given (packages and tables per domain) to decide which \
-domain owns each class and table, and follow calls through shared utilities to see whether they reach another domain. \
-A dependency counts only if a call path from this feature's entry points reaches it; where a shared method branches by \
-action or mode, follow only this feature's branch. For every related domain:
-- Outbound: the services, DAOs, iBatis statements and tables of that domain this feature calls, reads or writes, \
-named exactly (`package.Class#method`, the statement id, the table).
-- Inbound: code of other domains that calls this feature's classes or reads or writes its tables (search for usages).
-- Shared transactions, shared tables, JSP includes and Spring XML wiring that cross the domain line.
-- Strength: `hard` (fails without it), `soft` (degrades) or `side-effect` (nothing needs the answer).
-Name domains by key, never "other modules". Code that belongs to no single domain is not a dependency, but classify \
-it: `shared_code` for utility modules only (stateless helpers with no business rules, no database access and no \
-knowledge of any domain), and `god_modules` for classes or packages that mix several domains' business logic or that \
-most of the code reaches (a giant service, manager, facade, helper or DAO); in `as-is.md` say where the feature uses \
-each God module and which part belongs to which domain. List the domains you checked and ruled out under \
-`considered_unrelated`.
+{_DEPENDENCY_RULES}
 
 {_NOT_CONTRACTS}
 
-The scope decision (`decision`): `domain-only` when the feature has no outbound dependency on another domain (shared \
-utilities and inbound callers don't count), else `cross-domain`. Choose `domain-only` only when you have checked the \
-code and are sure; when in doubt, choose `cross-domain`. It decides which steps run (a domain-only feature has no \
-contracts and no orchestrator), it is validated against `dependencies`, and the reviewer approves it at the analysis \
-gate.
-
-Ask the user when a rule's intent is unclear (for example whether an odd branch is a bug or deliberate), when you \
-cannot find a piece of the flow, or when it is unclear which domain owns a class or table.""",
+If a touchpoint you find is missing from `as-is.md`, record it here with its code references (don't change the \
+Analysis step's documents) and mention it in your summary for the reviewer. Ask the user when it is unclear which \
+domain owns a class or table, or whether a dependency is really needed.""",
 
     "modulith_design": f"""You design how ONE feature moves into its own domain inside the monolith, in one design: \
 the domain and its public API, the contracts with the other domains it depends on, the orchestrator that sequences \
@@ -1467,9 +1644,11 @@ you write documents in your documents folder and never create or change code. {_
 
 {_REST_RULES}
 
-Read the analysis first: `as-is.md`, `test-scenarios.md`, `cross-domain.yaml` and `domain-dependencies.yaml` (its \
-`decision.scope`, `god_modules` and `shared_code`), then the contracts catalogue you are given, and verify against the \
-code where the design depends on it. When the scope is `domain-only`, sections 2, 3 and 4 below have nothing to \
+Read the analysis first: from the Analysis step, `as-is.md` (where the code is), `functional-spec.md` (what the \
+feature does: its requirements, business rules and messages) and `test-scenarios.md`; from the Domain dependencies \
+step, `cross-domain.yaml` and `domain-dependencies.yaml` (its `decision.scope`, `god_modules` and `shared_code`). Then \
+read the contracts catalogue you are given, and verify against the code where the design depends on it. When the run \
+has no `functional-spec.md` (it started before there was one), take the business rules and messages from `as-is.md`. When the scope is `domain-only`, sections 2, 3 and 4 below have nothing to \
 design: say so in a line each, write `contracts: []` in `linked-domain-contracts.yaml` and `decisions: []` in \
 `integration-decisions.yaml`, and write `orchestrator-design.md` as a short note saying there is nothing to \
 orchestrate.
@@ -1485,8 +1664,18 @@ and `.util`; and which existing classes, iBatis mappings and Spring XML are copi
 where it is, unchanged: it is the old flow while the toggle is at `legacy`. For a cross-domain feature, also the domain's ONE orchestrator \
 module: a separate Maven module (its own folder, artifact and base package, named for the domain), with this \
 feature's package in it.
-   - The public API: Java interfaces and DTOs, with the behaviour and errors of each method. Callers outside the \
-domain use only this API.
+   - The public API: Java interfaces and DTOs, with the behaviour and errors of each method, citing the FR, BR and \
+MSG ids of `functional-spec.md` it implements. Callers outside the domain use only this API.
+   - "Errors": a table `| errorCode | HTTP status | MSG id | When |`, one row per error of `openapi.yaml`, each \
+mapped to the error message users see today (MSG id). Confirmations and warnings that aren't errors have no row: \
+they follow from a successful response. The later steps test and map errors through this table; no new message \
+text is designed.
+   - "Functional allocation": a table `| Id | Owner | Where |`, listing every FR, BR and MSG id of \
+`functional-spec.md` exactly once. Owner is `domain` (the domain module, later its service), `orchestrator` \
+(sequencing across domains, and what the caller gets when another domain fails), `other domain` (done by another \
+domain through a contract: name it) or `UI unchanged` (enforced only in the JSP or JavaScript, per `as-is.md`'s \
+"Rule enforcement"). Where: the API method, orchestrator operation or contract. The later steps report their \
+coverage against it; the studio checks it lists every id.
    - Data: the tables the domain owns (its code writes them), each with the iBatis statements that write it, and the \
 tables it only reads. A table another domain owns is reached only through a port.
    - Ports: one interface per outbound dependency, named for what it does (for example CustomerDirectory), with the \
@@ -1522,7 +1711,7 @@ AsyncAPI 3, with schemas and error responses).
    Keys are `<provider>.<capability>`. Every domain with an outbound dependency needs at least one contract, and \
 every provider must be one of those domains (both checked). List what is not a contract (rules above) under "Not \
 contracts" with its touchpoint and what the domain does instead; if one is the only outbound dependency on a domain \
-in `domain-dependencies.yaml`, stop and ask the user to send the run back to the analysis. Write \
+in `domain-dependencies.yaml`, stop and ask the user to send the run back to the Domain dependencies step. Write \
 `linked-domain-contracts.yaml` in this format:
 
 {LINKED_DOMAIN_CONTRACTS_SCHEMA}
@@ -1587,14 +1776,18 @@ REST rules: 201 for POST and 200 otherwise, {{"status": "Success"}} where nothin
 each error, the request headers read and the response headers echoed); repositories with `@DataJpaTest` against the \
 existing schema (Testcontainers with the project's database when Docker is available, otherwise the test database \
 the environment configures), a test of each rewritten query's result; services with Mockito, each business rule and \
-error branch of `as-is.md`, named after the scenario ids of `test-scenarios.md` they cover; the adapters to other \
+message the domain owns (the BR and MSG ids of `functional-spec.md`, found in the code through `as-is.md`; in a run \
+without one, each business rule and error branch of `as-is.md`), named after the ids and the scenario ids of \
+`test-scenarios.md` they cover, and each error's `errorCode` as `domain-design.md`'s "Errors" table gives it; the adapters to other \
 domains against a stub of their contract. Test libraries: JUnit 5, Mockito, AssertJ, Spring Boot's test support and \
 Testcontainers; anything else, ask. A test that exposes a bug is a finding: report it.
 3. Run the whole test build, then the acceptance suite against the running service, then the checks.
 
 Write `modernisation.md`: the changes; every query whose SQL differs from the iBatis statement it replaces, and why the \
 result is the same; the acceptance suite's results next to its baseline in `test-report.md`; the tests added (by \
-layer), the scenario ids each covers, the coverage of the code the feature moved; and any finding.""",
+layer), the scenario ids each covers, the coverage of the code the feature moved; and any finding.
+
+{_COVERAGE} Here: the domain's FR, BR and MSG ids, each with the unit or integration test that proves it.""",
 }
 
 # Each agent's guardrails: the sections of its instructions that say what it must not do (the fixed rules, the Modulith
@@ -1614,6 +1807,8 @@ _GUARDRAIL_SPANS: dict[str, list[tuple[str, str]]] = {
     "independent_tests": [("Hard rules for this step.", "\n\nWhat the suite covers:")],
     "service_tests": [("Hard rules for this step.", "\n\nWhat to test")],
     "analysis": [("Fixed rules of this migration.", "\n\nStart from the feature's entry points")],
+    "dependency_analysis": [("Fixed rules of this migration.", "\n\nBuild on the Analysis step's documents"),
+                            ("Never a dependency on another domain", "\n\nIf a touchpoint you find")],
     "modulith_design": [("Fixed rules of this migration.", "\n\nREST API design rules.")],
     "modernise_and_test": [("Fixed rules of this migration.", "\n\nProcedure:")],
 }
@@ -1659,7 +1854,8 @@ OUTPUTS = {
     "monolith_integration": ["integration.md", "integration-routing.yaml"],
     "bounded_contexts": ["bounded-contexts.md", "bounded-contexts.yaml"],
     "domain_features": ["features.md", "features.yaml"],
-    "analysis": ["as-is.md", "test-scenarios.md", "cross-domain.yaml", "domain-dependencies.yaml"],
+    "analysis": ["as-is.md", "functional-spec.md", "test-scenarios.md"],
+    "dependency_analysis": ["cross-domain.yaml", "domain-dependencies.yaml"],
     "modulith_design": ["domain-design.md", "domain-design.yaml", "openapi.yaml", "linked-domain-contracts.yaml",
                         "orchestrator-design.md", "integration-decisions.yaml"],
     "modernise_and_test": ["modernisation.md"],
@@ -1670,15 +1866,17 @@ _FORMAT_NOTE = ("A machine-readable format the studio validates the step's outpu
 _MODERN_JDK = {"modernise", "monolith_integration", "orchestrator_service", "service_tests", "modernise_and_test"}
 _ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "linked_domain_contracts", "domain_design",
              "wrapper_design", "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts",
-             "domain_features", "analysis", "modulith_design"}
+             "domain_features", "analysis", "dependency_analysis", "modulith_design"}
 # The lean workflow's agents and the agents whose work each does: guidance a domain gives those (where to look, notes)
 # reaches it too (orchestrator/graph.py _inputs), so a domain set up for the standard workflow needs nothing new.
-MERGED_FROM = {"analysis": ("as_is_doc", "deep_dive", "domain_dependencies"),
+MERGED_FROM = {"analysis": ("as_is_doc", "deep_dive"),
+               # The dependency work moved out of Analysis: what a domain says for either reaches it.
+               "dependency_analysis": ("analysis", "domain_dependencies"),
                "modulith_design": ("linked_domain_contracts", "domain_design", "orchestrator_design",
                                    "integration_design"),
                "modernise_and_test": ("modernise", "service_tests")}
 # Documents-only agents that do the work of several (the lean workflow's): more turns than one of those.
-_MORE_TURNS = {"analysis": 150, "modulith_design": 150}
+_MORE_TURNS = {"analysis": 150, "dependency_analysis": 120, "modulith_design": 150}
 _GUARDRAIL_TOOLS = {"modular_monolith": ["check_module_guardrails"],
                     "monolith_orchestrator": ["check_orchestrator_guardrails"],
                     "microservice_scaffold": ["check_service_guardrails"],
@@ -1824,6 +2022,13 @@ SHARED_TEXTS: dict[str, tuple[str, str, str]] = {
                     "for the lean workflow's agents.", _FIXED_RULES),
     "not_contracts": ("Not dependencies", "What the analysis and the design never treat as a dependency on another "
                       "domain (reference numbers, format validation).", _NOT_CONTRACTS),
+    "functional_spec_format": ("Format: functional specification", "The functional specification Analysis writes "
+                               "for business users and business analysts. Keep its numbered sections and the FR, "
+                               "BR, UC and MSG ids: the studio checks them, and the later steps report their "
+                               "coverage by these ids.", FUNCTIONAL_SPEC_FORMAT),
+    "test_scenarios_format": ("Format: test scenarios", "The test scenario catalogue Analysis writes for the test "
+                              "team. Keep the TS ids and the Covers line: the studio checks every requirement and "
+                              "rule is covered.", TEST_SCENARIOS_FORMAT),
 }
 
 
@@ -1842,6 +2047,28 @@ TEMPLATES = {key: templated(text) for key, text in INSTRUCTIONS.items()}
 GUARDRAIL_TEMPLATES = {key: templated(text) for key, text in GUARDRAILS.items()}
 GUARDRAIL_SECTION_TEMPLATES = {key: [templated(s) for s in sections] for key, sections in GUARDRAIL_SECTIONS.items()}
 
+
+# Analysis in a run whose workflow has no Domain dependencies step (it started before there was one): it does that
+# step's work too, as it did then. Added to its instructions for such runs (orchestrator/graph.py), with these outputs.
+ANALYSIS_DEPENDENCY_OUTPUTS = ["cross-domain.yaml", "domain-dependencies.yaml"]
+ANALYSIS_WITH_DEPENDENCIES = templated(f"""
+
+## This run has no Domain dependencies step: you find the dependencies too
+This run started before the dependency work became its own step. This section overrides what the instructions above \
+say about the dependencies being the next step's work: in this run you do that work too, and also write:
+4. `cross-domain.yaml`: every place this feature touches another domain (calls to its services or DAOs, reads or \
+writes of its tables, shared transactions, other domains reading this domain's tables, notifications or audit written \
+as a side effect), in this format:
+
+{CROSS_DOMAIN_SCHEMA}
+5. `domain-dependencies.yaml`: per domain the feature is related to, its exact touchpoints, and the scope decision, \
+in this format:
+
+{DOMAIN_DEPENDENCIES_SCHEMA}
+
+{_DEPENDENCY_RULES}
+
+{_NOT_CONTRACTS}""")
 
 def default_config(stage: str) -> dict:
     return {

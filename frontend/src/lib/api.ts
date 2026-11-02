@@ -243,7 +243,31 @@ export interface RunDetail extends Run {
   workflow_update: WorkflowUpdate | null; // the run's workflow changed since it started: what updating it would do
   stopping?: boolean; // an admin asked the working run to stop: its agent ends at its next step
   rerun_blocked?: Record<string, string>; // top down: steps that can't be re-run yet, with the reason (an earlier step failed)
+  functional_coverage?: FunctionalCoverage | null; // at a gate and once done: the functional specification's coverage
 }
+
+/** The functional specification's coverage (app/functional_spec.py report): a report, never a block. */
+export type FunctionalCoverage =
+  | { available: false; message: string }
+  | {
+      available: true;
+      ids: {
+        id: string;
+        kind: "FR" | "BR" | "MSG";
+        owner: string | null; // domain | orchestrator | other domain | ui unchanged (Modulith design's allocation)
+        scenarios: string[];
+        covered_by: { step: string; title: string; by: string }[];
+        not_covered: { step: string; title: string; by: string; reason: string }[];
+        gap: boolean; // no step for its owner covered it, though one has reported
+      }[];
+      summary: Record<"FR" | "BR" | "MSG", { total: number; covered: number }>;
+      reported_by: { step: string; title: string }[];
+      gaps: string[];
+      without_scenario: string[];
+      analysis_problems: string[]; // Analysis's required checks, on the documents as they are now
+      allocation_problems: string[];
+      wording: string[]; // technical words in the business users' document (a heuristic)
+    };
 
 /** What bringing a waiting run up to date with its workflow would change (step titles), or why it can't. */
 export interface WorkflowUpdate {

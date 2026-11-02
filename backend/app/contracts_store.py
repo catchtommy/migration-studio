@@ -89,6 +89,10 @@ def parse_cross_domain(text: str) -> list[dict]:
         _one_of(item.get("direction", "outbound"), ("outbound", "inbound"), where)
         if item["id"] in seen:
             raise InvalidDocument(f"{where}: duplicate id {item['id']}")
+        for field in ("requirements", "scenarios"):  # ids of the functional specification and the test scenarios
+            value = item.get(field)
+            if value is not None and (not isinstance(value, list) or not all(isinstance(v, str) for v in value)):
+                raise InvalidDocument(f"{where}: {field} must be a list of ids")
         seen.add(item["id"])
     return items
 
@@ -131,6 +135,11 @@ def load_domain_dependencies(text: str) -> dict:
     for field in ("shared_code", "god_modules"):
         if data.get(field) is not None and not isinstance(data[field], list):
             raise InvalidDocument(f"{DOMAIN_DEPENDENCIES_FILE}: {field} must be a list")
+    internal = data.get("considered_internal")
+    if internal is not None and (not isinstance(internal, list) or not all(
+            isinstance(i, dict) and i.get("requirement") and i.get("reason") for i in internal)):
+        raise InvalidDocument(f"{DOMAIN_DEPENDENCIES_FILE}: considered_internal must be a list of entries with a "
+                              "requirement (an id of functional-spec.md) and the reason")
     both = set(data.get("shared_code") or []) & set(data.get("god_modules") or [])
     if both:
         raise InvalidDocument(f"{DOMAIN_DEPENDENCIES_FILE}: {', '.join(sorted(both))} is listed as both shared_code "

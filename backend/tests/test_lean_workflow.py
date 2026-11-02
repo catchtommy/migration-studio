@@ -5,22 +5,22 @@ import re
 
 from app import workflow_store
 from app.agents import defaults
-from app.orchestrator.stages import LEAN, STANDARD
-from tests.conftest import start_run, wait_for
+from app.orchestrator.stages import LEAN, LEAN_ANALYSIS_CHECKLIST, STANDARD
+from tests.conftest import approve, start_run, wait_for
 
 _ids = itertools.count()
-LEAN_AGENTS = ("analysis", "modulith_design", "modernise_and_test")
+LEAN_AGENTS = ("analysis", "dependency_analysis", "modulith_design", "modernise_and_test")
 
 
 def _approve(client, run_id):
-    return client.post(f"/api/runs/{run_id}/decision", json={"reviewer": "t", "decision": "approve"})
+    return approve(client, run_id, reviewer="t")
 
 
 def test_lean_workflow_is_seeded_beside_the_standard_one(client):
     lean = client.get("/api/workflows/lean").json()
     assert lean["name"] == "Lean migration"
     assert [s["key"] for s in lean["stages"]] == [
-        "analysis", "gate_analysis", "modulith_design", "gate_design", "modular_monolith", "monolith_orchestrator",
+        "analysis", "dependency_analysis", "gate_analysis", "modulith_design", "gate_design", "modular_monolith", "monolith_orchestrator",
         "microservice_scaffold", "orchestrator_service", "independent_tests", "gate_tests", "modernise_and_test",
         "monolith_integration", "gate_release"]
     # The standard workflow is unchanged, and still the one a run uses unless its domain defaults to another.
@@ -73,18 +73,21 @@ def test_a_cross_domain_feature_runs_through_the_lean_workflow(client):
     assert run.status_code == 201, run.text
     run_id = run.json()["id"]
 
-    for gate, reviews in (("gate_analysis", ["analysis"]), ("gate_design", ["modulith_design"]),
+    for gate, reviews in (("gate_analysis", ["analysis", "dependency_analysis"]), ("gate_design", ["modulith_design"]),
                           ("gate_tests", ["modular_monolith", "monolith_orchestrator", "microservice_scaffold",
                                           "orchestrator_service", "independent_tests"]),
                           ("gate_release", ["modernise_and_test", "monolith_integration"])):
         run = wait_for(client, run_id, {"awaiting_approval"})
-        assert run["pending_gate"] == {"gate": gate, "reviews": reviews, "checklist": []}
+        assert run["pending_gate"]["gate"] == gate and run["pending_gate"]["reviews"] == reviews
+        assert [c["item"] for c in run["pending_gate"]["checklist"]] == (
+            list(LEAN_ANALYSIS_CHECKLIST) if gate == "gate_analysis" else [])
         assert _approve(client, run_id).status_code == 200
 
     done = wait_for(client, run_id, {"completed"})
     assert [s["stage"] for s in done["stages"] if not s["stage"].startswith("gate_")] == [
-        "analysis", "modulith_design", "modular_monolith", "monolith_orchestrator", "microservice_scaffold",
-        "orchestrator_service", "independent_tests", "modernise_and_test", "monolith_integration"]
+        "analysis", "dependency_analysis", "modulith_design", "modular_monolith", "monolith_orchestrator",
+        "microservice_scaffold", "orchestrator_service", "independent_tests", "modernise_and_test",
+        "monolith_integration"]
     # The design gate recorded the merged design's contracts in the catalogue, as the standard design gate does.
     consumed = [c for c in client.get("/api/contracts").json() if domain in (c.get("consumers") or [])]
     assert consumed
@@ -199,7 +202,7 @@ def test_top_down_a_step_after_a_failed_one_cant_be_re_run_until_it_completes(cl
     r = start_run(client, {"domain": "customer", "operation": "top-down", "workflow": "lean"})
     run_id = r.json()["id"]
     wait_for(client, run_id, {"awaiting_approval"})
-    client.post(f"/api/runs/{run_id}/decision", json={"decision": "approve"})
+    approve(client, run_id)
     wait_for(client, run_id, {"awaiting_approval"})  # at the design gate
     original, seen, fail = stub.StubAgent.run, {}, {"analysis": True}
 
@@ -226,6 +229,7 @@ def test_top_down_a_step_after_a_failed_one_cant_be_re_run_until_it_completes(cl
     blocked = detail["rerun_blocked"]  # completed again: the next step can run; the ones after it wait for it
     assert "modulith_design" not in blocked and "analysis" not in blocked
     assert "Modulith design's work was undone" in blocked["modular_monolith"]
-    client.post(f"/api/runs/{run_id}/decision", json={"decision": "approve"})
+    assert len([s for s in detail["stages"] if s["stage"] == "dependency_analysis"]) == 2  # re-ran after Analysis
+    approve(client, run_id)
     wait_for(client, run_id, {"awaiting_approval"})
     assert {"as-is.md", "test-scenarios.md", "domain-dependencies.yaml"} <= set(seen["modulith_design"])

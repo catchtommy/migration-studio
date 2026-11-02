@@ -118,6 +118,8 @@ class RunDetail(RunOut):
     stopping: bool = False  # an admin asked the working run to stop: its agent ends at its next turn
     # top down: agent steps that can't be re-run yet (an earlier step failed or was rolled back), with the reason
     rerun_blocked: dict[str, str] = {}
+    # At a gate and once done: the functional specification's coverage (app/functional_spec.py report), report only
+    functional_coverage: dict | None = None
     branch_per: str | None = None  # the workflow's branching: "feature" (a branch per feature) or "domain"
 
 

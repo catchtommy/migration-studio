@@ -47,7 +47,7 @@ def test_modulith_agents_are_read_only_design_agents(client):
     for key in MODULITH:
         agent = client.get(f"/api/agents/{key}").json()
         assert agent["builtin"] and agent["tools"] == default_config(key)["tools"]
-        assert "run_command" not in agent["tools"] and "edit_file" not in agent["tools"]
+        assert "run_command" not in agent["tools"]  # edit_file only edits their documents in place
         assert agent["checks"] == []
     outputs = {k: client.get(f"/api/agents/{k}").json()["outputs"] for k in MODULITH}
     assert outputs["domain_dependencies"] == ["domain-dependencies.md", "domain-dependencies.yaml"]

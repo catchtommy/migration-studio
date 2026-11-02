@@ -43,7 +43,18 @@ def _as_dict(row: SharedText) -> dict[str, Any]:
     default = SHARED_TEXTS.get(row.key)
     return {"key": row.key, "title": row.title, "description": row.description, "text": row.text,
             "builtin": default is not None, "customised": default is not None and row.text != default[2],
-            "used_by": [], "updated_by": row.updated_by, "updated_at": row.updated_at}
+            "used_by": [], "updated_by": row.updated_by, "updated_at": row.updated_at, "created_at": row.created_at}
+
+
+def changed_since_added(text: dict) -> bool:
+    """Whether a shared text (as list_all gives it) changed after it was added: a text a release added and nobody has
+    changed since is not a change to the runs whose steps ran before it existed (their agents didn't have it)."""
+    from datetime import timedelta
+
+    created, updated = text.get("created_at"), text.get("updated_at")
+    if text.get("updated_by") or created is None or updated is None:
+        return True
+    return updated - created > timedelta(seconds=5)
 
 
 def seed() -> None:

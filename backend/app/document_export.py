@@ -2,7 +2,8 @@
 
 Each run's documents are those of the latest attempt of each stage (reviewers' edits included), as the run and the
 domain's Documents tab show them. In the zip they are grouped by stage, in the order the stages ran:
-`<NN>-<stage>/<file>`, and per feature (`<feature>/<NN>-<stage>/<file>`) for a domain.
+`<NN>-<stage>/<file>`, and per feature (`<feature>/<NN>-<stage>/<file>`) for a domain. Each run's documents come
+with its `approvals.md` (`<feature>/approvals.md` for a domain): its gate decisions and checklist sign-offs.
 """
 
 import io
@@ -15,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.base_agent import DOCS_ROOT
-from app.db.models import Artifact, Run, StageExecution
+from app.db.models import Approval, Artifact, Run, StageExecution
 
 
 def latest_artifacts(db: Session, run_id: str) -> list[Artifact]:
@@ -60,8 +61,38 @@ def _zip(entries: list[tuple[str, str]]) -> bytes:
     return buffer.getvalue()
 
 
+def approvals(db: Session, run: Run) -> str | None:
+    """The run's gate decisions as a document (`approvals.md`): who approved or rejected what, when, with the comments
+    and the checklist items they ticked. The functional specification points here for its approval."""
+    rows = db.scalars(select(Approval).where(Approval.run_id == run.id).order_by(Approval.created_at, Approval.id)).all()
+    if not rows:
+        return None
+    titles = {d["key"]: d.get("title") or d["key"] for d in run.stage_defs or []}
+    ticks: dict[str, list[list[dict]]] = {}
+    for ex in db.scalars(select(StageExecution).where(StageExecution.run_id == run.id,
+                                                      StageExecution.status.in_(("approved", "rejected")))
+                         .order_by(StageExecution.attempt)):
+        ticks.setdefault(ex.stage, []).append(ex.checklist or [])
+    lines = [f"# Approvals: {run.domain} / {run.operation}", "",
+             "| Gate | Decision | By | When (UTC) | Comments |", "|---|---|---|---|---|"]
+    for a in rows:
+        decision = "Approved" if a.decision == "approve" else f"Rejected ({titles.get(a.target_stage, a.target_stage)})" \
+            if a.target_stage else "Rejected"
+        comments = (a.comments or "").replace("|", "\\|").replace("\n", " ")
+        lines.append(f"| {titles.get(a.gate, a.gate)} | {decision} | {a.reviewer} | {a.created_at:%Y-%m-%d %H:%M} | "
+                     f"{comments} |")
+    ticked = [(gate, t) for gate, attempts in ticks.items() for items in attempts for t in items]
+    if ticked:
+        lines += ["", "## Checklist sign-offs", "", "| Gate | Item | By | When (UTC) |", "|---|---|---|---|"]
+        lines += [f"| {titles.get(gate, gate)} | {t['item']} | {t.get('by') or ''} | {(t.get('at') or '')[:16]} |"
+                  for gate, t in ticked]
+    return "\n".join(lines) + "\n"
+
+
 def run_zip(db: Session, run: Run) -> bytes:
-    return _zip(_entries(run, latest_artifacts(db, run.id)))
+    entries = _entries(run, latest_artifacts(db, run.id))
+    record = approvals(db, run)
+    return _zip([*entries, ("approvals.md", record)] if record else entries)
 
 
 def domain_zip(db: Session, runs: Iterable[Run]) -> bytes:
@@ -75,6 +106,9 @@ def domain_zip(db: Session, runs: Iterable[Run]) -> bytes:
             folder = f"{folder}-{run.created_at:%Y%m%d-%H%M%S}"
         seen.add(folder)
         entries += _entries(run, latest_artifacts(db, run.id), f"{folder}/")
+        record = approvals(db, run)
+        if record:
+            entries.append((f"{folder}/approvals.md", record))
     return _zip(sorted(entries))
 
 

@@ -13,17 +13,25 @@ from sqlalchemy import func, select
 from app import agent_store, projects
 from app.db.models import GLOBAL, SHARED, Domain, Run, Setting, WorkflowDef
 from app.db.session import session_scope
-from app.orchestrator.stages import BOUNDED_CONTEXTS, DOMAIN_FEATURES, LEAN, STANDARD, StageDef, Workflow
+from app.orchestrator.stages import (BOUNDED_CONTEXTS, DOMAIN_FEATURES, LEAN, LEAN_ANALYSIS_CHECKLIST, STANDARD,
+                                     StageDef, Workflow)
 
 STANDARD_KEY = "standard"
 PROJECT_DEFAULT = "default_workflow"  # project setting: its default migration workflow (default_for)
 LEAN_KEY = "lean"
 LEAN_NAME = "Lean migration"
-LEAN_DESCRIPTION = ("The standard migration with fewer agents: analysis → Modulith design (domain, linked-domain "
-                    "contracts, orchestrator, integration) → module → orchestrator (cross-domain features) → "
-                    "microservice → orchestrator service (when there is an orchestrator) → acceptance tests → "
-                    "modernisation with service tests → integration, with four approval gates. Make it a domain's "
-                    "default workflow to use it.")
+LEAN_DESCRIPTION = ("The standard migration with fewer agents: analysis (AS-IS, functional specification, test "
+                    "scenarios) → domain dependencies → Modulith design (domain, linked-domain contracts, "
+                    "orchestrator, integration) → module → orchestrator (cross-domain features) → microservice → "
+                    "orchestrator service (when there is an orchestrator) → acceptance tests → modernisation with "
+                    "service tests → integration, with four approval gates. Make it a domain's default workflow to "
+                    "use it.")
+# The description before Domain dependencies: a stored lean workflow still showing it gets the new one with the step.
+_LEAN_DESCRIPTION_V1 = ("The standard migration with fewer agents: analysis → Modulith design (domain, linked-domain "
+                        "contracts, orchestrator, integration) → module → orchestrator (cross-domain features) → "
+                        "microservice → orchestrator service (when there is an orchestrator) → acceptance tests → "
+                        "modernisation with service tests → integration, with four approval gates. Make it a "
+                        "domain's default workflow to use it.")
 # A lean step that does a standard step's work in the same repository gets that step's code settings when seeded.
 _LEAN_CODE_FROM = {"modernise_and_test": "modernise"}
 # Built-in discovery workflows: (key, name, description, workflow), by scope.
@@ -203,6 +211,37 @@ def seed() -> None:
                 s.add(WorkflowDef(project=SHARED, key=LEAN_KEY, name=LEAN_NAME, description=LEAN_DESCRIPTION,
                                   steps=_lean_steps(standard.steps if standard is not None else [])))
             s.add(Setting(key="_added_lean_workflow", value=True))
+        if s.get(Setting, (GLOBAL, "_lean_dependency_step")) is None:
+            # Analysis's dependency work moved to its own step, Domain dependencies, right after it: every stored lean
+            # workflow (shared, and projects' copies) gets the step, its gate reviews it, and Modulith design reads it.
+            for lean in s.scalars(select(WorkflowDef).where(WorkflowDef.key == LEAN_KEY)):
+                steps = _with_dependency_step(lean.steps or [])
+                if steps != lean.steps:
+                    lean.steps = steps
+                    if lean.description == _LEAN_DESCRIPTION_V1:
+                        lean.description = LEAN_DESCRIPTION
+            s.add(Setting(key="_lean_dependency_step", value=True))
+
+
+def _with_dependency_step(steps: list[dict]) -> list[dict]:
+    """A stored lean workflow with the Domain dependencies step after Analysis (unchanged when it has it already, or
+    has no Analysis step). The analysis gate reviews it, and gets the per-audience checklist when it has none; Modulith
+    design, when it reads Analysis's documents only, reads the new step's too."""
+    keys = [st.get("key") for st in steps]
+    if "dependency_analysis" in keys or "analysis" not in keys:
+        return steps
+    out = []
+    for st in steps:
+        if st.get("kind") == "gate" and "analysis" in (st.get("reviews") or []):
+            reviews = list(st["reviews"])
+            reviews.insert(reviews.index("analysis") + 1, "dependency_analysis")
+            st = {**st, "reviews": reviews, "checklist": st.get("checklist") or list(LEAN_ANALYSIS_CHECKLIST)}
+        elif st.get("kind") == "agent" and st.get("key") != "analysis" and "analysis" in (st.get("uses") or []):
+            st = {**st, "uses": [*st["uses"], "dependency_analysis"]}
+        out.append(st)
+        if st.get("kind") == "agent" and st.get("key") == "analysis":
+            out.append({"kind": "agent", "key": "dependency_analysis", "uses": ["analysis"], "include_content": False})
+    return out
 
 
 def _lean_steps(standard: list[dict]) -> list[dict]:

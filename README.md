@@ -8,6 +8,32 @@ AS-IS docs → Deep dive → 👤 → **Cross-domain dependency finder → Modul
 
 \* Only for a cross-domain feature that has an orchestrator; skipped otherwise.
 
+The *Lean migration* workflow does the same work with fewer agents:
+
+Analysis → Domain dependencies → 👤 → Modulith design → 👤 → Module in monolith → Orchestrator in monolith\* → Spring Boot microservice → Orchestrator microservice\* → Independent tests → 👤 → Modernisation and service tests → Monolith integration → 👤
+
+### Lean analysis: three documents, three audiences
+
+*Analysis* traces the feature once and writes three documents, joined by ids so that nothing is written twice:
+
+| Document | For | Holds |
+|---|---|---|
+| `as-is.md` | Architects, developers | The call chain, SQL, transactions; **Rule enforcement** (each `BR-…` with its code location, UI or server) and **Messages** (each `MSG-…`, errors and confirmations, with where it is produced); the **Domain crossings** |
+| `functional-spec.md` | Business users, BAs | Business language only: purpose, scope, roles, process, requirements `FR-…`, rules `BR-…`, use cases `UC-…`, messages `MSG-…` with their exact text, side effects, glossary (format: shared text *Format: functional specification*) |
+| `test-scenarios.md` | Test team | Scenarios `TS-…`, each with `Covers: FR-…, BR-…, MSG-…`, preconditions, test data, steps and the expected result (format: shared text *Format: test scenarios*) |
+
+The studio checks that the three agree before Analysis may finish: the specification's sections, every BR and MSG id
+in both `as-is.md` and the specification, every requirement and rule covered by a scenario. *Domain dependencies*
+then writes `cross-domain.yaml` and `domain-dependencies.yaml` (the scope decision) from that trace and targeted
+searches, linking each interaction to the requirements and scenarios it serves. *Approve analysis* reviews both
+steps, with one checklist item per audience (architect, test lead, business owner or BA).
+
+**Functional coverage (a report, never a block).** *Modulith design* assigns every FR, BR and MSG an owner in
+`domain-design.md` ("Functional allocation": domain, orchestrator, another domain, or UI unchanged). Each later step
+lists the ids it covered, with the test that proves it ("Functional coverage" in its document), and the approval panel
+merges them: an id no step of its owner covered shows as a gap at *Approve tests* and *Approve release*. A run that
+started before the specification existed has none; its agents take the rules from `as-is.md`.
+
 ### Modulith design
 
 After the analysis is approved, four focused agents prepare the feature for the monolith. Each reads only the earlier

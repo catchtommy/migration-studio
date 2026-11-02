@@ -1,7 +1,8 @@
 """The Modulith scope decision: whether a feature needs the Linked-domain contracts, Orchestrator design and
 Orchestrator in monolith steps.
 
-The dependency finder records `decision.scope` in `domain-dependencies.yaml`. A feature that only uses its own
+The dependency step (Domain dependencies in the lean workflow, the dependency finder in the standard one) records
+`decision.scope` in `domain-dependencies.yaml`. A feature that only uses its own
 domain (`domain-only`) has no contract to define and nothing to orchestrate, so those steps are skipped without
 running an agent.
 """
@@ -50,14 +51,19 @@ def skip_reason(stage: str, output_dir: Path) -> str | None:
     return f"Scope decision is domain-only: {decision['reason']}"
 
 
-def skip_note(stage: str, title: str, reason: str) -> str:
+# The steps that write domain-dependencies.yaml (the scope decision), by workflow: the first one a workflow has.
+DECIDED_BY = ("dependency_analysis", "domain_dependencies", "analysis")
+
+
+def skip_note(stage: str, title: str, reason: str, decided_by: str = "the dependency step") -> str:
     if reason.startswith(NO_ORCHESTRATOR):
         return (f"# {title}: skipped\n\nThis feature has no orchestrator, so there is {NOTHING_TO[stage]}.\n\n"
                 f"**{reason}**\n\nTo build one, re-run the Orchestrator in monolith step once the orchestrator "
                 "design has one.\n")
     return (f"# {title}: skipped\n\n"
             f"This feature only uses its own domain, so there is {NOTHING_TO[stage]}.\n\n"
-            f"**Decision (cross-domain dependency finder):** {reason}\n\n"
-            f"To run this step anyway, change `decision.scope` to `cross-domain` in "
-            f"`{contracts_store.DOMAIN_DEPENDENCIES_FILE}` (and list the dependency), then reject the design gate "
-            "so the steps re-run.\n")
+            f"**Decision ({decided_by}):** {reason}\n\n"
+            f"To run this step anyway, the decision must change, and it was approved with the analysis, so its "
+            f"document is read-only now: re-run the run from {decided_by} (Restart on that step), with notes saying "
+            f"which dependency it missed, so it writes `decision.scope: cross-domain` in "
+            f"`{contracts_store.DOMAIN_DEPENDENCIES_FILE}`; the steps after it run again, this one included.\n")

@@ -102,6 +102,24 @@ def effective_documents(run_id: str, before_stage: str | None = None) -> dict[st
         return documents
 
 
+def amendment_changed_inputs(run_id: str, source: str, follower: str) -> bool:
+    """Whether the amendment `source` just made changed what `follower` builds on: its last two completed attempts'
+    documents compared (by the parts the follower reads, app/functional_spec.py follower_view). True when there is no
+    earlier attempt to compare with."""
+    from app import functional_spec
+
+    with session_scope() as s:
+        attempts = s.scalars(select(StageExecution.attempt).where(
+            StageExecution.run_id == run_id, StageExecution.stage == source, StageExecution.status == "completed")
+            .order_by(StageExecution.attempt.desc()).limit(2)).all()
+        if len(attempts) < 2:
+            return True
+        rows = s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage == source,
+                                                Artifact.attempt.in_(attempts))).all()
+        docs = {a: {Path(r.path).name: r.content or "" for r in rows if r.attempt == a} for a in attempts}
+    newer, older = docs[attempts[0]], docs[attempts[1]]
+    return functional_spec.follower_view(follower, newer) != functional_spec.follower_view(follower, older)
+
 def materialize_documents(run_id: str, ws: Path) -> int:
     """Write the documents in effect into the workspace for a step (they live in the database)."""
     documents = effective_documents(run_id)

@@ -21,7 +21,7 @@ from app.db.models import Artifact, Domain, Feature, Run, StageExecution, utcnow
 from app.db.session import emit, session_scope
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
-from app.orchestrator.stages import StageDef, Workflow
+from app.orchestrator.stages import FOLLOWS_DOCUMENTS, StageDef, Workflow
 from app.orchestrator.state import MigrationState
 from app.settings_store import get_all as get_settings
 from app.tools import git_ops
@@ -265,11 +265,13 @@ def _documents(ws: Path, outputs: list[ArtifactOut], docs: str, before: dict[str
     return list(found.values())
 
 
-def _skip(ctx: AgentContext, stage: StageDef, reason: str) -> list[ArtifactOut]:
+def _skip(ctx: AgentContext, stage: StageDef, reason: str, workflow: Workflow) -> list[ArtifactOut]:
     """Skip a Modulith design step the scope decision makes unnecessary: no agent runs, a short note is the document."""
     ctx.log(f"Skipped {stage.title}: {reason}")
     note = ctx.output_dir / f"{stage.key}.md"
-    note.write_text(modulith_scope.skip_note(stage.key, stage.title, reason), encoding="utf-8")
+    decided_by = next((workflow.by_key[k].title for k in modulith_scope.DECIDED_BY if k in workflow.by_key),
+                      "the dependency step")
+    note.write_text(modulith_scope.skip_note(stage.key, stage.title, reason, decided_by), encoding="utf-8")
     return [ArtifactOut(name=note.name, path=ctx.rel(note), kind="markdown")]
 
 
@@ -332,6 +334,35 @@ def _undo_code_changes(ws: Path, start_sha: str, nested: list[dict], nested_star
     return undone
 
 
+def _for_this_run(workflow: Workflow, stage: StageDef, config: dict | None) -> dict | None:
+    """The agent's config for this run. Analysis in a run whose workflow has no Domain dependencies step (it started
+    before there was one) also finds the dependencies, as it did then: their documents are required of it."""
+    from app.agents.defaults import ANALYSIS_DEPENDENCY_OUTPUTS, ANALYSIS_WITH_DEPENDENCIES
+
+    if config is None or stage.key != "analysis" or "dependency_analysis" in workflow.by_key:
+        return config
+    outputs = list(config.get("outputs") or [])
+    return {**config, "outputs": [*outputs, *(o for o in ANALYSIS_DEPENDENCY_OUTPUTS if o not in outputs)],
+            "instructions": (config.get("instructions") or "") + ANALYSIS_WITH_DEPENDENCIES}
+
+
+def _log_coverage(run_id: str, stage: StageDef, folder: str, workflow: Workflow) -> None:
+    """After a step that reports which ids of the functional specification it covers: a line in the run log."""
+    from app import functional_spec
+
+    if stage.key not in functional_spec.COVERAGE_STEPS:
+        return
+    try:
+        documents = workspace.effective_documents(run_id)
+        name = functional_spec.COVERAGE_STEPS[stage.key][0]
+        report = functional_spec.report(documents, folder, [s.to_dict() for s in workflow.stages])
+        line = functional_spec.step_line(documents.get(f"{folder}/{name}"), report, stage.key)
+    except Exception as e:  # noqa: BLE001 - a report only: never fails the step
+        line = f"Functional coverage could not be read: {e}"
+    if line:
+        emit(run_id, "log", line, stage.key)
+
+
 def make_agent_node(workflow: Workflow, stage: StageDef):
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
@@ -347,6 +378,14 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
                  stage.key)
             return {"amend": {**amend, "skip": [k for k in amend["skip"] if k != stage.key]},
                     "refresh": [k for k in state.get("refresh") or [] if k != stage.key]}
+        if stage.key in (amend.get("check") or []):  # following an amendment: only if what it reads changed
+            source = next((k for k in FOLLOWS_DOCUMENTS.get(stage.key, ()) if k in workflow.by_key), None)
+            if source and not workspace.amendment_changed_inputs(run_id, source, stage.key):
+                emit(run_id, "log", f"{stage.title} kept as it is: the change to {workflow.by_key[source].title} "
+                                    "didn't touch what it builds on", stage.key)
+                return {"amend": {**amend, "check": [k for k in amend["check"] if k != stage.key]},
+                        "refresh": [k for k in state.get("refresh") or [] if k != stage.key],
+                        "feedback": {k: v for k, v in state.get("feedback", {}).items() if k != stage.key}}
         amending = amend.get("stage") == stage.key  # this step makes a reviewer's specific change, in place
 
         # Before the first code change in a repository, a person confirms its base branch and the feature branch.
@@ -402,6 +441,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             config = agent_store.get(stage.key)
         except KeyError:
             config = None
+        config = _for_this_run(workflow, stage, config)
         domain = state["domain"]
         code_dir = _code_dir(stage_now, nested, domain, _project_of(run_id), monolith)
         missing = None if code_dir is not None else _missing_repository(run_id, stage_now, domain, monolith)
@@ -460,7 +500,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
                 raise RuntimeError(f"Agent {stage.key!r} no longer exists in the agent library")
             skipped = modulith_scope.skip_reason(stage.key, ctx.output_dir)
             if skipped:
-                outputs = _skip(ctx, stage, skipped)
+                outputs = _skip(ctx, stage, skipped, workflow)
             elif missing and missing.startswith("Set "):  # the domain has no repository of that kind yet
                 raise RuntimeError(f"{stage.title} changes code in the domain's own repository. {missing}, then retry "
                                    "the run")
@@ -552,6 +592,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             ex.diff = git_ops.diff(ws, start_sha, end_sha, binary=True)
             ex.repos = nested_changes or None
         emit(run_id, "status", f"{stage.title} completed: {len(outputs)} artifact(s)", stage.key)
+        _log_coverage(run_id, stage, docs_dir(domain, state["operation"]), workflow)
 
         remaining_feedback = {k: v for k, v in state.get("feedback", {}).items() if k != stage.key}
         return {
@@ -631,19 +672,23 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
             # A step that changes code is built on by the later steps that change code (the lifted service copies the
             # module, the tests run against it): they follow the change, updating their work in place. Steps that
             # write documents only stay as they are.
-            follow = [k for k in between if workflow.by_key[target].code and workflow.by_key[k].code]
+            # A documents step built from the target's documents (FOLLOWS_DOCUMENTS: Domain dependencies on Analysis)
+            # follows too, when the change touched what it reads (checked when it comes up).
+            follow = [k for k in between if (workflow.by_key[target].code and workflow.by_key[k].code)
+                      or target in FOLLOWS_DOCUMENTS.get(k, ())]
             skip = [k for k in between if k not in follow]
             for k in follow:  # what they follow, and nothing more
                 feedback[k] = (f"{workflow.by_key[target].title} was changed at the reviewer's request: {comments}\n"
                                "Update your work only where it follows from that change (what you copied or built "
                                "on from it); everything else stays exactly as it is.")
+            check = [k for k in follow if not workflow.by_key[k].code]
             emit(run_id, "approval", f"{gate.title}: rejected, {workflow.by_key[target].title} makes the requested "
                                      "change only"
                  + (f", and {', '.join(workflow.by_key[k].title for k in follow)} update their work to follow it"
                     if follow else "") + "; everything else stays as it is", gate.key)
             return {"route": target, "feedback": feedback,
                     "refresh": [*(state.get("refresh") or []), target, *follow],
-                    "amend": {"stage": target, "skip": skip}}
+                    "amend": {"stage": target, "skip": skip, "check": check}}
         workspace.roll_back(run_id, Path(state["workspace"]), state["stage_shas"][target]["start"], target)
         emit(run_id, "approval", f"{gate.title}: rejected, re-running from {workflow.by_key[target].title}", gate.key)
         return {"route": target, "feedback": feedback, "amend": None}

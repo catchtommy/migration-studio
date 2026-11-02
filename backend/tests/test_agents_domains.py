@@ -23,7 +23,7 @@ def test_builtin_agents_are_editable_and_resettable(client):
         "bounded_contexts", "domain_features", "as_is_doc", "deep_dive", "domain_dependencies",
         "linked_domain_contracts", "domain_design", "orchestrator_design", "integration_design", "modular_monolith",
         "monolith_orchestrator", "microservice_scaffold", "orchestrator_service", "independent_tests", "modernise", "service_tests", "monolith_integration",
-        "analysis", "modulith_design", "modernise_and_test"]  # superseded built-ins are hidden; then the lean workflow's
+        "analysis", "dependency_analysis", "modulith_design", "modernise_and_test"]  # superseded built-ins are hidden; then the lean workflow's
 
     body = {**builtin_default("deep_dive"), "instructions": "Focus on the batch jobs.", "outputs": ["notes.md"]}
     r = client.put("/api/agents/deep_dive", json=body)
@@ -184,7 +184,7 @@ def test_claude_agent_uses_tools_asks_and_writes_outputs(ctx, monkeypatch):
     from app import shared_texts
     assert "{{legacy}}" in ctx.config["instructions"]  # the shared text is filled in
     assert shared_texts.expand(ctx.config["instructions"]) in req["system"] and "{{" not in req["system"]
-    assert [t["name"] for t in req["tools"]] == ["list_files", "read_file", "search_code", "write_file", "ask_user"]
+    assert [t["name"] for t in req["tools"]] == ["list_files", "read_file", "search_code", "write_file", "edit_file", "ask_user"]
 
 
 def test_claude_agent_does_not_run_tools_from_a_truncated_response(ctx, monkeypatch):

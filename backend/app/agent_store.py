@@ -30,13 +30,18 @@ LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
                   "_added_monolith_orchestrator": ["monolith_orchestrator"],
                   "_added_orchestrator_service": ["orchestrator_service"],
                   "_added_service_tests": ["service_tests"],
-                  "_added_lean_agents": ["analysis", "modulith_design", "modernise_and_test"]}
+                  "_added_lean_agents": ["analysis", "modulith_design", "modernise_and_test"],
+                  "_added_dependency_analysis": ["dependency_analysis"]}
+# A built-in added later that takes over another's work starts with that agent's choices (stub or AI, model, effort),
+# in the shared library and in each project's copy: else it would run as the stub where the other runs the AI.
+LATER_SETTINGS_FROM = {"dependency_analysis": "analysis"}
 
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
 PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     # The lean workflow's analysis, and the feature listing: missing here before, so they never followed a release
-    "analysis": {"46f1c3485d5d38e5e5d88936028c3c040f34d3db2db8d1cabe158286713aae95",
+    "analysis": {"61ee61d1db291676aa9b418f002bd333c12ce77af995f975529a3cc5f411618c",
+        "46f1c3485d5d38e5e5d88936028c3c040f34d3db2db8d1cabe158286713aae95",
                  "d2a9bf9051ad9e47669594a1ca6d46cc857c088b676d872fe3659f5a7581316e"},
     "domain_features": {"8d67a2c959d7590b0cdb369d65fe4265fc4a0291a8cc85fc1c00446eeb524e1f"},
     "boundary_design": {"0afe5047252464458ead3aac6b867502a91e1e62835dd59b7b7dcec8fbc8200d",
@@ -85,7 +90,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "50062f4c3b3dcc7aab9e4ace195d0134977a341a4a81a22518962ed7f87474c2",
         "22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
                               "b53ca7a0466106e58ce2f99daf90e85f88ca28309d8ec35f2a3c0d49186527e5"},
-    "independent_tests": {"10597691f0c0608c4b73927a597d8a9e39fdbd6997549ceb0b35976375a005da",
+    "independent_tests": {"b3d893fc941bf04489936346bce2e3e2532dd1bdb30c633f8695f1594aac9d62",
+        "10597691f0c0608c4b73927a597d8a9e39fdbd6997549ceb0b35976375a005da",
                           "8a7b319eb255ecea335e60322b4e11c207a2c23e3e698999b749ea81f442b27a",
                           "97d564115dc60807860254fee3ecfa541ca999e29cf9870d487a5efe93031f02",
                           "4b1b34967d2944c200b2b4bd8c0a81768cd6292da94cac47c000f9ba30d0de8e",
@@ -112,7 +118,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "3fdbd40d27cf56a744c4dcc0cc874d058243279094fb3aabf3f9ca725a0c492a",
         "acf98d8971c8430231b71d5a41e44f92e9ffd9824bdd8500769936b7ae934cac",
         "b16faecb3264355335f347ecdff807fa3b96979e2f4f880e47a200e3a48982a5"},
-    "modular_monolith": {"ae6adcee76691ce042b38a21231c497ea4ff3dcf880fa94905f5c0098571bfde",
+    "modular_monolith": {"86499680a4b1d9ac6ca5cc3ff6b6c46b2ea084a85aed2ab0b21a16a7dcf88e07",
+        "ae6adcee76691ce042b38a21231c497ea4ff3dcf880fa94905f5c0098571bfde",
                          "496c048b744624038c78d0318f8576b486700d5936d2a2b60215dde6e2bdab5a",
                          "07718da8f27f714d734e7edbbad7067e8df6bc5191426931c2b2f8a316ff1dee",
                          "a2faa355ff82f2ded46ea8c43c9f551c16ff2e09a9f5ae0af29931bfac559025",
@@ -131,7 +138,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                          "20369f074da4f5870c38bdea7c129dc92217a37a182b7e3dba3c983e3a226a09",
                          "c3a678317498d3b0682c70f3a3b41727037b401f23c54713108a735babbd28fa",
                          "8d67e4fd44f4bce07fa5d8aa0d6658c52c4bb703100914bc538267e060258dac"},
-    "monolith_integration": {"b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
+    "monolith_integration": {"2599df41784b8e9212b94ab2de016496db7308f2323635ed380de312556fa57a",
+        "b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
                              "29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
                              "11fddb537cfb88b83b055c2c32163d278f4d1aa29087d8b9cea2b11a428fd930",
                              "686fec3600f472af2216b6e1805795367b9dd761933e094e3bf424dfbbf8d6b1",
@@ -142,7 +150,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                              "673a0969f74f104d418d47b8e935f34ca65c6eeeca498425883cdda80006894b"},
     "as_is_doc": {"9fb0392d1747e6a478a3e0cd6d77ea8cd4564fd9e815959b5baf2f48ee52c892"},
     "bounded_contexts": {"0fe37358d0947d3a11a0fc7d5440eb9ebaa72ec9171caff82a4612112c073294"},
-    "monolith_orchestrator": {"35a24835d71b95dc27b3516c23305bb5ba7eb9525e031f7931aa5d1fb4af382e",
+    "monolith_orchestrator": {"b657db126d0c4c1e1c89547fb8a15d33b835cb1d6a0f672ef3349d37a50d2288",
+        "35a24835d71b95dc27b3516c23305bb5ba7eb9525e031f7931aa5d1fb4af382e",
         "cae3d71b1aea57fadae64e5ddcf348386475d4f6890dc311606ccbf486e96e47",
         "74d58902f2f8850ab0f40a8ae931b69d0d12745d6b21071d848463d786cfe630",
         "f8d6c72fa43ec08d5245ad37fcd0be1e83d52c32ea37296345ef2751a6fd496b",
@@ -150,22 +159,26 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "5b1954381befa4b650c27376281f54dcdd5e53b1b8b844eb308f315dd59e632a",
         "3179eeac8cf303ea388310a0c0c6c950c414a5aef1f1e9ed7101b39da4232903",
                               "17eb8df57a93ef73c26dc2eb09ff90403eb57b0c52f8cbfde79a2fba511fec64"},
-    "orchestrator_service": {"84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee",
+    "orchestrator_service": {"45b299890d3b03c87327a570a46a7a3aca76641318fbd2afc087693924f0acfd",
+        "84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee",
         "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68",
         "e9a0a4f846d21ff3e0b360c6acd0d6017f453bfe9dc5c5ea937669b2c49c9be9",
                              "60e428368d945638916a3fd4a8fe75479eeca06e59a4cb3eed65fc861021c2ed"},
-    "modulith_design": {"252cf4ec3774bac5dc90c8853ec400f96308cd88864ddc7f2d0d6c241e190c54",
+    "modulith_design": {"71579eb23690ceaebc0428cedfd0c53fd25330676724c94f28f519d26ebcf93a",
+        "252cf4ec3774bac5dc90c8853ec400f96308cd88864ddc7f2d0d6c241e190c54",
         "da774e69420c666793587dc7f0e433e7a06e56c3f3ca5bf203e672cc98a53739",
                         "3082df6c03384325fd257008848ad68ee4420b1bbf92388e51f2901161690271"},
     "service_tests": {"92748bd2b1cb6f490d603714dc95bd9067baead0f79409ac43927cf7a1f81149"},
-    "modernise_and_test": {"f344e3a8168e60d7ce6aff5aaaafe61ef51c0687c994261490c708af0cb135cf",
+    "modernise_and_test": {"e7bc5c0262d9b6c238b365b12635a74126853cd5da96ed091f23201cc2a28a73",
+        "f344e3a8168e60d7ce6aff5aaaafe61ef51c0687c994261490c708af0cb135cf",
         "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f",
         "a33d06bbba111d533ffd3973d9226f06ad3f072e13cf06e19ad366352edd7bdd",
                            "3017cc168fb1c98e83afe8bcf0f31cd82894893a7fd92d47d909d523e49f71d8"},
+    "dependency_analysis": set(),  # added in this release: no earlier default
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v31"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v32"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
 GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails
@@ -213,12 +226,14 @@ def seed() -> None:
             _models_to_auto(s)
             _add_later_builtins(s)
             _upgrade_untouched_builtins(s)
+            _give_documents_agents_edit_file(s)
+            _warn_outdated_analysis(s)
             _add_guardrails(s)
             _move_guardrails_to_agents(s)
             _move_guardrails_out_of_instructions(s)
             _remember_untouched_guardrails(s)
             return
-        for marker in [*LATER_BUILTINS, UPGRADE_MARKER, GUARDRAILS_MARKER]:  # a fresh database: the current built-ins
+        for marker in [*LATER_BUILTINS, UPGRADE_MARKER, GUARDRAILS_MARKER, EDIT_FILE_MARKER]:  # a fresh database: the current built-ins
             s.add(Setting(key=marker, value=True))
         legacy = _legacy_configs()
         old_settings = {row.key: row.value for row in s.query(Setting).filter(
@@ -244,8 +259,12 @@ def seed() -> None:
 
 
 def _changes_code(row: Agent) -> bool:
-    """An agent that can change code: the kind the global and project guardrails were given to."""
-    return bool({"edit_file", "run_command"} & set(row.tools or []))
+    """An agent that can change code: the kind the global and project guardrails were given to. Built-in documents
+    agents have edit_file too (to edit their documents in place), but change no code."""
+    from app.agents.defaults import _ANALYSIS
+
+    tools = set(row.tools or [])
+    return "run_command" in tools or ("edit_file" in tools and row.key not in _ANALYSIS)
 
 
 def _joined(*texts: str | None) -> str:
@@ -322,8 +341,59 @@ def _add_later_builtins(s) -> None:
             continue
         for key in keys:
             if s.get(Agent, (SHARED, key)) is None:
-                s.add(Agent(project=SHARED, key=key, **builtin_default(key)))
+                s.add(Agent(project=SHARED, key=key, **_with_settings_of(s, SHARED, key, builtin_default(key))))
+            source = LATER_SETTINGS_FROM.get(key)
+            if source:  # projects with their own copy of the agent it takes over get their own copy of it too
+                for copy in s.scalars(select(Agent).where(Agent.key == source, Agent.project != SHARED)):
+                    if s.get(Agent, (copy.project, key)) is None:
+                        s.add(Agent(project=copy.project, key=key,
+                                    **_with_settings_of(s, copy.project, key, builtin_default(key))))
         s.add(Setting(key=marker, value=True))
+
+
+def _with_settings_of(s, project: str, key: str, config: dict) -> dict:
+    """A later built-in's config with the choices of the agent whose work it takes over (LATER_SETTINGS_FROM)."""
+    source = LATER_SETTINGS_FROM.get(key)
+    row = s.get(Agent, (project, source)) if source else None
+    if row is None:
+        return config
+    return {**config, **{f: getattr(row, f) for f in ("mode", "model", "effort") if getattr(row, f)}}
+
+
+def outdated_analysis(row: Agent | None) -> bool:
+    """An Analysis agent that doesn't write the functional specification: its instructions were edited before the
+    release that added it (an edited agent isn't upgraded), or a project's own copy (copies never are)."""
+    return row is not None and "functional-spec.md" not in (row.outputs or [])
+
+
+def _warn_outdated_analysis(s) -> None:
+    """At every start, while it lasts: the lean workflow's Domain dependencies step now finds the dependencies and
+    Analysis is expected to write the functional specification, which an outdated Analysis agent doesn't."""
+    rows = [r for r in s.scalars(select(Agent).where(Agent.key == "analysis")) if outdated_analysis(r)]
+    if rows:
+        where = ", ".join("shared" if r.project == SHARED else f"project {r.project}" for r in rows)
+        log.warning("The Analysis agent (%s) writes no functional-spec.md: it was edited before this release, so it "
+                    "wasn't upgraded. Lean runs then have no functional specification, and its dependency work is "
+                    "done twice (the Domain dependencies step does it too). Reset it on the Agents page, or add the "
+                    "functional specification to its instructions and required documents.", where)
+
+
+EDIT_FILE_MARKER = "_documents_agents_edit_file"
+
+
+def _give_documents_agents_edit_file(s) -> None:
+    """Once: documents agents edit a document in place (an amendment, a re-run), so each built-in one gets edit_file,
+    edited or not (a tool added, nothing removed)."""
+    from app.agents.defaults import _ANALYSIS
+
+    if s.get(Setting, (GLOBAL, EDIT_FILE_MARKER)) is not None:
+        return
+    for row in s.scalars(select(Agent).where(Agent.key.in_(sorted(_ANALYSIS)))):
+        tools = list(row.tools or [])
+        if "write_file" in tools and "edit_file" not in tools:
+            _keep_updated_at(row)
+            row.tools = [*tools, "edit_file"]
+    s.add(Setting(key=EDIT_FILE_MARKER, value=True))
 
 
 def _guardrails_key(key: str) -> str:

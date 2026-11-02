@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { api, type ChecklistItem, type RerunScope, type StageDef } from "../lib/api";
+import { api, type ChecklistItem, type FunctionalCoverage as Coverage, type RerunScope, type StageDef } from "../lib/api";
+import { FunctionalCoverage } from "./FunctionalCoverage";
 import { RerunScopeChoice } from "./RerunScopeChoice";
 import { useCan, useMe, useRefreshRun } from "../lib/hooks";
 
@@ -8,10 +9,12 @@ export function ApprovalPanel({
   runId,
   gate,
   stages,
+  coverage,
 }: {
   runId: string;
   gate: { gate: string; reviews: string[]; checklist?: ChecklistItem[] };
   stages: StageDef[];
+  coverage?: Coverage | null;
 }) {
   const refreshRun = useRefreshRun(runId);
   const { data: auth } = useMe();
@@ -52,6 +55,7 @@ export function ApprovalPanel({
         Review the output of {gate.reviews.map(title).join(", ")} in the timeline. You can edit artifacts before approving. To change the agent, its inputs or
         the documents before the re-run, choose <em>Reject…</em>, then <em>Reject, amend first</em>.
       </p>
+      {coverage && <FunctionalCoverage coverage={coverage} gate={gate.gate} />}
 
       {!canApprove ? (
         <>

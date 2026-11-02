@@ -56,6 +56,7 @@ class StubAgent(StageAgent):
                                          "document(s)) with the agent's current settings."]
         out.write_text("\n".join(lines) + "\n", encoding="utf-8")
         artifacts = [ArtifactOut(name=out.name, path=ctx.rel(out), kind="markdown")]
+        artifacts += _sample_functional_files(ctx, out)
         artifacts += _sample_cross_domain_files(ctx)
         artifacts += _sample_api_files(ctx)
         artifacts += _sample_discovery_files(ctx)
@@ -74,6 +75,9 @@ def _sample_cross_domain_files(ctx: AgentContext) -> list[ArtifactOut]:
     op = ctx.operation.lower()
     query, event = f"{other}.get-{other}-summary", f"{ctx.domain}.{op}-completed"
     files: dict[str, str] = {}
+    # Links to the functional specification, when the run has one (sample ids, see _sample_functional_files)
+    trace = ("    requirements: [FR-002]\n    scenarios: [TS-002]\n"
+             if (ctx.output_dir / "functional-spec.md").is_file() else "")
     if "cross-domain.yaml" in outputs:
         files["cross-domain.yaml"] = f"""# [stub] sample cross-domain catalogue
 interactions:
@@ -84,7 +88,7 @@ interactions:
     summary: Reads a {other} summary while handling {ctx.operation}
     code_refs: []
     consistency: immediate
-  - id: X2
+{trace}  - id: X2
     direction: inbound
     target: {other}
     kind: side-effect
@@ -706,6 +710,119 @@ def _sample_code_change(ctx: AgentContext, stage: StageDef) -> None:
     ctx.log(f"[stub] changed code: {ctx.rel(code)}")
     _sample_module(ctx)
     _sample_service(ctx)
+
+
+def _sample_functional_files(ctx: AgentContext, main) -> list[ArtifactOut]:
+    """Analysis's three documents joined by ids (app/functional_spec.py), Modulith design's allocation, and each later
+    step's coverage table: small samples that pass the checks, so a stub run goes through the whole flow."""
+    from app import functional_spec as fs
+
+    outputs = ctx.config.get("outputs") or []
+    out = []
+    if fs.SPEC_FILE in outputs:
+        other = next((d for d in sorted(ctx.ownership) if d != ctx.domain), "another area")
+        with main.open("a", encoding="utf-8") as f:
+            if main.name == fs.AS_IS_FILE:
+                f.write("\n## Rule enforcement\n| BR id | Enforced in | Code location | Condition as implemented | "
+                        "What the code does |\n|---|---|---|---|---|\n| BR-001 | server | [stub] | [stub] | "
+                        "Rejects the request |\n\n## Messages\n| MSG id | Kind | Trigger | Produced by | View or message key |"
+                        "\n|---|---|---|---|---|\n| MSG-01 | error | BR-001 fails | [stub] | [stub] |\n\n"
+                        "## Domain crossings\nNone found by the stub.\n")
+        spec = ctx.output_dir / fs.SPEC_FILE
+        spec.write_text(f"""# Functional specification: {ctx.operation}
+Audience: business users and business analysts
+
+| Domain | Feature | Version | Business owner | Approval |
+|---|---|---|---|---|
+| {ctx.domain} | {ctx.operation} | 1 | to be confirmed | recorded in Migration Studio at Approve analysis |
+
+## 1. Purpose and business context
+[stub] Why the business needs {ctx.operation}.
+## 2. Scope
+[stub] In scope: {ctx.operation}.
+## 3. Users and roles
+| Role | What they can do | What they can't |
+|---|---|---|
+| Clerk | Use {ctx.operation} | - |
+## 4. Business process
+1. [stub] The user submits the request.
+## 5. Functional requirements
+| ID | The system shall … | Criticality | Rules | Other party |
+|---|---|---|---|---|
+| FR-001 | [stub] record the request | to be confirmed | BR-001 | - |
+| FR-002 | [stub] show the {other} summary | to be confirmed | - | {other} |
+## 6. Business rules
+| ID | Rule | When it applies | Outcome |
+|---|---|---|---|
+| BR-001 | [stub] A request needs a reference | On submit | Rejected with MSG-01 |
+## 7. Use cases
+### UC-01 Submit
+[stub] Main flow; exception flow ends in MSG-01. Covers FR-001, FR-002, BR-001.
+## 8. Information captured and shown
+| Item (as on screen) | Meaning | Mandatory | Allowed values |
+|---|---|---|---|
+| Reference | [stub] | Yes | Any |
+## 9. Messages and outcomes
+| ID | When | What the user sees (exact text) |
+|---|---|---|
+| MSG-01 | BR-001 fails | [stub] Please enter a reference. |
+## 10. Notifications, reports and records
+None.
+## 11. Business expectations
+None observed.
+## 12. Assumptions and open questions
+None.
+## 13. Glossary
+None.
+## Appendix: Traceability
+| Requirement or rule | Scenarios that prove it |
+|---|---|
+| FR-001, BR-001 | TS-001 |
+| FR-002 | TS-002 |
+""", encoding="utf-8")
+        scenarios = ctx.output_dir / fs.SCENARIOS_FILE
+        scenarios.write_text(f"""# Test scenarios: {ctx.operation}
+Audience: test team
+
+## Summary
+| Scenarios | Positive | Negative | Boundary | Exception | Requirements covered |
+|---|---|---|---|---|---|
+| 2 | 1 | 1 | 0 | 0 | 3 |
+
+## Scenarios
+### TS-001 A request without a reference is rejected
+- Covers: FR-001, BR-001, MSG-01
+- Type: Negative
+- Expected result: MSG-01 shows; nothing is recorded
+
+### TS-002 The {other} summary shows
+- Covers: FR-002
+- Type: Positive
+- Expected result: the summary shows
+
+## Not covered
+None.
+""", encoding="utf-8")
+        out += [ArtifactOut(name=f.name, path=ctx.rel(f), kind="markdown") for f in (spec, scenarios)]
+    elif (ctx.output_dir / fs.SPEC_FILE).is_file():
+        ids = fs.spec_ids((ctx.output_dir / fs.SPEC_FILE).read_text(encoding="utf-8"))
+        every = [i for k in fs.KINDS for i in ids[k]]
+        cross = _scope(ctx) == "cross-domain"
+        if main.name == fs.DESIGN_FILE:
+            rows = [f"| {i} | {'orchestrator' if cross and i == 'FR-002' else 'domain'} | [stub] |" for i in every]
+            with main.open("a", encoding="utf-8") as f:
+                f.write("\n## Functional allocation\n| Id | Owner | Where |\n|---|---|---|\n" + "\n".join(rows) + "\n")
+        elif ctx.stage in fs.COVERAGE_STEPS and main.name == fs.COVERAGE_STEPS[ctx.stage][0]:
+            design = ctx.output_dir / fs.DESIGN_FILE
+            owners = {i: fs._owner(e["owner"]) for i, e in fs.allocation(
+                design.read_text(encoding="utf-8") if design.is_file() else "").items()}
+            _name, own, kinds = fs.COVERAGE_STEPS[ctx.stage]
+            mine = [i for i in every if owners.get(i, "domain") in own and fs.kind(i) in kinds]
+            with main.open("a", encoding="utf-8") as f:
+                f.write("\n## Functional coverage\n| Id | Covered by | Status |\n|---|---|---|\n"
+                        + "\n".join(f"| {i} | [stub] test_{i.replace('-', '_').lower()} | Covered |" for i in mine)
+                        + "\n")
+    return out
 
 
 def _required_placeholders(ctx: AgentContext, stage) -> list[ArtifactOut]:

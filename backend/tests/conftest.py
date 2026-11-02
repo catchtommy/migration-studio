@@ -93,3 +93,13 @@ def document(run: dict, stage: str, name: str | None = None) -> Document:
             outputs = []
         name = next((o for o in outputs if o.endswith(".md")), f"{stage}.md")
     return Document(run["id"], f".migration/{run['domain']}/{run['operation']}/{name}")
+
+
+def approve(client, run_id: str, **body):
+    """Approve the gate the run waits at, ticking its checklist first (the Lean analysis gate has one)."""
+    gate = client.get(f"/api/runs/{run_id}").json().get("pending_gate") or {}
+    for item in gate.get("checklist") or []:
+        if not item["done"]:
+            r = client.post(f"/api/runs/{run_id}/checklist", json={"item": item["item"], "done": True})
+            assert r.status_code == 200, r.text
+    return client.post(f"/api/runs/{run_id}/decision", json={"decision": "approve", **body})

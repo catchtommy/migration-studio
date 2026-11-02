@@ -19,7 +19,7 @@ from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution, utcnow
 from app.db.session import emit, get_db, session_scope
-from app import (auth, contracts_store, delivery, discovery_store, document_export, domain_modules,
+from app import (agent_store, auth, contracts_store, delivery, discovery_store, document_export, domain_modules,
                  gate_checklist, projects, repos, run_cleanup, run_workflow, settings_store, workflow_store, workspace)
 from app.auth import CurrentUser, ProjectAccess, project_context, require, require_admin
 from app.domain_store import normalize_inputs
@@ -167,6 +167,31 @@ def git_plan(domain: str, feature: str, workflow: str | None = None, db: Session
     return delivery.plan(projects.current(), wf, domain, feature)
 
 
+def _functional_coverage(run: Run) -> dict | None:
+    """The functional specification's coverage, from the run's documents in effect; None for a run whose workflow has
+    no Analysis step writing one."""
+    from app import functional_spec
+    from app.agents.base_agent import docs_dir
+
+    if not any(d.get("key") == "analysis" for d in run.stage_defs or []):
+        return None
+    try:
+        report = functional_spec.report(workspace.effective_documents(run.id), docs_dir(run.domain, run.operation),
+                                        run.stage_defs)
+    except Exception as e:  # noqa: BLE001 - a report only: never breaks the run page
+        return {"available": False, "message": f"The functional coverage could not be read: {e}"}
+    if not report["available"] and any(d.get("key") == "dependency_analysis" for d in run.stage_defs):
+        try:
+            outdated = "functional-spec.md" not in (agent_store.get("analysis", run.project).get("outputs") or [])
+        except KeyError:
+            outdated = False
+        if outdated:
+            report["message"] = ("No functional specification for this run: the Analysis agent doesn't write one (its "
+                                 "instructions were edited before the release that added it, so they weren't "
+                                 "upgraded). Reset it on the Agents page, or add functional-spec.md to it.")
+    return report
+
+
 @router.get("/runs/{run_id}", response_model=RunDetail)
 def get_run(run_id: str, db: Session = Depends(get_db)):
     run = _run_or_404(db, run_id)
@@ -179,6 +204,8 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
         detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
                                   if run.legacy else
                                   repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha))
+    if run.scope == "operation" and run.status in ("awaiting_approval", "changes_requested", "completed"):
+        detail.functional_coverage = _functional_coverage(run)
     if run.status in ("awaiting_approval", "changes_requested"):
         detail.pending_gate = get_runner().pending_gate(run_id)
         if detail.pending_gate and detail.pending_gate.get("gate"):

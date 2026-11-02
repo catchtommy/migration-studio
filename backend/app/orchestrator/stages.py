@@ -154,17 +154,31 @@ DOMAIN_FEATURES = Workflow((
 # The lean migration workflow: the same migration with fewer agents. Analysis, design and modernisation each run as one
 # agent instead of several that re-read the same code; the steps that change code, their guardrails and the documents
 # they read and write are the standard workflow's. A domain switches to it by making it its default workflow.
+# Documents steps built from another step's documents: when a reviewer amends that step ("only the requested change"),
+# they follow it, if the change touched what they read (orchestrator/graph.py). Other steps stay as they are.
+FOLLOWS_DOCUMENTS = {"dependency_analysis": ("analysis",)}
+# The Lean workflow's analysis gate: one sign-off per audience of the analysis's documents.
+LEAN_ANALYSIS_CHECKLIST = ("Architect: as-is.md and the domain dependencies reviewed",
+                           "Test lead: test-scenarios.md reviewed",
+                           "Business owner or BA: functional-spec.md reviewed")
+
 LEAN = Workflow((
     StageDef("analysis", "Analysis", "agent",
-             "One pass from the entry points down to the SQL: the AS-IS flow, business rules and edge cases, the test "
-             "scenario catalogue, and exactly which other domains the feature depends on (the scope decision)."),
+             "One pass from the entry points down to the SQL, written for three audiences: the AS-IS documentation "
+             "(architects and developers), the functional specification (business users and analysts) and the test "
+             "scenarios (the test team)."),
+    StageDef("dependency_analysis", "Domain dependencies", "agent",
+             "Exactly which other domains the feature depends on, and the scope decision (domain-only or "
+             "cross-domain), from the analysis's trace and specification plus targeted searches of the code.",
+             uses=("analysis",)),
     StageDef("gate_analysis", "Approve analysis", "gate",
-             "Review the AS-IS documentation, the test scenarios and the dependencies, including the scope decision "
-             "(domain-only or cross-domain).", ("analysis",)),
+             "Review the AS-IS documentation, the functional specification, the test scenarios and the domain "
+             "dependencies, including the scope decision (domain-only or cross-domain).",
+             ("analysis", "dependency_analysis"), checklist=LEAN_ANALYSIS_CHECKLIST),
     StageDef("modulith_design", "Modulith design", "agent",
              "Design the feature's domain inside the monolith, the contracts with the domains it depends on, the "
              "orchestrator and each cross-domain interaction, in one design, without changing the database or the UI.",
-             uses=("analysis",)),
+             uses=("analysis", "dependency_analysis")),
     StageDef("gate_design", "Approve design", "gate",
              "Review the domain design, the linked-domain contracts, the orchestrator design and the cross-domain "
              "integration decisions.", ("modulith_design",)),

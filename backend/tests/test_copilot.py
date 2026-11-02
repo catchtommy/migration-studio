@@ -90,7 +90,7 @@ def test_copilot_agent_runs_the_stage_with_only_this_apps_tools(ctx):  # noqa: F
     assert [a.path for a in artifacts] == [f"{OUT}/as-is.md"]
     [session] = client.sessions
     kw = session.kwargs
-    assert [t.name for t in kw["tools"]] == ["list_files", "read_file", "search_code", "write_file", "ask_user"]
+    assert [t.name for t in kw["tools"]] == ["list_files", "read_file", "search_code", "write_file", "edit_file", "ask_user"]
     assert kw["available_tools"].to_list() == [f"custom:{t.name}" for t in kw["tools"]]  # no built-in tools
     assert all(t.overrides_built_in_tool for t in kw["tools"])
     assert kw["working_directory"] == str(ctx.workspace)

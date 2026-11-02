@@ -206,6 +206,23 @@ def amend_brief(ctx: AgentContext) -> str:
             "- Finish with a short summary that lists exactly what you changed, file by file.")
 
 
+# The steps whose instructions take business rules and messages from the functional specification.
+SPEC_READERS = ("dependency_analysis", "modulith_design", "modular_monolith", "monolith_orchestrator",
+                "orchestrator_service", "independent_tests", "modernise_and_test", "monolith_integration")
+
+
+def no_spec_brief(ctx: AgentContext) -> str:
+    """For a run without a functional specification (it started before Analysis wrote one): where the rules are."""
+    from app import functional_spec
+
+    if ctx.stage not in SPEC_READERS or (ctx.output_dir / functional_spec.SPEC_FILE).is_file():
+        return ""
+    return ("## This run has no functional specification\n"
+            "It started before Analysis wrote `functional-spec.md`. Take the business rules, validations and messages "
+            "from `as-is.md` instead, and leave out what refers to the specification's ids: the \"Functional "
+            "allocation\" and \"Functional coverage\" tables, and the FR, BR and MSG ids in names and links.")
+
+
 def focused_tests_brief() -> str:
     """For the steps that change the legacy monolith: its test suites are large, so only the tests that matter run."""
     from app.agents.tools import FOCUSED_TESTS_HINT
@@ -244,6 +261,9 @@ def brief(ctx: AgentContext) -> str:
     docs = documentation_brief(ctx)
     if docs:
         parts.append(docs)
+    no_spec = no_spec_brief(ctx)
+    if no_spec:
+        parts.append(no_spec)
     if ctx.amend:
         parts.append(amend_brief(ctx))
     elif ctx.refresh:
@@ -376,8 +396,37 @@ def verify(ctx: AgentContext, written: set[str] | None = None) -> list[str]:
         problems += contracts_store.domain_design_ownership_problems(ctx.output_dir, ctx.domain, ctx.ownership)
         problems += _design_module_problems(ctx)
     problems += discovery_store.validate_outputs(ctx.output_dir)
+    problems += _functional_spec_problems(ctx)
     problems += guardrail_problems(ctx, checks)
     return problems
+
+
+def _functional_spec_problems(ctx: AgentContext) -> list[str]:
+    """The functional specification's required checks for the step that writes the documents (app/functional_spec.py):
+    Analysis's three documents agree; Domain dependencies cites only ids they define and maps every requirement that
+    involves another party; Modulith design allocates every id."""
+    from app import functional_spec as fs
+
+    outputs = set(ctx.config.get("outputs") or [])
+    problems = []
+    if fs.SPEC_FILE in outputs:
+        problems += fs.analysis_problems(*fs.documents_of(ctx.output_dir))
+    if "cross-domain.yaml" in outputs:
+        problems += fs.trace_problems(ctx.output_dir)
+    spec, design = ctx.output_dir / fs.SPEC_FILE, ctx.output_dir / fs.DESIGN_FILE
+    if fs.DESIGN_FILE in outputs and spec.is_file() and design.is_file():
+        problems += fs.allocation_problems(spec.read_text(encoding="utf-8"), design.read_text(encoding="utf-8"),
+                                           _scope(ctx))
+    return problems
+
+
+def _scope(ctx: AgentContext) -> str | None:
+    """The scope decision of domain-dependencies.yaml (domain-only or cross-domain); None when there is none."""
+    f = ctx.output_dir / contracts_store.DOMAIN_DEPENDENCIES_FILE
+    try:
+        return contracts_store.load_domain_dependencies(f.read_text(encoding="utf-8"))["decision"]["scope"]
+    except (OSError, contracts_store.InvalidDocument, KeyError, TypeError):
+        return None
 
 
 def _design_module_problems(ctx: AgentContext) -> list[str]:

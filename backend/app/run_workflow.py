@@ -67,7 +67,8 @@ def agents_changed(run) -> dict[str, str]:
                 continue  # the agent was deleted: nothing newer to use
             used = {*shared_texts.PLACEHOLDER.findall(f"{agent['instructions']}\n{agent['guardrails']}"), *_ALWAYS}
             newer = [texts[k]["title"] for k in sorted(used)
-                     if k in texts and texts[k]["updated_at"] and texts[k]["updated_at"] > ran]
+                     if k in texts and texts[k]["updated_at"] and texts[k]["updated_at"] > ran
+                     and shared_texts.changed_since_added(texts[k])]
             if agent["updated_at"] > ran:
                 out[key] = "its agent changed"
             elif newer:

@@ -22,6 +22,7 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
     onSuccess: (updated) => {
       queryClient.setQueryData(["artifact", artifactId], updated);
       queryClient.invalidateQueries({ queryKey: ["artifacts"] });
+      queryClient.invalidateQueries({ queryKey: ["run"] }); // the run's checks read its documents (functional coverage)
       setEditing(false);
     },
   });
