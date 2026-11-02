@@ -21,8 +21,8 @@ def test_lean_workflow_is_seeded_beside_the_standard_one(client):
     assert lean["name"] == "Lean migration"
     assert [s["key"] for s in lean["stages"]] == [
         "analysis", "dependency_analysis", "gate_analysis", "modulith_design", "gate_design", "modular_monolith", "monolith_orchestrator",
-        "microservice_scaffold", "orchestrator_service", "independent_tests", "gate_tests", "modernise_and_test",
-        "monolith_integration", "gate_release"]
+        "microservice_scaffold", "independent_tests", "gate_tests", "orchestrator_service", "orchestrator_tests",
+        "gate_orchestrator", "modernise_and_test", "monolith_integration", "gate_release"]
     # The standard workflow is unchanged, and still the one a run uses unless its domain defaults to another.
     standard = client.get("/api/workflows/standard").json()
     assert [s["key"] for s in standard["stages"]] == list(STANDARD.keys)
@@ -32,7 +32,7 @@ def test_lean_workflow_is_seeded_beside_the_standard_one(client):
 def test_lean_workflow_reuses_the_standard_steps_that_change_code(client):
     shared = [s for s in LEAN.stages if s.key in STANDARD.by_key and s.kind == "agent"]
     assert [s.key for s in shared] == ["modular_monolith", "monolith_orchestrator", "microservice_scaffold",
-                                       "orchestrator_service", "independent_tests", "monolith_integration"]
+                                       "independent_tests", "orchestrator_service", "monolith_integration"]
     assert all(s is STANDARD.by_key[s.key] for s in shared)  # the same agents, titles and settings
 
 
@@ -75,7 +75,8 @@ def test_a_cross_domain_feature_runs_through_the_lean_workflow(client):
 
     for gate, reviews in (("gate_analysis", ["analysis", "dependency_analysis"]), ("gate_design", ["modulith_design"]),
                           ("gate_tests", ["modular_monolith", "monolith_orchestrator", "microservice_scaffold",
-                                          "orchestrator_service", "independent_tests"]),
+                                          "independent_tests"]),
+                          ("gate_orchestrator", ["orchestrator_service", "orchestrator_tests"]),
                           ("gate_release", ["modernise_and_test", "monolith_integration"])):
         run = wait_for(client, run_id, {"awaiting_approval"})
         assert run["pending_gate"]["gate"] == gate and run["pending_gate"]["reviews"] == reviews
@@ -86,8 +87,8 @@ def test_a_cross_domain_feature_runs_through_the_lean_workflow(client):
     done = wait_for(client, run_id, {"completed"})
     assert [s["stage"] for s in done["stages"] if not s["stage"].startswith("gate_")] == [
         "analysis", "dependency_analysis", "modulith_design", "modular_monolith", "monolith_orchestrator",
-        "microservice_scaffold", "orchestrator_service", "independent_tests", "modernise_and_test",
-        "monolith_integration"]
+        "microservice_scaffold", "independent_tests", "orchestrator_service", "orchestrator_tests",
+        "modernise_and_test", "monolith_integration"]
     # The design gate recorded the merged design's contracts in the catalogue, as the standard design gate does.
     consumed = [c for c in client.get("/api/contracts").json() if domain in (c.get("consumers") or [])]
     assert consumed

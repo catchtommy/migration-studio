@@ -256,9 +256,11 @@ export type FunctionalCoverage =
         kind: "FR" | "BR" | "MSG";
         owner: string | null; // domain | orchestrator | other domain | ui unchanged (Modulith design's allocation)
         scenarios: string[];
-        covered_by: { step: string; title: string; by: string }[];
+        covered_by: { step: string; title: string; by: string; outside_owner: boolean }[];
         not_covered: { step: string; title: string; by: string; reason: string }[];
-        gap: boolean; // no step for its owner covered it, though one has reported
+        gap: boolean; // not covered for its owner (a requirement: by its owner's acceptance suite), though one has reported
+        counted: boolean; // covered by a step that counts for its owner
+        proven_by_owner_suite: boolean; // a requirement proven by its owner's black-box acceptance suite
       }[];
       summary: Record<"FR" | "BR" | "MSG", { total: number; covered: number }>;
       reported_by: { step: string; title: string }[];

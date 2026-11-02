@@ -41,9 +41,13 @@ COVERAGE_STEPS = {
     "monolith_orchestrator": ("orchestrator-module.md", ("orchestrator",), ("FR", "BR", "MSG")),
     "orchestrator_service": ("orchestrator-service.md", ("orchestrator",), ("FR", "BR", "MSG")),
     "independent_tests": ("test-report.md", ("domain",), ("FR", "BR", "MSG")),
+    "orchestrator_tests": ("orchestrator-test-report.md", ("orchestrator",), ("FR", "BR", "MSG")),
     "modernise_and_test": ("modernisation.md", ("domain",), ("FR", "BR", "MSG")),
     "monolith_integration": ("integration.md", ("domain", "orchestrator"), ("MSG",)),
 }
+# Each owner's black-box acceptance suite: a requirement (FR) counts as covered only when its owner's suite proves it
+# (rules and messages: any step of their owner). Reported, never blocking.
+ACCEPTANCE = {"domain": "independent_tests", "orchestrator": "orchestrator_tests"}
 # as-is.md's section of the messages (each MSG id with where it is produced); "Error paths" in earlier runs.
 MESSAGES_SECTIONS = ("messages", "error paths")
 OWNERS = ("domain", "orchestrator", "other domain", "ui unchanged")
@@ -358,20 +362,29 @@ def report(documents: dict[str, str], folder: str, steps: list[dict] | None = No
             for step, rows in reported.items():
                 for row in rows:
                     if row["id"] == id_:
-                        entry = {"step": step, "title": titles.get(step, step), "by": row["by"]}
+                        # A step listing an id its owner isn't (the domain suite listing an orchestrator requirement)
+                        # is shown, but doesn't count.
+                        outside = owner in ("domain", "orchestrator") and owner not in COVERAGE_STEPS[step][1]
+                        entry = {"step": step, "title": titles.get(step, step), "by": row["by"],
+                                 "outside_owner": outside}
                         (covered_by if row["covered"] else not_covered).append({**entry, "reason": row["reason"]})
-            # A gap: no step that covers ids of its owner and kind covered it, though one has reported (without an
-            # owner: any step of its kind). Another domain's and UI-only ids are never gaps: this migration doesn't
-            # change them.
-            relevant = [s for s, (_n, owners, kinds) in COVERAGE_STEPS.items()
-                        if s in in_run and k in kinds and (owner is None or owner in owners)]
-            gap = (owner not in _NOT_GAPS and any(s in reported for s in relevant)
-                   and not any(c["step"] in relevant for c in covered_by))
+            # The steps whose cover counts: a requirement's, its owner's acceptance suite (when the run has it);
+            # otherwise every step that covers ids of its owner and kind (without an owner: of its kind).
+            suite = ACCEPTANCE.get(owner) if k == "FR" else None
+            relevant = ([suite] if suite in in_run else
+                        [s for s, (_n, owners, kinds) in COVERAGE_STEPS.items()
+                         if s in in_run and k in kinds and (owner is None or owner in owners)])
+            counted = [c for c in covered_by if c["step"] in relevant and not c["outside_owner"]]
+            # A gap: none of them covered it, though one has reported. Another domain's and UI-only ids are never gaps:
+            # this migration doesn't change them.
+            gap = owner not in _NOT_GAPS and any(s in reported for s in relevant) and not counted
             ids.append({"id": id_, "kind": k, "owner": owner, "scenarios": [t for t, s in found.items()
                                                                               if id_ in s["covers"]],
-                        "covered_by": covered_by, "not_covered": not_covered, "gap": gap})
+                        "covered_by": covered_by, "not_covered": not_covered, "gap": gap,
+                        "counted": bool(counted), "proven_by_owner_suite": bool(suite and any(
+                            c["step"] == suite for c in counted))})
     by_kind = {k: {"total": sum(1 for i in ids if i["kind"] == k),
-                   "covered": sum(1 for i in ids if i["kind"] == k and i["covered_by"])} for k in KINDS}
+                   "covered": sum(1 for i in ids if i["kind"] == k and i["counted"])} for k in KINDS}
     return {"available": True, "ids": ids, "summary": by_kind,
             "reported_by": [{"step": s, "title": titles.get(s, s)} for s in reported],
             "gaps": [i["id"] for i in ids if i["gap"]],
@@ -403,6 +416,16 @@ def step_line(text: str | None, report_: dict, step: str) -> str | None:
     if not_covered:
         line += "; not covered here: " + ", ".join(f"{r['id']} ({r['reason']})" if r["reason"] else r["id"]
                                                    for r in not_covered[:10])
+    owner = next((o for o, s in ACCEPTANCE.items() if s == step), None)
+    if owner:  # an acceptance suite: the requirements its owner has, proven by it or not (a report, never a block)
+        mine = [i for i in report_["ids"] if i["kind"] == "FR" and i["owner"] == owner]
+        missing = [i["id"] for i in mine if not i["proven_by_owner_suite"]]
+        line += (f"; the {owner}'s requirements proven by this suite: {len(mine) - len(missing)} of {len(mine)}"
+                 + (f" (not proven: {', '.join(missing[:15])})" if missing else ""))
+    outside = sorted({i["id"] for i in report_["ids"] for c in i["covered_by"]
+                      if c["step"] == step and c["outside_owner"]})
+    if outside:
+        line += f"; listed here but owned by the other side (not counted): {', '.join(outside[:15])}"
     gaps = report_.get("gaps") or []
     if gaps:
         line += f"; not covered by any step yet: {', '.join(gaps[:15])}{' …' if len(gaps) > 15 else ''}"

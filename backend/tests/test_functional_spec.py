@@ -149,15 +149,16 @@ def test_coverage_is_per_feature_an_orchestrator_id_is_not_the_domain_services_g
             ".migration/loan/approve/modernisation.md": _coverage("FR-001", "BR-001", "MSG-01")}
     steps = [s.to_dict() for s in LEAN.stages]
     report = fs.report(docs, ".migration/loan/approve", steps)
-    assert report["available"] and report["gaps"] == []  # FR-002 is the orchestrator's: no orchestrator step yet
-    docs[".migration/loan/approve/orchestrator-module.md"] = _coverage()  # reported, but didn't cover FR-002
+    assert report["available"] and report["gaps"] == []  # FR-002 is the orchestrator's: its suite hasn't run yet
+    docs[".migration/loan/approve/orchestrator-module.md"] = _coverage("FR-002")  # a unit test: not the owner's suite
+    docs[".migration/loan/approve/orchestrator-test-report.md"] = _coverage()  # the owner's suite didn't prove it
     assert fs.report(docs, ".migration/loan/approve", steps)["gaps"] == ["FR-002"]
-    docs[".migration/loan/approve/orchestrator-module.md"] = _coverage("FR-002")
+    docs[".migration/loan/approve/orchestrator-test-report.md"] = _coverage("FR-002")
     report = fs.report(docs, ".migration/loan/approve", steps)
-    assert report["gaps"] == [] and report["summary"]["FR"] == {"total": 2, "covered": 2}
     by_id = {i["id"]: i for i in report["ids"]}
-    assert by_id["FR-002"]["owner"] == "orchestrator" and by_id["FR-002"]["covered_by"][0]["step"] == \
-        "monolith_orchestrator"
+    assert report["gaps"] == [] and by_id["FR-002"]["proven_by_owner_suite"]
+    assert by_id["FR-002"]["owner"] == "orchestrator"
+    assert report["summary"]["FR"] == {"total": 2, "covered": 1}  # FR-001: the domain suite hasn't reported yet
 
 
 def test_other_domains_and_ui_only_ids_are_never_gaps():
@@ -413,10 +414,13 @@ def test_a_lean_stub_run_carries_the_specification_to_the_release_gate(client, m
     assert run["functional_coverage"]["available"] and run["functional_coverage"]["analysis_problems"] == []
     assert run["functional_coverage"]["without_scenario"] == []
     assert seen["dependency_analysis"] == ["as-is.md", "functional-spec.md", "test-scenarios.md"]
-    for _ in range(4):
+    gates = []
+    while run["status"] == "awaiting_approval":
+        gates.append(run["pending_gate"]["gate"])
         assert approve(client, run_id).status_code == 200
         run = wait_for(client, run_id, {"awaiting_approval", "completed"})
     assert run["status"] == "completed"
+    assert gates == ["gate_analysis", "gate_design", "gate_tests", "gate_orchestrator", "gate_release"]
     assert {"as-is.md", "functional-spec.md", "test-scenarios.md", "cross-domain.yaml",
             "domain-dependencies.yaml"} <= set(seen["modulith_design"])
     coverage = run["functional_coverage"]
@@ -522,8 +526,10 @@ def test_each_step_is_judged_only_on_the_kinds_of_id_it_covers():
     report = fs.report(docs, folder, steps)
     fr = next(i for i in report["ids"] if i["id"] == "FR-001")
     assert fr["gap"] is False and [c["step"] for c in fr["covered_by"]] == ["monolith_integration"]
-    docs[f"{folder}/modernisation.md"] = _coverage("BR-001", "MSG-01")
-    assert fs.report(docs, folder, steps)["gaps"] == ["FR-001", "FR-002"]  # integration's FR row doesn't count
+    docs[f"{folder}/modernisation.md"] = _coverage("FR-001", "BR-001", "MSG-01")
+    docs[f"{folder}/test-report.md"] = _coverage("FR-002")  # the domain's acceptance suite proves FR-002 only
+    report = fs.report(docs, folder, steps)
+    assert report["gaps"] == ["FR-001"]  # a requirement counts only when its owner's acceptance suite proves it
 
 
 def test_a_domain_only_feature_allocates_nothing_to_the_orchestrator():

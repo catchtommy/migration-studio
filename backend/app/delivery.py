@@ -115,14 +115,16 @@ MONOLITH = "<monolith>"  # a step from before steps were a flag that named the m
 # The built-in agents that change code by nature: a workflow step of one without "Changes code" has its code changes
 # undone after it, which the workflow editor and the run's log warn about.
 CODE_AGENTS = ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service",
-               "independent_tests", "modernise", "modernise_and_test", "service_tests", "monolith_integration")
+               "independent_tests", "orchestrator_tests", "modernise", "modernise_and_test", "service_tests", "monolith_integration")
 # The steps that change the monolith's own code: they always work in the project's monolith (its repository in the
 # project settings), in the run's own checkout of it on its feature branch (never the shared read-only copy analysis
 # reads). A domain doesn't set a repository for them.
 MONOLITH_AGENTS = ("modular_monolith", "monolith_orchestrator", "monolith_integration")
 # An agent doing the work of another one (the lean workflow's merged step, Service tests after Modernise) works in the
 # same repository as it, unless the domain sets one of its own.
-REPOSITORY_FROM = {"modernise_and_test": "modernise", "modernise": "modernise_and_test", "service_tests": "modernise"}
+REPOSITORY_FROM = {"modernise_and_test": "modernise", "modernise": "modernise_and_test", "service_tests": "modernise",
+                   # the orchestrator's acceptance suite lives in the orchestrator service's repository
+                   "orchestrator_tests": "orchestrator_service"}
 
 
 def agent_repository(inputs: dict, key: str) -> tuple[str, str, str | None]:

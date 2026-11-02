@@ -208,7 +208,8 @@ def amend_brief(ctx: AgentContext) -> str:
 
 # The steps whose instructions take business rules and messages from the functional specification.
 SPEC_READERS = ("dependency_analysis", "modulith_design", "modular_monolith", "monolith_orchestrator",
-                "orchestrator_service", "independent_tests", "modernise_and_test", "monolith_integration")
+                "orchestrator_service", "independent_tests", "orchestrator_tests", "modernise_and_test",
+                "monolith_integration")
 
 
 def no_spec_brief(ctx: AgentContext) -> str:

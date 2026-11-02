@@ -13,14 +13,16 @@ from app import contracts_store
 
 # Agent stages skipped for domain-only features (wrapper_design is the superseded step, kept for custom workflows).
 SKIPPABLE = ("linked_domain_contracts", "wrapper_design", "orchestrator_design", "monolith_orchestrator",
-             "orchestrator_service")
+             "orchestrator_service", "orchestrator_tests")
 NOTHING_TO = {"linked_domain_contracts": "no contract to define with another domain",
               "wrapper_design": "nothing to wrap", "orchestrator_design": "nothing to orchestrate",
               "monolith_orchestrator": "no orchestrator to build: controllers call the domain module directly",
               "orchestrator_service": "no orchestrator microservice to build: the monolith calls the domain "
-                                      "service directly"}
+                                      "service directly",
+              "orchestrator_tests": "no orchestrator service to test: the domain service's acceptance suite covers "
+                                    "the feature"}
 # Steps that build on the orchestrator module: skipped too when the Orchestrator in monolith step built none.
-NEEDS_ORCHESTRATOR = ("orchestrator_service",)
+NEEDS_ORCHESTRATOR = ("orchestrator_service", "orchestrator_tests")
 NO_ORCHESTRATOR = "The Orchestrator in monolith step built no orchestrator"
 
 
@@ -35,6 +37,15 @@ def skip_reason(stage: str, output_dir: Path) -> str | None:
         if built.is_file():
             try:
                 declared = contracts_store.parse_orchestrator_extraction(built.read_text(encoding="utf-8"))
+            except contracts_store.InvalidDocument:
+                declared = None
+            if declared and declared["orchestrator"] == "none":
+                return f"{NO_ORCHESTRATOR}: {declared['reason']}"
+    if stage == "orchestrator_tests":  # no orchestrator service was built: nothing to test
+        built = output_dir / contracts_store.ORCHESTRATOR_SERVICE_FILE
+        if built.is_file():
+            try:
+                declared = contracts_store.parse_orchestrator_service(built.read_text(encoding="utf-8"))
             except contracts_store.InvalidDocument:
                 declared = None
             if declared and declared["orchestrator"] == "none":

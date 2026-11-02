@@ -238,6 +238,7 @@ export const CODE_AGENTS = [
   "microservice_scaffold",
   "orchestrator_service",
   "independent_tests",
+  "orchestrator_tests",
   "modernise",
   "modernise_and_test",
   "service_tests",

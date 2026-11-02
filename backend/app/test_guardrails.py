@@ -1,9 +1,10 @@
 """Guardrails of the test steps, checked from git rather than trusted from the agent's word: they only add tests,
 and only where they may, in the domain service's repository.
 
-- `acceptance_test_guardrails` (Independent tests): changes only in `acceptance-tests/`, the black-box acceptance
-  suite (a Maven project of its own): it never imports the service's packages or depends on the service's build, so
-  it runs unchanged before and after modernisation.
+- `acceptance_test_guardrails` (Independent tests, and Orchestrator acceptance tests in the orchestrator service's
+  repository): changes only in `acceptance-tests/`, the black-box acceptance suite (a Maven project of its own): it
+  never imports the tested service's packages or depends on its build, so it runs unchanged before and after
+  modernisation.
 - `acceptance_suite_unchanged` (Modernisation): nothing under `acceptance-tests/` changes; the suite is the proof
   that the rewrite kept behaviour.
 - `service_test_guardrails` (Service tests): changes only in test sources and resources (`src/test/`) and, in POMs,
@@ -142,6 +143,24 @@ def service_tests(service: Path, base: str, monolith: Path | None, monolith_base
     return problems[:mg.MAX_REPORTED]
 
 
+def _orchestrator_packages(ctx) -> list[str]:
+    """The orchestrator service's packages, which its acceptance suite must not import: the base package the project's
+    settings give it, and the one its declaration names."""
+    from app import contracts_store, domain_modules, projects
+
+    out = []
+    project = projects.current_or_none()
+    if project:
+        out.append(domain_modules.base_package(project, ctx.domain, "orchestrator_service"))
+    declared = ctx.output_dir / contracts_store.ORCHESTRATOR_SERVICE_FILE
+    if declared.is_file():
+        try:
+            out.append(contracts_store.parse_orchestrator_service(declared.read_text(encoding="utf-8")).get("base_package"))
+        except contracts_store.InvalidDocument:
+            pass
+    return [p for p in dict.fromkeys(out) if p]
+
+
 def for_context(ctx, checks: list[str] | None = None) -> list[str]:
     """Run the test checks the agent is configured with (or `checks`) for its run."""
     from app.agents.defaults import TEST_CHECKS
@@ -160,7 +179,8 @@ def for_context(ctx, checks: list[str] | None = None) -> list[str]:
     try:
         problems = []
         if "acceptance_test_guardrails" in wanted:
-            packages = list((ctx.ownership.get(ctx.domain) or {}).get("packages") or [])
+            packages = (_orchestrator_packages(ctx) if ctx.stage == "orchestrator_tests" else
+                        list((ctx.ownership.get(ctx.domain) or {}).get("packages") or []))
             problems += acceptance(service, ctx.base_sha, monolith, monolith_base, packages)
         if "acceptance_suite_unchanged" in wanted:
             problems += suite_unchanged(service, ctx.base_sha)

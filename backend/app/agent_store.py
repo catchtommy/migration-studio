@@ -31,10 +31,11 @@ LATER_BUILTINS = {"_added_integration_design": ["integration_design"],
                   "_added_orchestrator_service": ["orchestrator_service"],
                   "_added_service_tests": ["service_tests"],
                   "_added_lean_agents": ["analysis", "modulith_design", "modernise_and_test"],
-                  "_added_dependency_analysis": ["dependency_analysis"]}
+                  "_added_dependency_analysis": ["dependency_analysis"],
+                  "_added_orchestrator_tests": ["orchestrator_tests"]}
 # A built-in added later that takes over another's work starts with that agent's choices (stub or AI, model, effort),
 # in the shared library and in each project's copy: else it would run as the stub where the other runs the AI.
-LATER_SETTINGS_FROM = {"dependency_analysis": "analysis"}
+LATER_SETTINGS_FROM = {"dependency_analysis": "analysis", "orchestrator_tests": "independent_tests"}
 
 # SHA-256 of default instructions from earlier releases. A built-in agent still holding one of these was never edited,
 # so it is safe to bring its instructions, required documents, tools and checks up to the current defaults.
@@ -175,6 +176,7 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "a33d06bbba111d533ffd3973d9226f06ad3f072e13cf06e19ad366352edd7bdd",
                            "3017cc168fb1c98e83afe8bcf0f31cd82894893a7fd92d47d909d523e49f71d8"},
     "dependency_analysis": set(),  # added in this release: no earlier default
+    "orchestrator_tests": set(),  # added in this release: no earlier default
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}

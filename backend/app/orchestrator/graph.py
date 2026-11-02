@@ -17,7 +17,7 @@ from app import legacy, projects, workspace
 from app.agents import get_agent
 from app.agents.base_agent import AgentContext, AgentInputs, ArtifactOut, PriorDocument, docs_dir
 from app.agents.common import kind
-from app.db.models import Artifact, Domain, Feature, Run, StageExecution, utcnow
+from app.db.models import Approval, Artifact, Domain, Feature, Run, StageExecution, utcnow
 from app.db.session import emit, session_scope
 from app.domain_store import normalize_inputs
 from app.orchestrator import questions
@@ -283,7 +283,8 @@ def _skipped_before_start(run_id: str, stage_key: str, domain: str, operation: s
     import tempfile
 
     folder = docs_dir(domain, operation)
-    names = {contracts_store.DOMAIN_DEPENDENCIES_FILE, contracts_store.ORCHESTRATOR_EXTRACTION_FILE}
+    names = {contracts_store.DOMAIN_DEPENDENCIES_FILE, contracts_store.ORCHESTRATOR_EXTRACTION_FILE,
+             contracts_store.ORCHESTRATOR_SERVICE_FILE}
     with tempfile.TemporaryDirectory() as tmp:
         for path, content in workspace.effective_documents(run_id).items():
             if path.startswith(folder + "/") and Path(path).name in names:
@@ -628,12 +629,41 @@ def make_publish_node(key: str):
     return node
 
 
+SYSTEM_REVIEWER = "Migration Studio"  # who records a gate that passed by itself
+# The acceptance suites prove the code they test: following a fix of that code, they run again unchanged, so the fix is
+# proven against the same tests.
+ACCEPTANCE_STEPS = ("independent_tests", "orchestrator_tests")
+ACCEPTANCE_FOLLOW = ("Run your acceptance suite again against the changed code and update the report with the new "
+                     "results. Don't change the tests to make them pass: change a test only where the API it calls "
+                     "was changed on purpose by that change, and say which. A test that now fails is a finding.")
+
+
+def _nothing_to_review(run_id: str, gate: StageDef, state: MigrationState) -> str | None:
+    """Why the gate has nothing to review: every step it reviews was skipped by the scope decision (no orchestrator
+    for a domain-only feature); None when a person must review."""
+    reasons = [_skipped_before_start(run_id, k, state["domain"], state["operation"]) for k in gate.reviews]
+    if not reasons or not all(reasons):
+        return None
+    return "; ".join(dict.fromkeys(reasons))
+
+
 def make_gate_node(workflow: Workflow, gate: StageDef):
     after = workflow.next_stage(gate.key) or END
     approved_to = publish_node_key(gate.key) if _publishes(workflow, gate) else after
 
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
+        nothing = _nothing_to_review(run_id, gate, state)
+        if nothing:  # every step it reviews was skipped (a domain-only feature at the orchestrator's gate)
+            with session_scope() as s:
+                attempt = 1 + s.scalar(select(func.count()).where(
+                    StageExecution.run_id == run_id, StageExecution.stage == gate.key))
+                s.add(StageExecution(run_id=run_id, stage=gate.key, attempt=attempt, status="approved",
+                                     feedback=nothing, finished_at=utcnow()))
+                s.add(Approval(run_id=run_id, gate=gate.key, decision="approve", comments=nothing,
+                               reviewer=SYSTEM_REVIEWER))
+            emit(run_id, "approval", f"{gate.title}: nothing to review, passed by itself ({nothing})", gate.key)
+            return {"route": approved_to}
         # Everything before interrupt() re-executes on resume, so keep it idempotent.
         with session_scope() as s:
             pending = s.scalar(select(StageExecution).where(
@@ -679,8 +709,9 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
             skip = [k for k in between if k not in follow]
             for k in follow:  # what they follow, and nothing more
                 feedback[k] = (f"{workflow.by_key[target].title} was changed at the reviewer's request: {comments}\n"
-                               "Update your work only where it follows from that change (what you copied or built "
-                               "on from it); everything else stays exactly as it is.")
+                               + (ACCEPTANCE_FOLLOW if k in ACCEPTANCE_STEPS else
+                                  "Update your work only where it follows from that change (what you copied or built "
+                                  "on from it); everything else stays exactly as it is."))
             check = [k for k in follow if not workflow.by_key[k].code]
             emit(run_id, "approval", f"{gate.title}: rejected, {workflow.by_key[target].title} makes the requested "
                                      "change only"

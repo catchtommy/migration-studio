@@ -10,7 +10,9 @@ AS-IS docs → Deep dive → 👤 → **Cross-domain dependency finder → Modul
 
 The *Lean migration* workflow does the same work with fewer agents:
 
-Analysis → Domain dependencies → 👤 → Modulith design → 👤 → Module in monolith → Orchestrator in monolith\* → Spring Boot microservice → Orchestrator microservice\* → Independent tests → 👤 → Modernisation and service tests → Monolith integration → 👤
+Analysis → Domain dependencies → 👤 → Modulith design → 👤 → Module in monolith → Orchestrator in monolith\* → Spring Boot microservice → Independent tests → 👤 Approve domain service → Orchestrator microservice\* → Orchestrator acceptance tests\* → 👤 Approve orchestrator service\* → Modernisation and service tests → Monolith integration → 👤
+
+The domain service and the orchestrator service each get a black-box acceptance suite in their own repository (`acceptance-tests/`): *Independent tests* runs the domain service's, *Orchestrator acceptance tests* runs the orchestrator service's against the real domain service, other domains stubbed. Each is approved at its own gate; *Modernisation* runs both again, unchanged, against the modernised service. For a domain-only feature the orchestrator steps are skipped and *Approve orchestrator service* passes by itself (recorded as approved by Migration Studio).
 
 ### Lean analysis: three documents, three audiences
 
@@ -31,7 +33,9 @@ steps, with one checklist item per audience (architect, test lead, business owne
 **Functional coverage (a report, never a block).** *Modulith design* assigns every FR, BR and MSG an owner in
 `domain-design.md` ("Functional allocation": domain, orchestrator, another domain, or UI unchanged). Each later step
 lists the ids it covered, with the test that proves it ("Functional coverage" in its document), and the approval panel
-merges them: an id no step of its owner covered shows as a gap at *Approve tests* and *Approve release*. A run that
+merges them by owner: a requirement (FR) counts only when its owner's acceptance suite proves it (the domain's at
+*Approve domain service*, the orchestrator's at *Approve orchestrator service*); rules and messages count when any
+step of their owner covers them. A step listing an id the other side owns is shown, not counted. A run that
 started before the specification existed has none; its agents take the rules from `as-is.md`.
 
 ### Modulith design

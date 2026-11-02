@@ -4,6 +4,7 @@ Like agents, workflows are shared by every project (project SHARED), and a proje
 workflows of its own.
 """
 
+import logging
 import re
 from urllib.parse import urlsplit
 from typing import Any
@@ -23,9 +24,16 @@ LEAN_NAME = "Lean migration"
 LEAN_DESCRIPTION = ("The standard migration with fewer agents: analysis (AS-IS, functional specification, test "
                     "scenarios) → domain dependencies → Modulith design (domain, linked-domain contracts, "
                     "orchestrator, integration) → module → orchestrator (cross-domain features) → microservice → "
-                    "orchestrator service (when there is an orchestrator) → acceptance tests → modernisation with "
-                    "service tests → integration, with four approval gates. Make it a domain's default workflow to "
-                    "use it.")
+                    "domain acceptance tests → approve the domain service → orchestrator service and its acceptance "
+                    "tests (when there is an orchestrator) → approve the orchestrator service → modernisation with "
+                    "service tests → integration. Make it a domain's or the project's default workflow to use it.")
+# The description before the orchestrator's own acceptance suite and gate.
+_LEAN_DESCRIPTION_V2 = ("The standard migration with fewer agents: analysis (AS-IS, functional specification, test "
+                        "scenarios) → domain dependencies → Modulith design (domain, linked-domain contracts, "
+                        "orchestrator, integration) → module → orchestrator (cross-domain features) → microservice → "
+                        "orchestrator service (when there is an orchestrator) → acceptance tests → modernisation with "
+                        "service tests → integration, with four approval gates. Make it a domain's default workflow to "
+                        "use it.")
 # The description before Domain dependencies: a stored lean workflow still showing it gets the new one with the step.
 _LEAN_DESCRIPTION_V1 = ("The standard migration with fewer agents: analysis → Modulith design (domain, linked-domain "
                         "contracts, orchestrator, integration) → module → orchestrator (cross-domain features) → "
@@ -44,6 +52,9 @@ DISCOVERY = {
                DOMAIN_FEATURES),
 }
 _GATE_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+log = logging.getLogger(__name__)
 
 
 class WorkflowInvalid(ValueError):
@@ -221,6 +232,45 @@ def seed() -> None:
                     if lean.description == _LEAN_DESCRIPTION_V1:
                         lean.description = LEAN_DESCRIPTION
             s.add(Setting(key="_lean_dependency_step", value=True))
+        if s.get(Setting, (GLOBAL, "_lean_orchestrator_tests")) is None:
+            # The domain service is approved with its acceptance suite before the orchestrator service is built, and
+            # the orchestrator gets an acceptance suite and a gate of its own. Stored lean workflows still in the
+            # built-in order take the new one, keeping their steps' settings; one someone reordered is left alone.
+            for lean in s.scalars(select(WorkflowDef).where(WorkflowDef.key == LEAN_KEY)):
+                keys = [st.get("key") for st in lean.steps or []]
+                if keys == _LEAN_V2_KEYS:
+                    lean.steps = _with_orchestrator_tests(lean.steps)
+                    if lean.description in (_LEAN_DESCRIPTION_V1, _LEAN_DESCRIPTION_V2):
+                        lean.description = LEAN_DESCRIPTION
+                elif "orchestrator_tests" not in keys:
+                    log.info("The %s copy of the lean workflow was reordered, so it doesn't get the Orchestrator "
+                             "acceptance tests step and gate: add them on the Workflows page if wanted",
+                             "shared" if lean.project == SHARED else f"project {lean.project}'s")
+            s.add(Setting(key="_lean_orchestrator_tests", value=True))
+
+
+# The lean workflow's steps before the orchestrator got its own acceptance suite and gate.
+_LEAN_V2_KEYS = ["analysis", "dependency_analysis", "gate_analysis", "modulith_design", "gate_design",
+                 "modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service",
+                 "independent_tests", "gate_tests", "modernise_and_test", "monolith_integration", "gate_release"]
+
+
+def _with_orchestrator_tests(steps: list[dict]) -> list[dict]:
+    """A stored lean workflow in the built-in order, in the new one: the stored steps keep their settings (code, uses,
+    a gate's checklist); the gates take the new reviews and titles; Orchestrator acceptance tests changes code where
+    Orchestrator microservice does."""
+    stored = {st["key"]: st for st in steps}
+    out = []
+    for st in steps_of(LEAN):
+        own = stored.get(st["key"])
+        if st["kind"] == "gate":
+            st = {**st, "checklist": (own or {}).get("checklist") or st["checklist"]}
+        elif own is not None:
+            st = own
+        elif st["key"] == "orchestrator_tests" and (stored.get("orchestrator_service") or {}).get("code"):
+            st = {**st, "code": stored["orchestrator_service"]["code"]}
+        out.append(st)
+    return out
 
 
 def _with_dependency_step(steps: list[dict]) -> list[dict]:

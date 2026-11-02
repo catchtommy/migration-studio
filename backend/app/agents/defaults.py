@@ -1336,7 +1336,11 @@ ids each interaction serves
 ### Rollback: delete the service repository branch; the monolith is unchanged""",
 
     "independent_tests": f"""You write the acceptance suite of the domain service: black-box tests that prove the \
-microservice behaves the same as the original code, for every scenario in `test-scenarios.md`. The suite only talks \
+microservice behaves the same as the original code, for the scenarios of `test-scenarios.md` that the domain owns. \
+Which ids are the domain's is in the "Functional allocation" of `domain-design.md` (in a run without one: every \
+scenario). The orchestrator's ids (the order of calls across domains, and what the caller gets when another domain \
+fails) are the Orchestrator acceptance tests step's, in the orchestrator service's own repository: a scenario that \
+involves both is tested here for the domain's part only, what the domain service's API returns. The suite only talks \
 to the running service (over HTTP) and to the database, never to its classes, so it runs unchanged against the \
 service as it is now and again after the modernisation step has rewritten it: it is written once. The in-monolith \
 module is the reference: the Module in monolith step's characterization tests pin its behaviour, so a scenario they \
@@ -1351,7 +1355,8 @@ Hard rules for this step. A tool (`check_test_guardrails`) checks them against g
 it fails.
 - Change code only in the domain service's repository (this step's Changes code setting), and there only in the \
 `acceptance-tests/` folder: a Maven project of its own, not a module the service's build includes. The service's \
-code, build and tests are not changed. The orchestrator service is not tested here: its own step tests it.
+code, build and tests are not changed. The orchestrator service is not tested here: the Orchestrator acceptance \
+tests step tests it, in its own repository.
 - Black-box only: the suite never depends on or imports the service's classes or packages. It reaches the service \
 through its base URL (`-Dservice.url`, default `http://localhost:8080`) and the database through JDBC \
 (`-Dtest.db.url`, `-Dtest.db.user`, `-Dtest.db.password`).
@@ -1385,7 +1390,71 @@ Write `test-report.md`: how to run the suite; every scenario id with the tests t
 the module's characterization tests); the results of the run against the service as it is now (the baseline the \
 modernisation step must keep); any behaviour difference found; and every scenario you could not cover and why.
 
-{_COVERAGE} Here: the domain's FR, BR and MSG ids, each with the acceptance tests that prove it.""",
+{_COVERAGE} Here: the ids the allocation gives the domain, each with the acceptance tests that prove it. A \
+requirement (FR) the domain owns counts as covered only when this suite proves it.""",
+
+    "orchestrator_tests": f"""You write the acceptance suite of the domain's orchestrator service: black-box tests \
+that prove the orchestrator behaves as the feature does today, for the scenarios of `test-scenarios.md` the \
+orchestrator owns (the "Functional allocation" of `domain-design.md`): the order of the calls across domains, what \
+each operation returns, and what the caller gets when another domain fails. The suite only talks to the running \
+orchestrator service (over HTTP), never to its classes, and runs it against the real domain service: so it proves \
+that the two work together, which the Orchestrator microservice step's own tests (against stubs) can't. It is \
+written once and runs unchanged later, against the modernised domain service too. A scenario that involves both \
+owners is tested here for the orchestrator's part: the domain's part is the Independent tests step's.
+
+**One suite for the domain's orchestrator.** `acceptance-tests/` in the orchestrator service's repository holds the \
+suite of every feature with an orchestrator. When it is in your checkout, add this feature's tests to it, in this \
+feature's package, and leave the other features' tests, its `pom.xml` and its shared helpers as they are (add to the \
+helpers only what this feature needs). Only when it isn't there yet, create it.
+
+Hard rules for this step. A tool (`check_test_guardrails`) checks them against git, and the step cannot finish while \
+it fails.
+- Change code only in the orchestrator service's repository (this step's Changes code setting), and there only in \
+the `acceptance-tests/` folder: a Maven project of its own, not a module the service's build includes. The \
+orchestrator service's code, build and tests are not changed, and neither is the domain service (its checkout in this \
+run is read only: build and start it, never change it).
+- Black-box only: the suite never depends on or imports the orchestrator service's classes or packages. It reaches \
+the orchestrator through its base URL (`-Dorchestrator.url`, default `http://localhost:8081`), the domain service \
+only to prepare or check data through its API (`-Dservice.url`), and the database through JDBC (`-Dtest.db.url`, \
+`-Dtest.db.user`, `-Dtest.db.password`).
+- Java 25 and the orchestrator service's test libraries (JUnit 5, REST Assured, WireMock), the compiler level set in \
+its POM.
+- Never delete, ignore or weaken a test.
+
+Read first: `orchestrator-openapi.yaml` (the operations, requests and responses), `orchestrator-design.md` (the calls \
+of each operation, their order, and the result when one fails), `orchestrator-service-extraction.yaml` (the \
+service, its operations and base package), the domain's `openapi.yaml`, `domain-design.md` (its "Errors" table and \
+"Functional allocation"), `cross-domain.yaml` with `linked-domain-contracts.yaml` and the contract specs (the other \
+domains to stub), `test-scenarios.md` and `functional-spec.md`. "Repositories" below says where the run has the domain \
+service checked out.
+
+What the suite covers:
+- Contract tests against `orchestrator-openapi.yaml`, with the REST rules: status codes, the error body and headers, \
+the request headers passed on to every call.
+- The scenarios of the orchestrator's ids, each test named or tagged with its scenario id: the response, and that the \
+calls happened in the order `orchestrator-design.md` gives (the stubbed domains' WireMock request journal; the \
+domain service's effect through its API or the database rows `as-is.md` names).
+- Each failure path of `orchestrator-design.md`: a stubbed domain failing or timing out, and what the caller gets (an \
+expected error message by the `errorCode` the "Errors" table gives its MSG id).
+- The other domains, stubbed with WireMock from their contracts on ports the suite chooses, the orchestrator \
+configured to call them there. The domain service is never stubbed: it is the real one.
+- Tests that need the database are tagged `database`; without a test database say so in the report rather than \
+skipping them silently.
+
+Procedure: write the suite. Build the domain service from its checkout and start it with the toolchain of its stack \
+(`$STUDIO_JDK_LEGACY_HOME/bin/java -jar …` for the lifted service, which keeps the monolith's stack; \
+`$STUDIO_JDK_MODERN_HOME` is this step's own). Build the orchestrator service and start it pointed at that domain \
+service and at the stubs. Run the suite (`mvn -f acceptance-tests/pom.xml verify -Dorchestrator.url=... \
+-Dservice.url=...`), then `check_test_guardrails`. A failing test that exposes a real behaviour difference is a \
+finding: report it, naming the step to send it back to (Orchestrator microservice, or Orchestrator in monolith when \
+the orchestration itself is wrong), rather than weakening the test or changing a service.
+
+Write `orchestrator-test-report.md`: how to run the suite (both services, their URLs and the stubs); every scenario id \
+with the tests that cover it; the results of the run (the baseline the modernisation step must keep); any behaviour \
+difference found; and every scenario you could not cover and why.
+
+{_COVERAGE} Here: the ids the allocation gives the orchestrator, each with the acceptance tests that prove it. A \
+requirement (FR) the orchestrator owns counts as covered only when this suite proves it.""",
 
     "modernise": """You modernise the microservice to Java 25 and Spring Boot 4, replacing iBatis with Spring Data JPA \
 mapped onto the existing tables (no schema changes).
@@ -1781,10 +1850,14 @@ without one, each business rule and error branch of `as-is.md`), named after the
 `test-scenarios.md` they cover, and each error's `errorCode` as `domain-design.md`'s "Errors" table gives it; the adapters to other \
 domains against a stub of their contract. Test libraries: JUnit 5, Mockito, AssertJ, Spring Boot's test support and \
 Testcontainers; anything else, ask. A test that exposes a bug is a finding: report it.
-3. Run the whole test build, then the acceptance suite against the running service, then the checks.
+3. Run the whole test build, then the acceptance suite against the running service, then the checks. When the \
+feature has an orchestrator suite (`orchestrator-test-report.md`), also run it, unchanged, from the run's checkout of \
+the orchestrator service's repository (read only: never change it): the orchestrator service started pointed at the \
+modernised service, every test that passed in its baseline must still pass.
 
 Write `modernisation.md`: the changes; every query whose SQL differs from the iBatis statement it replaces, and why the \
-result is the same; the acceptance suite's results next to its baseline in `test-report.md`; the tests added (by \
+result is the same; the acceptance suite's results next to its baseline in `test-report.md` (and the orchestrator suite's next to its \
+baseline in `orchestrator-test-report.md`, when there is one); the tests added (by \
 layer), the scenario ids each covers, the coverage of the code the feature moved; and any finding.
 
 {_COVERAGE} Here: the domain's FR, BR and MSG ids, each with the unit or integration test that proves it.""",
@@ -1805,6 +1878,7 @@ _GUARDRAIL_SPANS: dict[str, list[tuple[str, str]]] = {
     "microservice_scaffold": [("Modulith guardrails. The target", "\n\nThe REST layer implements")],
     "orchestrator_service": [("Hard rules for this step.", "\n\nREST API design rules.")],
     "independent_tests": [("Hard rules for this step.", "\n\nWhat the suite covers:")],
+    "orchestrator_tests": [("Hard rules for this step.", "\n\nRead first:")],
     "service_tests": [("Hard rules for this step.", "\n\nWhat to test")],
     "analysis": [("Fixed rules of this migration.", "\n\nStart from the feature's entry points")],
     "dependency_analysis": [("Fixed rules of this migration.", "\n\nBuild on the Analysis step's documents"),
@@ -1849,6 +1923,7 @@ OUTPUTS = {
     "microservice_scaffold": ["microservice.md", "microservice-extraction.yaml"],
     "orchestrator_service": ["orchestrator-service.md", "orchestrator-service-extraction.yaml"],
     "independent_tests": ["test-report.md"],
+    "orchestrator_tests": ["orchestrator-test-report.md"],
     "service_tests": ["service-tests.md"],
     "modernise": ["modernisation.md"],
     "monolith_integration": ["integration.md", "integration-routing.yaml"],
@@ -1863,7 +1938,8 @@ OUTPUTS = {
 
 _FORMAT_NOTE = ("A machine-readable format the studio validates the step's output against. Change it "
                 "only together with the code that reads it.")
-_MODERN_JDK = {"modernise", "monolith_integration", "orchestrator_service", "service_tests", "modernise_and_test"}
+_MODERN_JDK = {"modernise", "monolith_integration", "orchestrator_service", "orchestrator_tests", "service_tests",
+               "modernise_and_test"}
 _ANALYSIS = {"as_is_doc", "deep_dive", "domain_dependencies", "linked_domain_contracts", "domain_design",
              "wrapper_design", "orchestrator_design", "boundary_design", "integration_design", "bounded_contexts",
              "domain_features", "analysis", "dependency_analysis", "modulith_design"}
@@ -1874,7 +1950,9 @@ MERGED_FROM = {"analysis": ("as_is_doc", "deep_dive"),
                "dependency_analysis": ("analysis", "domain_dependencies"),
                "modulith_design": ("linked_domain_contracts", "domain_design", "orchestrator_design",
                                    "integration_design"),
-               "modernise_and_test": ("modernise", "service_tests")}
+               "modernise_and_test": ("modernise", "service_tests"),
+               # The orchestrator's acceptance suite: what a domain says about acceptance tests reaches it too.
+               "orchestrator_tests": ("independent_tests",)}
 # Documents-only agents that do the work of several (the lean workflow's): more turns than one of those.
 _MORE_TURNS = {"analysis": 150, "dependency_analysis": 120, "modulith_design": 150}
 _GUARDRAIL_TOOLS = {"modular_monolith": ["check_module_guardrails"],
@@ -1882,6 +1960,7 @@ _GUARDRAIL_TOOLS = {"modular_monolith": ["check_module_guardrails"],
                     "microservice_scaffold": ["check_service_guardrails"],
                     "orchestrator_service": ["check_orchestrator_service_guardrails"],
                     "independent_tests": ["check_test_guardrails"],
+                    "orchestrator_tests": ["check_test_guardrails"],
                     "modernise": ["check_test_guardrails", "check_release_guardrails"],
                     "service_tests": ["check_test_guardrails"],
                     "monolith_integration": ["check_release_guardrails"],
@@ -1890,6 +1969,7 @@ _CHECKS = {"modular_monolith": ["module_guardrails"], "monolith_orchestrator": [
            "microservice_scaffold": ["boundary", "service_guardrails"],
            "orchestrator_service": ["boundary", "orchestrator_service_guardrails"],
            "independent_tests": ["acceptance_test_guardrails"],
+           "orchestrator_tests": ["acceptance_test_guardrails"],
            "modernise": ["boundary", "acceptance_suite_unchanged", "modernise_guardrails"],
            "service_tests": ["service_test_guardrails"],
            "monolith_integration": ["integration_guardrails"],

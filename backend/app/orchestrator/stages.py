@@ -183,7 +183,20 @@ LEAN = Workflow((
              "Review the domain design, the linked-domain contracts, the orchestrator design and the cross-domain "
              "integration decisions.", ("modulith_design",)),
     *(STANDARD.by_key[k] for k in ("modular_monolith", "monolith_orchestrator", "microservice_scaffold",
-                                   "orchestrator_service", "independent_tests", "gate_tests")),
+                                   "independent_tests")),
+    # The domain service is approved with its acceptance suite before the orchestrator service is built on it.
+    StageDef("gate_tests", "Approve domain service", "gate",
+             "Review the domain module (and the orchestrator module, for a cross-domain feature), the lifted domain "
+             "service and its acceptance suite, with the domain's functional coverage.",
+             ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "independent_tests")),
+    STANDARD.by_key["orchestrator_service"],
+    StageDef("orchestrator_tests", "Orchestrator acceptance tests", "agent",
+             "Cross-domain features with an orchestrator only: a black-box acceptance suite in the orchestrator "
+             "service's repository, run against the orchestrator service and the real domain service, other domains "
+             "stubbed."),
+    StageDef("gate_orchestrator", "Approve orchestrator service", "gate",
+             "Review the orchestrator service and its acceptance suite, with the orchestrator's functional coverage. "
+             "Passes by itself when the feature has no orchestrator.", ("orchestrator_service", "orchestrator_tests")),
     StageDef("modernise_and_test", "Modernisation and service tests", "agent",
              "Java 25, Spring Boot 4, iBatis → Spring Data JPA on the existing tables, with the unit and integration "
              "tests of the modernised service. The acceptance suite stays unchanged."),

@@ -386,6 +386,11 @@ class Toolbox:
         env = toolchain_env(command_env(), self.toolchain_home, self.ctx.settings.get("language") or "java")
         if self.legacy is not None:
             env["STUDIO_LEGACY_DIR"] = str(self.legacy)  # the read-only monolith, for commands that read it
+        # Both toolchains, for a step that starts services of both stacks (the orchestrator's acceptance tests start
+        # the lifted domain service on the monolith's JDK and the orchestrator service on the target's).
+        for var, key in (("STUDIO_JDK_LEGACY_HOME", "jdk_legacy_home"), ("STUDIO_JDK_MODERN_HOME", "jdk_modern_home")):
+            if self.ctx.settings.get(key):
+                env[var] = self.ctx.settings[key]
         self.ctx.log(f"$ {command}")
         try:
             proc = subprocess.run(command, shell=True, cwd=self._resolve(self.ctx.code_dir), env=env,
