@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, getCurrentProject, type AgentInputs, type Domain, type Feature } from "../lib/api";
-import { useWorkflows } from "../lib/hooks";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, type AgentInputs, type Domain, type Feature } from "../lib/api";
+import { defaultLabel, useProjectDefaultWorkflow, useWorkflows } from "../lib/hooks";
 import { InputsEditor } from "./InputsEditor";
 import { Guarded } from "./Guarded";
 
@@ -13,9 +13,8 @@ export function StartMigration({ domain, feature, onCancel }: { domain: Domain; 
   const queryClient = useQueryClient();
   const { data: allWorkflows = [] } = useWorkflows();
   const workflows = allWorkflows.filter((w) => w.scope === "operation");
-  const { data: project } = useQuery({ queryKey: ["project", getCurrentProject()], queryFn: () => api.project(getCurrentProject()!) });
-  const projectDefault = project?.settings.default_workflow as string | undefined;
-  const preferred = [domain.default_workflow, projectDefault, "standard"].find((k) => k && workflows.some((w) => w.key === k));
+  const projectDefault = useProjectDefaultWorkflow();
+  const preferred = [domain.default_workflow, projectDefault].find((k) => k && workflows.some((w) => w.key === k));
   const [chosen, setChosen] = useState<string | null>(null);
   const workflow = chosen ?? preferred ?? workflows[0]?.key ?? "";
 
@@ -55,7 +54,7 @@ export function StartMigration({ domain, feature, onCancel }: { domain: Domain; 
               {workflows.map((w) => (
                 <option key={w.key} value={w.key}>
                   {w.name}
-                  {w.key === domain.default_workflow ? " (domain default)" : ""}
+                  {defaultLabel(w.key, domain.default_workflow, projectDefault)}
                 </option>
               ))}
             </select>

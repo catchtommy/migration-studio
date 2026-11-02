@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, getCurrentProject, runSubject, type AgentInputs, type Run } from "../lib/api";
-import { useDomains, useWorkflows } from "../lib/hooks";
+import { api, runSubject, type AgentInputs, type Run } from "../lib/api";
+import { defaultLabel, useDomains, useProjectDefaultWorkflow, useWorkflows } from "../lib/hooks";
 import { InputsEditor } from "../components/InputsEditor";
 import { ProgressStrip } from "../components/ProgressStrip";
 import { StatusBadge } from "../components/StatusBadge";
@@ -36,10 +36,9 @@ function NewRunForm() {
   // The workflow follows the domain's default until the user picks one.
   const [chosenWorkflow, setChosenWorkflow] = useState<string | null>(null);
   // The domain's default, else the project's (Project settings), else the Standard migration: as the server picks.
-  const { data: project } = useQuery({ queryKey: ["project", getCurrentProject()], queryFn: () => api.project(getCurrentProject()!) });
   const domainDefault = domains.find((d) => d.key === domain)?.default_workflow;
-  const projectDefault = project?.settings.default_workflow as string | undefined;
-  const preferred = [domainDefault, projectDefault, "standard"].find((k) => k && workflows.some((w) => w.key === k));
+  const projectDefault = useProjectDefaultWorkflow();
+  const preferred = [domainDefault, projectDefault].find((k) => k && workflows.some((w) => w.key === k));
   const workflow = chosenWorkflow ?? preferred ?? workflows[0]?.key ?? "";
   const { data: features } = useQuery({ queryKey: ["features", domain], queryFn: () => api.features(domain), enabled: !!domain });
   const [chosenFeature, setChosenFeature] = useState<string | null>(params.get("feature"));
@@ -131,7 +130,7 @@ function NewRunForm() {
             {workflows.map((w) => (
               <option key={w.key} value={w.key}>
                 {w.name}
-                {w.key === domainDefault ? " (domain default)" : ""}
+                {defaultLabel(w.key, domainDefault, projectDefault)}
               </option>
             ))}
           </select>

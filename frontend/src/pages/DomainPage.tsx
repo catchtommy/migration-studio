@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, FEATURES_OP, getCurrentProject, type Agent, type AgentInputs, type Dependency, type Domain } from "../lib/api";
 import { PatternChip } from "../components/Chips";
-import { useAgents, useCan, useDomains, useWorkflows } from "../lib/hooks";
+import { useAgents, useCan, useDomains, useProjectDefaultWorkflow, useWorkflows } from "../lib/hooks";
 import { ArtifactViewer } from "../components/ArtifactViewer";
 import { DownloadButton } from "../components/DownloadButton";
 import { chosen, DocumentPicker, type DocumentChoice } from "../components/DocumentPicker";
@@ -439,6 +439,8 @@ function Details({ domain }: { domain: Domain }) {
   const { data: domains } = useDomains();
   const runs = domains?.find((d) => d.key === domain.key)?.runs ?? 0;
   const { data: workflows = [] } = useWorkflows();
+  const projectDefault = useProjectDefaultWorkflow();
+  const projectDefaultName = workflows.find((w) => w.key === projectDefault)?.name ?? "Standard migration";
   const [name, setName] = useState(domain.name);
   const [description, setDescription] = useState(domain.description);
   const [defaultWorkflow, setDefaultWorkflow] = useState(domain.default_workflow ?? "");
@@ -475,9 +477,12 @@ function Details({ domain }: { domain: Domain }) {
           <Field label="Description" hint="Also given to the agents.">
             <textarea rows={3} className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} />
           </Field>
-          <Field label="Default workflow" hint="Preselected when starting a run in this domain.">
+          <Field
+            label="Default workflow"
+            hint="Preselected when starting a migration in this domain. Leave it on the project's default (Project settings) unless this domain needs another one: a domain default comes first."
+          >
             <select className={inputClass} value={defaultWorkflow} onChange={(e) => setDefaultWorkflow(e.target.value)}>
-              <option value="">Standard (no domain default)</option>
+              <option value="">Project default ({projectDefaultName})</option>
               {workflows
                 .filter((w) => w.scope === "operation")
                 .map((w) => (

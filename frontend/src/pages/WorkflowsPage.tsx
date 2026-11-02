@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, getCurrentProject, SCOPE_LABELS, type Agent, type Scope, type Workflow, type WorkflowGit, type WorkflowStep } from "../lib/api";
-import { useAgents, useDomains, useIsAdmin, useProjects, useWorkflows } from "../lib/hooks";
+import { useAgents, useDomains, useIsAdmin, useProjectDefaultWorkflow, useProjects, useWorkflows } from "../lib/hooks";
 import { useSwitchProject } from "../lib/projectContext";
 import { DangerDialog } from "../components/DangerDialog";
 import { LibraryBadge } from "../components/LibraryBadge";
@@ -481,7 +481,7 @@ function DeleteWorkflowDialog({ workflow, remove, onClose }: {
                     {shared ? ", from every project" : ""}
                   </>,
                   ...(usage.copies.length ? [`Projects' own copies of it: ${usage.copies.join(", ")}`] : []),
-                  ...(usage.defaults.length ? [`The default workflow of ${usage.defaults.join(", ")} (they fall back to the standard one)`] : []),
+                  ...(usage.defaults.length ? [`The default workflow of ${usage.defaults.join(", ")} (they fall back to the project's default)`] : []),
                 ],
               },
               {
@@ -513,6 +513,7 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
   const navigate = useNavigate();
   const { data: domains = [] } = useDomains();
   const defaultFor = domains.filter((d) => d.default_workflow === workflow.key);
+  const projectDefault = useProjectDefaultWorkflow() === workflow.key && workflow.scope === "operation";
   const [name, setName] = useState(workflow.name);
   const [description, setDescription] = useState(workflow.description);
   const [steps, setSteps] = useState(() => editable(workflow.steps));
@@ -603,6 +604,7 @@ function WorkflowEditor({ workflow, agents }: { workflow: Workflow; agents: Agen
       </div>
       <p className="text-sm text-subtle">
         <code className="text-xs">{workflow.key}</code> · {SCOPE_LABELS[workflow.scope]} · {workflow.runs} run{workflow.runs === 1 ? "" : "s"}
+        {projectDefault && <> · the project's default migration workflow</>}
         {defaultFor.length > 0 && <> · default for {defaultFor.map((d) => d.name).join(", ")}</>}. Changes apply to runs started afterwards; runs in progress keep the
         workflow they started with.
       </p>
@@ -788,7 +790,7 @@ export function WorkflowsPage() {
 
   return (
     <div className="space-y-6">
-      <PageTitle icon={<FlowIcon />} title="Workflows" subtitle="Agent steps and human approval gates, in order. Pick a workflow when starting a run, or set a default per domain." tone="from-amber-500 to-rose-500">
+      <PageTitle icon={<FlowIcon />} title="Workflows" subtitle="Agent steps and human approval gates, in order. Pick a workflow when starting a run; the project's default (Project settings) is preselected, unless a domain sets its own." tone="from-amber-500 to-rose-500">
         {!adding && !browsing && (
           <button onClick={() => setAdding(true)} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white">
             New workflow

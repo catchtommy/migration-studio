@@ -89,3 +89,20 @@ export function useRefreshRun(runId: string) {
   return (...also: string[]) =>
     Promise.all([["run", runId], ...also.map((k) => [k, runId])].map((queryKey) => queryClient.invalidateQueries({ queryKey })));
 }
+
+/** The project's default migration workflow (Project settings), as the server falls back to it: its key when it is a
+ * migration workflow of this project, else the Standard migration. A domain's own default comes before it. */
+export function useProjectDefaultWorkflow(): string | undefined {
+  const project = getCurrentProject();
+  const { data } = useQuery({ queryKey: ["project", project], queryFn: () => api.project(project!), enabled: !!project });
+  const { data: workflows = [] } = useWorkflows();
+  const migration = workflows.filter((w) => w.scope === "operation");
+  const chosen = data?.settings.default_workflow as string | undefined;
+  return [chosen, "standard"].find((k) => k && migration.some((w) => w.key === k)) ?? migration[0]?.key;
+}
+
+/** The workflow a new migration of a domain preselects: the domain's default, else the project's. */
+export function defaultLabel(key: string, domainDefault: string | null | undefined, projectDefault: string | undefined): string {
+  if (key === domainDefault) return " (domain default)";
+  return key === projectDefault ? " (project default)" : "";
+}

@@ -5,7 +5,9 @@ import { vi } from "vitest";
 import { api, type Domain } from "../lib/api";
 import { DomainFeatures } from "./DomainFeatures";
 
-vi.mock("../lib/hooks", () => ({
+vi.mock("../lib/hooks", async (actual) => ({
+  defaultLabel: ((await actual()) as typeof import("../lib/hooks")).defaultLabel,
+  useProjectDefaultWorkflow: () => "standard",
   useCan: () => true,
   useDomains: () => ({ data: [] }),
   useWorkflows: () => ({

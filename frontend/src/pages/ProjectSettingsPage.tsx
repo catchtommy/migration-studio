@@ -308,7 +308,7 @@ function General({ project }: { project: string }) {
           <h2 className="font-semibold">Migrations</h2>
           <Field
             label="Default migration workflow"
-            hint="Selected when starting a migration in this project. A domain can have a default of its own (its Features tab), which comes first."
+            hint="Selected when starting a migration in this project, in every domain without a default of its own (a domain's Details tab), which would come first."
           >
             <select className={`${input} max-w-md`} value={(form.default_workflow as string) ?? ""} onChange={(e) => set("default_workflow", e.target.value)}>
               <option value="">Standard migration (built-in default)</option>
@@ -321,6 +321,7 @@ function General({ project }: { project: string }) {
                 ))}
             </select>
           </Field>
+          <DomainOverrides />
         </section>
 
         <section className="space-y-4">
@@ -384,6 +385,43 @@ function General({ project }: { project: string }) {
       </form>
       {canDelete && <DeleteProject name={data.name} projectKey={project} remove={remove} />}
     </Guarded>
+  );
+}
+
+/** The domains whose own default workflow comes before the project's, and a way to make them all follow it. */
+function DomainOverrides() {
+  const queryClient = useQueryClient();
+  const canManage = useCan("domains.manage");
+  const { data: domains = [] } = useDomains();
+  const { data: workflows = [] } = useWorkflows();
+  const own = domains.filter((d) => d.default_workflow);
+  const clear = useMutation({
+    mutationFn: () => Promise.all(own.map((d) => api.updateDomain(d.key, { default_workflow: "" }))),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["domains"] });
+      queryClient.invalidateQueries({ queryKey: ["domain"] });
+    },
+  });
+  if (own.length === 0) return <p className="text-sm text-subtle">Every domain uses the project's default.</p>;
+  const name = (key: string | null) => workflows.find((w) => w.key === key)?.name ?? key;
+  return (
+    <div className="rounded-md border border-warn/40 bg-warn/5 p-3 text-sm">
+      <p>
+        {own.length === 1 ? "This domain uses" : "These domains use"} a default of {own.length === 1 ? "its" : "their"} own instead of the project's:{" "}
+        {own.map((d) => `${d.name} (${name(d.default_workflow)})`).join(", ")}.
+      </p>
+      {canManage && (
+        <button
+          type="button"
+          className="mt-2 rounded-md border border-border px-3 py-1.5 font-medium hover:bg-muted disabled:opacity-50"
+          disabled={clear.isPending}
+          onClick={() => clear.mutate()}
+        >
+          {clear.isPending ? "Updating…" : `Use the project's default in ${own.length === 1 ? "it" : `all ${own.length}`}`}
+        </button>
+      )}
+      {clear.error && <p className="mt-1 text-bad">{String(clear.error)}</p>}
+    </div>
   );
 }
 
