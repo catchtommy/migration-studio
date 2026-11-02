@@ -98,7 +98,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                           "4b1b34967d2944c200b2b4bd8c0a81768cd6292da94cac47c000f9ba30d0de8e",
                           "d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47",
                           "12aea52ce65e461164115980768436ac4e4a069abee71e9ff4a2f2bde6cfc548"},
-    "microservice_scaffold": {"d10bb3879c92380cc05bd23f1c91a377749a367067c79bb40d4ad7c4733530e9",
+    "microservice_scaffold": {"184ef7ecf2a671727e17c0d65b19b82993b3d61026433fdea9360a5126291614",
+        "d10bb3879c92380cc05bd23f1c91a377749a367067c79bb40d4ad7c4733530e9",
                               "433fa24641180e7ee1a61b9c122707e5088afd85fcfff8238ad9953a37aafe56",
                               "181fe29546e7075f3e007a79554c5c168620b9e23364fea592f1aea97673972c",
                               "775065ebf6599df3036965a91a20399a3bc78702ef5ac7ae7f8b1a107ed59c21",
@@ -229,6 +230,7 @@ def seed() -> None:
             _add_later_builtins(s)
             _upgrade_untouched_builtins(s)
             _give_documents_agents_edit_file(s)
+            _update_untouched_descriptions(s)
             _warn_outdated_analysis(s)
             _add_guardrails(s)
             _move_guardrails_to_agents(s)
@@ -378,6 +380,24 @@ def _warn_outdated_analysis(s) -> None:
                     "wasn't upgraded. Lean runs then have no functional specification, and its dependency work is "
                     "done twice (the Domain dependencies step does it too). Reset it on the Agents page, or add the "
                     "functional specification to its instructions and required documents.", where)
+
+
+# Descriptions of built-ins as earlier releases gave them: one still word for word (shared or a project's copy) gets
+# the current description; an edited one is kept. Releases don't otherwise change a stored description.
+PREVIOUS_DESCRIPTIONS = {
+    "independent_tests": ("A black-box acceptance suite for every scenario, in its own module of the domain service's "
+                          "repository: it calls the running service over HTTP, so it runs unchanged before and after "
+                          "modernisation."),
+}
+
+
+def _update_untouched_descriptions(s) -> None:
+    for key, old in PREVIOUS_DESCRIPTIONS.items():
+        current = BUILTIN_STAGES[key].description
+        for row in s.scalars(select(Agent).where(Agent.key == key)):  # compared here: a text column (Oracle CLOB)
+            if row.description == old:
+                _keep_updated_at(row)  # a release's wording, not a person's edit
+                row.description = current
 
 
 EDIT_FILE_MARKER = "_documents_agents_edit_file"
@@ -647,9 +667,15 @@ def revert(key: str) -> dict[str, Any]:
 
 
 def reset(key: str) -> dict[str, Any]:
+    """The shared agent back to its built-in default, keeping its mode: a reset never switches an agent that runs the
+    AI back to the stub (or the other way round)."""
     if key not in BUILTIN:
         raise ValueError("Only built-in agents have a default to reset to")
-    return update(key, builtin_default(key), scope="shared")
+    with session_scope() as s:
+        row = s.get(Agent, (SHARED, key))
+        mode = row.mode if row is not None else None
+    default = builtin_default(key)
+    return update(key, {**default, "mode": mode or default["mode"]}, scope="shared")
 
 
 def delete(key: str, scope: str = "shared") -> None:

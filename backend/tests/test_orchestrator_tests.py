@@ -126,7 +126,7 @@ def _v2_steps():
     return steps
 
 
-def test_stored_lean_workflows_take_the_new_order_once_and_a_reordered_one_is_kept(client):
+def test_stored_lean_workflows_take_the_new_order_once_and_a_changed_one_gets_the_step_in_place(client):
     from tests.test_projects import new_project
 
     project = new_project(client)
@@ -137,7 +137,8 @@ def test_stored_lean_workflows_take_the_new_order_once_and_a_reordered_one_is_ke
         before = shared.steps
         shared.steps = _v2_steps()
         s.add(WorkflowDef(project=project, key=workflow_store.LEAN_KEY, name="Lean migration", steps=reordered))
-        s.query(Setting).filter(Setting.project == GLOBAL, Setting.key == "_lean_orchestrator_tests").delete()
+        s.query(Setting).filter(Setting.project == GLOBAL, Setting.key.in_(
+            ("_lean_orchestrator_tests", "_lean_orchestrator_tests_custom"))).delete()
     try:
         workflow_store.seed()
         workflow_store.seed()  # once only
@@ -151,7 +152,12 @@ def test_stored_lean_workflows_take_the_new_order_once_and_a_reordered_one_is_ke
             assert by["orchestrator_tests"]["code"] == {"changes_code": True}  # where the orchestrator service is
             assert by["orchestrator_service"]["code"] == {"changes_code": True}
             copy = s.get(WorkflowDef, (project, workflow_store.LEAN_KEY)).steps
-            assert "orchestrator_tests" not in [st["key"] for st in copy]  # reordered by someone: left alone
+            keys = [st["key"] for st in copy]  # reordered by someone: the step is added, nothing moves
+            assert keys == [k for k in [st["key"] for st in reordered] for k in
+                            ((k, "orchestrator_tests") if k == "orchestrator_service" else (k,))]
+            gate = next(st for st in copy if st["key"] == "gate_tests")
+            assert gate["reviews"][gate["reviews"].index("orchestrator_service") + 1] == "orchestrator_tests"
+            assert next(st for st in copy if st["key"] == "orchestrator_tests")["code"] == {"changes_code": True}
     finally:
         with session_scope() as s:
             s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)).steps = before
@@ -182,3 +188,53 @@ def test_the_new_agent_reaches_an_existing_database_with_independent_tests_choic
             new = s.get(Agent, (SHARED, "orchestrator_tests"))
             for f, v in kept.items():
                 setattr(new, f, v)
+
+
+def test_a_run_whose_steps_moved_around_it_cant_take_the_upcoming_steps():
+    from app import run_workflow
+
+    old = [dict(st, title=st.get("title") or st["key"]) for st in _v2_steps()]
+    new = [dict(st, title=st.get("title") or st["key"]) for st in workflow_store.steps_of(LEAN)]
+    keys = [d["key"] for d in old]
+    for at in ("gate_tests", "orchestrator_service"):  # ran Orchestrator microservice / hasn't run Independent tests
+        update = run_workflow._upcoming(old, keys, keys.index(at), new)
+        assert "moved" in update["blocked"], at
+    early = run_workflow._upcoming(old, keys, keys.index("modular_monolith"), new)  # before the moved steps: fine
+    assert "blocked" not in early and [d["key"] for d in early["stages"]] == LEAN.keys
+
+
+def test_a_fresh_lean_workflow_takes_the_orchestrators_code_flag():
+    standard = [dict(st, code={"changes_code": True}) if st["key"] == "orchestrator_service" else st
+                for st in workflow_store.steps_of(STANDARD)]
+    steps = {st["key"]: st for st in workflow_store._lean_steps(standard)}
+    assert steps["orchestrator_tests"]["code"] == {"changes_code": True}
+
+
+def test_an_untouched_description_follows_the_release_and_an_edited_one_is_kept(client):
+    from app import agent_store
+
+    old = agent_store.PREVIOUS_DESCRIPTIONS["independent_tests"]
+    with session_scope() as s:
+        row = s.get(Agent, (SHARED, "independent_tests"))
+        before = row.description
+        row.description = old
+    try:
+        with session_scope() as s:
+            agent_store._update_untouched_descriptions(s)
+        with session_scope() as s:
+            assert "for the scenarios the domain owns" in s.get(Agent, (SHARED, "independent_tests")).description
+            s.get(Agent, (SHARED, "independent_tests")).description = "Our own words."
+        with session_scope() as s:
+            agent_store._update_untouched_descriptions(s)
+        with session_scope() as s:
+            assert s.get(Agent, (SHARED, "independent_tests")).description == "Our own words."
+    finally:
+        with session_scope() as s:
+            s.get(Agent, (SHARED, "independent_tests")).description = before
+
+
+def test_the_orchestrator_suite_routes_its_findings_to_a_step_that_can_take_them():
+    text = defaults.INSTRUCTIONS["orchestrator_tests"]
+    assert "goes back to Orchestrator microservice from this step's gate" in text
+    assert "needs a re-run from that step (Restart)" in text
+    assert "in a run without one, the scenarios that go" in text

@@ -1229,7 +1229,11 @@ Stop and ask with ask_user when: the module's build or tests are not green; a co
 ### How to run it, the configuration it needs, and any deviation from the OpenAPI contract
 ### Known limitations: no authentication, at-most-once events, internal network only
 ### Open decisions: the transactional callers and the loops found in step 7
-### Rollback: delete the service repository branch; the monolith is unchanged""",
+### Rollback: delete the service repository branch; the monolith is unchanged
+### Functional coverage: the domain's BR and MSG ids, each with its test as copied into the service (the module's \
+characterization test, now run in the service)
+
+{_COVERAGE}""",
 
     "orchestrator_service": f"""You are a careful engineer. You lift ONE feature's orchestrator, from the domain's \
 orchestrator module the Orchestrator in monolith step built, into the domain's orchestrator service (one Spring Boot \
@@ -1377,7 +1381,9 @@ checked by the `errorCode` that `domain-design.md`'s "Errors" table gives that M
 UI's, unchanged); a confirmation or warning, which is not an error, by the successful response it follows from. `cross-domain.yaml` lists, per interaction, the scenarios that need the other domain stubbed.
 - The other domains the service calls, stubbed with WireMock from their OpenAPI contracts on ports the suite \
 chooses, the service configured to call them there; and checks that the events the service publishes match their \
-AsyncAPI contracts.
+AsyncAPI contracts. For a requirement whose effect is a notification, letter or record another domain produces from \
+an event or command, the scenario also checks the content that decides it: that it is sent in that case and not in \
+the others, to whom, of which kind, with the key fields `as-is.md` shows today.
 - Tests that need the database are tagged `database`. When no test database is configured they cannot run: say so \
 in the report rather than skipping them silently.
 
@@ -1395,7 +1401,8 @@ requirement (FR) the domain owns counts as covered only when this suite proves i
 
     "orchestrator_tests": f"""You write the acceptance suite of the domain's orchestrator service: black-box tests \
 that prove the orchestrator behaves as the feature does today, for the scenarios of `test-scenarios.md` the \
-orchestrator owns (the "Functional allocation" of `domain-design.md`): the order of the calls across domains, what \
+orchestrator owns (the "Functional allocation" of `domain-design.md`; in a run without one, the scenarios that go \
+through the operations of `orchestrator-design.md`): the order of the calls across domains, what \
 each operation returns, and what the caller gets when another domain fails. The suite only talks to the running \
 orchestrator service (over HTTP), never to its classes, and runs it against the real domain service: so it proves \
 that the two work together, which the Orchestrator microservice step's own tests (against stubs) can't. It is \
@@ -1437,7 +1444,9 @@ domain service's effect through its API or the database rows `as-is.md` names).
 - Each failure path of `orchestrator-design.md`: a stubbed domain failing or timing out, and what the caller gets (an \
 expected error message by the `errorCode` the "Errors" table gives its MSG id).
 - The other domains, stubbed with WireMock from their contracts on ports the suite chooses, the orchestrator \
-configured to call them there. The domain service is never stubbed: it is the real one.
+configured to call them there. The domain service is never stubbed: it is the real one. A notification, letter or \
+record the orchestrator triggers through a contract (a call or a message): the scenario checks that it is made in \
+that case and not in the others, with the content that decides it (to whom, which kind, the key fields).
 - Tests that need the database are tagged `database`; without a test database say so in the report rather than \
 skipping them silently.
 
@@ -1446,8 +1455,10 @@ Procedure: write the suite. Build the domain service from its checkout and start
 `$STUDIO_JDK_MODERN_HOME` is this step's own). Build the orchestrator service and start it pointed at that domain \
 service and at the stubs. Run the suite (`mvn -f acceptance-tests/pom.xml verify -Dorchestrator.url=... \
 -Dservice.url=...`), then `check_test_guardrails`. A failing test that exposes a real behaviour difference is a \
-finding: report it, naming the step to send it back to (Orchestrator microservice, or Orchestrator in monolith when \
-the orchestration itself is wrong), rather than weakening the test or changing a service.
+finding: report it rather than weakening the test or changing a service, and say where it belongs. A fault of the \
+orchestrator service goes back to Orchestrator microservice from this step's gate. A fault of the orchestrator module \
+or of the domain service was approved at the domain service's gate, so it needs a re-run from that step (Restart), \
+which runs every later step again.
 
 Write `orchestrator-test-report.md`: how to run the suite (both services, their URLs and the stubs); every scenario id \
 with the tests that cover it; the results of the run (the baseline the modernisation step must keep); any behaviour \
@@ -1647,7 +1658,10 @@ from this list.
 {FUNCTIONAL_SPEC_FORMAT}
    Its business rules (section 6) and messages (section 9) have exactly the BR and MSG ids of `as-is.md`. Mark in \
 section 5's "Other party" each requirement that involves another business area or system (for example "the customer \
-record", "a letter to the customer").
+record", "a letter to the customer"). For each notification, letter or record another business area produces (section \
+10), add an open question for the business owner to section 12, in business words: "Once migrated, this may be \
+passed on as a message between systems; if such a message is lost, it is not sent. Is that acceptable, or must it be \
+guaranteed?" Today it is part of the same operation; the answer decides how the design carries it.
 3. `test-scenarios.md`, the test scenario catalogue, for the test team, in this format:
 
 {TEST_SCENARIOS_FORMAT}
@@ -1744,7 +1758,12 @@ text is designed.
 (sequencing across domains, and what the caller gets when another domain fails), `other domain` (done by another \
 domain through a contract: name it) or `UI unchanged` (enforced only in the JSP or JavaScript, per `as-is.md`'s \
 "Rule enforcement"). Where: the API method, orchestrator operation or contract. The later steps report their \
-coverage against it; the studio checks it lists every id.
+coverage against it; the studio checks it lists every id. A side effect this feature triggers (an email, letter, \
+notification or audit record that another domain produces through an event or command) is owned by the side that \
+triggers it, `domain` or `orchestrator`, with Where naming the event or contract: what this feature must keep is \
+that it triggers it, when and with what. It is `other domain` only when this feature triggers nothing. Where \
+`functional-spec.md`'s open questions (section 12) say the business needs a notification guaranteed, don't carry it \
+on an event (delivered at most once: the schema is frozen, so there is no outbox): ask the user.
    - Data: the tables the domain owns (its code writes them), each with the iBatis statements that write it, and the \
 tables it only reads. A table another domain owns is reached only through a port.
    - Ports: one interface per outbound dependency, named for what it does (for example CustomerDirectory), with the \
@@ -1860,7 +1879,9 @@ result is the same; the acceptance suite's results next to its baseline in `test
 baseline in `orchestrator-test-report.md`, when there is one); the tests added (by \
 layer), the scenario ids each covers, the coverage of the code the feature moved; and any finding.
 
-{_COVERAGE} Here: the domain's FR, BR and MSG ids, each with the unit or integration test that proves it.""",
+{_COVERAGE} Here: the domain's BR and MSG ids, each with the unit or integration test that proves it. List the \
+domain's requirements (FR) too where a test of yours exercises one: that is supporting evidence, as a requirement \
+counts once the domain's acceptance suite proves it.""",
 }
 
 # Each agent's guardrails: the sections of its instructions that say what it must not do (the fixed rules, the Modulith

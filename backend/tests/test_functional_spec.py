@@ -530,6 +530,9 @@ def test_each_step_is_judged_only_on_the_kinds_of_id_it_covers():
     docs[f"{folder}/test-report.md"] = _coverage("FR-002")  # the domain's acceptance suite proves FR-002 only
     report = fs.report(docs, folder, steps)
     assert report["gaps"] == ["FR-001"]  # a requirement counts only when its owner's acceptance suite proves it
+    fr = next(i for i in report["ids"] if i["id"] == "FR-001")
+    assert {c["step"]: c["counts"] for c in fr["covered_by"]} == {"modernise_and_test": False,
+                                                                 "monolith_integration": False}  # supporting only
 
 
 def test_a_domain_only_feature_allocates_nothing_to_the_orchestrator():
@@ -586,3 +589,35 @@ def test_the_domain_download_has_each_features_approvals(client):
     operation = client.get(f"/api/runs/{run_id}").json()["operation"]
     z = zipfile.ZipFile(io.BytesIO(client.get("/api/domains/loan/documents.zip").content))
     assert f"{operation}/approvals.md" in z.namelist()
+
+
+def test_once_the_module_is_lifted_its_evidence_is_shown_in_the_service():
+    folder = ".migration/loan/approve"
+    steps = [s.to_dict() for s in LEAN.stages]
+    design = ("## Functional allocation\n| Id | Owner | Where |\n|---|---|---|\n| FR-001 | domain | a |\n"
+              "| FR-002 | domain | b |\n| BR-001 | domain | a |\n| MSG-01 | domain | a |\n")
+    docs = {**_docs(**{"functional-spec.md": SPEC, "domain-design.md": design}),
+            f"{folder}/modular-monolith.md": _coverage("BR-001", "MSG-01")}
+    br = lambda: next(i for i in fs.report(docs, folder, steps)["ids"] if i["id"] == "BR-001")  # noqa: E731
+    assert [c["title"] for c in br()["covered_by"]] == ["Module in monolith"]  # not lifted yet
+    # A run whose service step wrote no table (before it reported one): the module's tests, where they run now
+    docs[f"{folder}/microservice.md"] = "# Service\n"
+    entry = br()["covered_by"][0]
+    assert entry["title"] == "Spring Boot microservice (tests copied from Module in monolith)" and entry["counts"]
+    # The service's own table is the evidence: the module's row is the earlier one, not counted
+    docs[f"{folder}/microservice.md"] = _coverage("MSG-01")  # BR-001's test wasn't carried over
+    rows = {c["step"]: c for c in br()["covered_by"]}
+    assert rows["modular_monolith"]["superseded_by"] == "Spring Boot microservice"
+    assert not rows["modular_monolith"]["counts"]
+    report = fs.report(docs, folder, steps)
+    assert "BR-001" in report["gaps"] and "MSG-01" not in report["gaps"]
+
+
+def test_a_side_effect_is_owned_and_proven_by_the_side_that_triggers_it():
+    flat = lambda key: " ".join(defaults.INSTRUCTIONS[key].split())  # noqa: E731
+    assert "is owned by the side that triggers it" in flat("modulith_design")
+    assert "It is `other domain` only when this feature triggers nothing" in flat("modulith_design")
+    assert "don't carry it on an event" in flat("modulith_design")
+    assert "the scenario also checks the content that decides it" in flat("independent_tests")
+    assert "with the content that decides it (to whom, which kind, the key fields)" in flat("orchestrator_tests")
+    assert "if such a message is lost, it is not sent" in flat("analysis")

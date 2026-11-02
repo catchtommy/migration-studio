@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { FunctionalCoverage as Coverage } from "../lib/api";
 import { FunctionalCoverage } from "./FunctionalCoverage";
 
@@ -45,10 +45,53 @@ test("a run without a specification says so", () => {
 test("each test gate shows its owner's ids only", () => {
   const { unmount } = render(<FunctionalCoverage coverage={coverage} gate="gate_tests" />);
   expect(screen.getByText(/The domain's ids:/)).toBeInTheDocument();
-  expect(screen.queryByText("FR-002")).toBeNull(); // the orchestrator's
+  expect(screen.getAllByRole("row").some((r) => r.textContent?.includes("FR-002"))).toBe(false); // the orchestrator's
   expect(screen.queryByText(/Not covered for its owner/)).toBeNull();
   unmount();
   render(<FunctionalCoverage coverage={coverage} gate="gate_orchestrator" />);
   expect(screen.getByText(/The orchestrator's ids:/)).toBeInTheDocument();
   expect(screen.getByText(/Not covered for its owner: FR-002/)).toBeInTheDocument();
+});
+
+test("the domain gate lists the orchestrator module's tests, and a supporting row is marked", () => {
+  const withModule: Coverage = {
+    ...coverage,
+    ids: [
+      { ...coverage.ids[0], covered_by: [...coverage.ids[0].covered_by, { step: "modernise_and_test", title: "Modernisation", by: "unit_fr_001", outside_owner: false, counts: false }] },
+      { ...coverage.ids[1], covered_by: [{ step: "monolith_orchestrator", title: "Orchestrator in monolith", by: "OrderTest", outside_owner: false }] },
+    ],
+  } as Coverage;
+  render(<FunctionalCoverage coverage={withModule} gate="gate_tests" />);
+  expect(screen.getByText(/Orchestrator module \(1 of the orchestrator's ids\)/)).toBeInTheDocument();
+  expect(screen.getByText(/OrderTest/)).toBeInTheDocument();
+  expect(screen.getByText("(supporting: not the owner's acceptance suite)")).toBeInTheDocument();
+});
+
+test("once the code is lifted into the service, the service's test is shown and the module's is the earlier one", () => {
+  const lifted: Coverage = {
+    ...coverage,
+    ids: [
+      {
+        ...coverage.ids[0],
+        id: "BR-001",
+        kind: "BR",
+        covered_by: [
+          { step: "modular_monolith", title: "Module in monolith", by: "LimitTest", outside_owner: false, counts: false, superseded_by: "Spring Boot microservice" },
+          { step: "microservice_scaffold", title: "Spring Boot microservice", by: "LimitTest (copied)", outside_owner: false, counts: true },
+        ],
+      },
+    ],
+  } as Coverage;
+  render(<FunctionalCoverage coverage={lifted} gate="gate_tests" />);
+  expect(screen.getByText(/Spring Boot microservice: LimitTest \(copied\)/)).toBeInTheDocument();
+  expect(screen.getByText("(replaced by Spring Boot microservice)")).toBeInTheDocument();
+});
+
+test("the box starts closed with a one-line status, and opens on a click", () => {
+  const { container } = render(<FunctionalCoverage coverage={coverage} gate="gate_release" />);
+  const box = container.querySelector("details")!;
+  expect(box.open).toBe(false);
+  expect(screen.getByText("FR 1/2 · BR 0/1 · MSG 0/0 · 1 not covered")).toBeInTheDocument();
+  fireEvent.click(screen.getByText("Functional coverage"));
+  expect(box.open).toBe(true);
 });

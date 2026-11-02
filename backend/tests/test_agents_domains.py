@@ -481,3 +481,12 @@ def test_the_domains_shared_context_and_agent_notes_reach_the_ai_agents_brief(cl
     assert "src/main/java/com/acme/loan/**" in as_is
     assert "Start at LoanController" not in deep and "Interest rules live in RateCalculator" in deep  # its own only
     assert "Start at LoanController" in analysis and "Interest rules live in RateCalculator" in analysis
+
+
+def test_reset_keeps_the_agents_mode(client):
+    """Resetting an agent that runs the AI brings its defaults back without switching it to the stub."""
+    body = {**builtin_default("deep_dive"), "mode": "llm", "instructions": "Our own instructions."}
+    assert client.put("/api/agents/deep_dive", json=body).status_code == 200
+    reset = client.post("/api/agents/deep_dive/reset").json()
+    assert reset["mode"] == "llm" and reset["instructions"] == default_config("deep_dive")["instructions"]
+    client.put("/api/agents/deep_dive", json={**builtin_default("deep_dive")})  # back to the stub for other tests

@@ -41,7 +41,7 @@ _LEAN_DESCRIPTION_V1 = ("The standard migration with fewer agents: analysis → 
                         "modernisation with service tests → integration, with four approval gates. Make it a "
                         "domain's default workflow to use it.")
 # A lean step that does a standard step's work in the same repository gets that step's code settings when seeded.
-_LEAN_CODE_FROM = {"modernise_and_test": "modernise"}
+_LEAN_CODE_FROM = {"modernise_and_test": "modernise", "orchestrator_tests": "orchestrator_service"}
 # Built-in discovery workflows: (key, name, description, workflow), by scope.
 DISCOVERY = {
     "monolith": ("discover_bounded_contexts", "Discover bounded contexts",
@@ -242,11 +242,18 @@ def seed() -> None:
                     lean.steps = _with_orchestrator_tests(lean.steps)
                     if lean.description in (_LEAN_DESCRIPTION_V1, _LEAN_DESCRIPTION_V2):
                         lean.description = LEAN_DESCRIPTION
-                elif "orchestrator_tests" not in keys:
-                    log.info("The %s copy of the lean workflow was reordered, so it doesn't get the Orchestrator "
-                             "acceptance tests step and gate: add them on the Workflows page if wanted",
-                             "shared" if lean.project == SHARED else f"project {lean.project}'s")
             s.add(Setting(key="_lean_orchestrator_tests", value=True))
+        if s.get(Setting, (GLOBAL, "_lean_orchestrator_tests_custom")) is None:
+            # A lean workflow someone changed (not the built-in order) still gets the orchestrator's acceptance suite,
+            # without anything moved: right after Orchestrator microservice, reviewed by the gate that reviews it.
+            for lean in s.scalars(select(WorkflowDef).where(WorkflowDef.key == LEAN_KEY)):
+                steps = _with_orchestrator_tests_step(lean.steps or [])
+                if steps != lean.steps:
+                    lean.steps = steps
+                    log.info("Added Orchestrator acceptance tests to the %s lean workflow, after Orchestrator "
+                             "microservice (its own order kept)",
+                             "shared" if lean.project == SHARED else f"project {lean.project}'s")
+            s.add(Setting(key="_lean_orchestrator_tests_custom", value=True))
 
 
 # The lean workflow's steps before the orchestrator got its own acceptance suite and gate.
@@ -270,6 +277,26 @@ def _with_orchestrator_tests(steps: list[dict]) -> list[dict]:
         elif st["key"] == "orchestrator_tests" and (stored.get("orchestrator_service") or {}).get("code"):
             st = {**st, "code": stored["orchestrator_service"]["code"]}
         out.append(st)
+    return out
+
+
+def _with_orchestrator_tests_step(steps: list[dict]) -> list[dict]:
+    """A lean workflow with Orchestrator acceptance tests right after Orchestrator microservice (unchanged when it has
+    it already, or has no Orchestrator microservice): changing code where that step does, and reviewed by every gate
+    that reviews it. Nothing else moves."""
+    keys = [st.get("key") for st in steps]
+    if "orchestrator_tests" in keys or "orchestrator_service" not in keys:
+        return steps
+    out = []
+    for st in steps:
+        if st.get("kind") == "gate" and "orchestrator_service" in (st.get("reviews") or []):
+            reviews = list(st["reviews"])
+            reviews.insert(reviews.index("orchestrator_service") + 1, "orchestrator_tests")
+            st = {**st, "reviews": reviews}
+        out.append(st)
+        if st.get("kind") == "agent" and st.get("key") == "orchestrator_service":
+            new = {"kind": "agent", "key": "orchestrator_tests", "uses": None, "include_content": False}
+            out.append({**new, "code": st["code"]} if st.get("code") else new)
     return out
 
 

@@ -38,6 +38,7 @@ SCENARIO_SECTIONS = ("Summary", "Scenarios", "Not covered")
 # id (Module in monolith pins rules and messages, not requirements; Monolith integration maps the messages back).
 COVERAGE_STEPS = {
     "modular_monolith": ("modular-monolith.md", ("domain",), ("BR", "MSG")),
+    "microservice_scaffold": ("microservice.md", ("domain",), ("BR", "MSG")),
     "monolith_orchestrator": ("orchestrator-module.md", ("orchestrator",), ("FR", "BR", "MSG")),
     "orchestrator_service": ("orchestrator-service.md", ("orchestrator",), ("FR", "BR", "MSG")),
     "independent_tests": ("test-report.md", ("domain",), ("FR", "BR", "MSG")),
@@ -45,6 +46,10 @@ COVERAGE_STEPS = {
     "modernise_and_test": ("modernisation.md", ("domain",), ("FR", "BR", "MSG")),
     "monolith_integration": ("integration.md", ("domain", "orchestrator"), ("MSG",)),
 }
+# The steps that lift an earlier step's code, with its tests, into a service: once the service exists, the evidence
+# runs there. Its own table replaces the earlier step's; without one (a run from before it wrote one), the earlier
+# step's tests are shown as carried into the service.
+LIFTED_BY = {"modular_monolith": "microservice_scaffold", "monolith_orchestrator": "orchestrator_service"}
 # Each owner's black-box acceptance suite: a requirement (FR) counts as covered only when its owner's suite proves it
 # (rules and messages: any step of their owner). Reported, never blocking.
 ACCEPTANCE = {"domain": "independent_tests", "orchestrator": "orchestrator_tests"}
@@ -353,6 +358,7 @@ def report(documents: dict[str, str], folder: str, steps: list[dict] | None = No
     for step, (name, _owners, _kinds) in COVERAGE_STEPS.items():
         if step in in_run and name in docs and _section(docs[name], "functional coverage") is not None:
             reported[step] = coverage_rows(docs[name])
+    lifted = {s: by for s, by in LIFTED_BY.items() if by in in_run and COVERAGE_STEPS[by][0] in docs}
     for k in KINDS:
         for id_ in defined[k]:
             owner = _owner(allocated[id_]["owner"]) if id_ in allocated else None
@@ -367,6 +373,12 @@ def report(documents: dict[str, str], folder: str, steps: list[dict] | None = No
                         outside = owner in ("domain", "orchestrator") and owner not in COVERAGE_STEPS[step][1]
                         entry = {"step": step, "title": titles.get(step, step), "by": row["by"],
                                  "outside_owner": outside}
+                        later = lifted.get(step)
+                        if later in reported:  # the service's own table is the evidence now
+                            entry["superseded_by"] = titles.get(later, later)
+                        elif later:  # the service was built from it, its tests copied: shown where they run now
+                            entry["title"] = (f"{titles.get(later, later)} (tests copied from "
+                                              f"{titles.get(step, step)})")
                         (covered_by if row["covered"] else not_covered).append({**entry, "reason": row["reason"]})
             # The steps whose cover counts: a requirement's, its owner's acceptance suite (when the run has it);
             # otherwise every step that covers ids of its owner and kind (without an owner: of its kind).
@@ -374,7 +386,10 @@ def report(documents: dict[str, str], folder: str, steps: list[dict] | None = No
             relevant = ([suite] if suite in in_run else
                         [s for s, (_n, owners, kinds) in COVERAGE_STEPS.items()
                          if s in in_run and k in kinds and (owner is None or owner in owners)])
-            counted = [c for c in covered_by if c["step"] in relevant and not c["outside_owner"]]
+            counted = [c for c in covered_by if c["step"] in relevant and not c["outside_owner"]
+                       and not c.get("superseded_by")]
+            for c in covered_by:  # an owner's step that isn't the one a requirement is judged on: supporting only
+                c["counts"] = c in counted
             # A gap: none of them covered it, though one has reported. Another domain's and UI-only ids are never gaps:
             # this migration doesn't change them.
             gap = owner not in _NOT_GAPS and any(s in reported for s in relevant) and not counted

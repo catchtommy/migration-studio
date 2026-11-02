@@ -147,6 +147,15 @@ def _upcoming(old: list[dict], keys: list[str], cut: int, current: list[dict]) -
         return {"blocked": f"The workflow no longer has {old[cut]['title']}, the step this run has reached, so the "
                            "run can't follow it. Start a new run to use the current workflow"}
     start = new_keys.index(keys[cut]) + 1 if cut >= 0 else 0
+    # A step that moved across the point the run has reached can't follow: one it has run would run again, one it
+    # hasn't would be passed over without notice (the lean workflow's orchestrator steps moving after the domain gate).
+    ran_again = [d["title"] for d in current[start:] if d["key"] in keys[:cut + 1]]
+    passed_over = [d["title"] for d in old[cut + 1:] if d["key"] in new_keys[:start]]
+    if ran_again or passed_over:
+        moved = ", ".join(dict.fromkeys([*ran_again, *passed_over]))
+        return {"blocked": f"The workflow moved {moved} to the other side of {old[cut]['title'] if cut >= 0 else 'the start'}, "
+                           "where this run is, so its upcoming steps can't follow. Let the run finish with its own "
+                           "steps, or re-run it from an earlier step with the workflow's current steps"}
     stages = [*old[:cut + 1], *current[start:]]
     if [_plain(d) for d in stages] == [_plain(d) for d in old]:
         return None

@@ -117,8 +117,9 @@ STANDARD = Workflow((
              "service. It calls the domain microservice and the other domains over their APIs, and holds no "
              "database."),
     StageDef("independent_tests", "Independent tests", "agent",
-             "A black-box acceptance suite for every scenario, in its own module of the domain service's repository: "
-             "it calls the running service over HTTP, so it runs unchanged before and after modernisation."),
+             "A black-box acceptance suite of the domain service, for the scenarios the domain owns (every scenario "
+             "when the design allocates none), in its own module of the domain service's repository: it calls the "
+             "running service over HTTP, so it runs unchanged before and after modernisation."),
     StageDef("gate_tests", "Approve tests", "gate",
              "Review the module, microservice and scenario coverage.",
              ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "orchestrator_service",

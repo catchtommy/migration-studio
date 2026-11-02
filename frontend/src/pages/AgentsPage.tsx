@@ -668,7 +668,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
             type="button"
             className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted hover:text-fg"
             disabled={reset.isPending}
-            onClick={() => window.confirm(`Reset the ${config.title} agent to its default configuration?`) && reset.mutate()}
+            onClick={() => window.confirm(`Reset the ${config.title} agent to its default configuration? Its mode (AI or stub) is kept.`) && reset.mutate()}
           >
             Reset to default
           </button>
