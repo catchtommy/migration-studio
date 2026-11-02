@@ -22,7 +22,8 @@ AS_IS_FILE = "as-is.md"
 SCENARIOS_FILE = "test-scenarios.md"
 DESIGN_FILE = "domain-design.md"
 
-ID = re.compile(r"\b(FR-\d{3}|BR-\d{3}|UC-\d{2}|MSG-\d{2}|TS-\d{3})\b")
+# At least 3 digits (2 for use cases and messages), up to 4: a large feature can have more than 99 messages.
+ID = re.compile(r"\b(FR-\d{3,4}|BR-\d{3,4}|UC-\d{2,4}|MSG-\d{2,4}|TS-\d{3,4})\b")
 _LOOSE_ID = re.compile(r"^(FR|BR|UC|MSG|TS)-\w+$")
 KINDS = ("FR", "BR", "MSG")  # the ids the later steps cover
 
@@ -129,7 +130,7 @@ def spec_ids(spec: str) -> dict[str, list[str]]:
              "BR": [i for i, _ in _row_ids(_spec_section(spec, 6)) if kind(i) == "BR"],
              "MSG": [i for i, _ in _row_ids(_spec_section(spec, 9)) if kind(i) == "MSG"],
              "UC": [m.group(1) for line in _spec_section(spec, 7)
-                    if (m := re.match(r"^#{3,4}\s+(UC-\d{2})\b", line))]}
+                    if (m := re.match(r"^#{3,4}\s+(UC-\d{2,4})\b", line))]}
     return found
 
 
@@ -138,7 +139,7 @@ def scenarios(text: str) -> dict[str, dict]:
     out: dict[str, dict] = {}
     current = None
     for line in text.splitlines():
-        m = re.match(r"^#{3,4}\s+(TS-\d{3})\b", line)
+        m = re.match(r"^#{3,4}\s+(TS-\d{3,4})\b", line)
         if m:
             current = m.group(1)
             out.setdefault(current, {"covers": [], "expected": False, "count": 0})

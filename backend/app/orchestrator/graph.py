@@ -284,7 +284,7 @@ def _skipped_before_start(run_id: str, stage_key: str, domain: str, operation: s
 
     folder = docs_dir(domain, operation)
     names = {contracts_store.DOMAIN_DEPENDENCIES_FILE, contracts_store.ORCHESTRATOR_EXTRACTION_FILE,
-             contracts_store.ORCHESTRATOR_SERVICE_FILE}
+             contracts_store.ORCHESTRATOR_SERVICE_FILE, contracts_store.DOMAIN_DESIGN_FILE}
     with tempfile.TemporaryDirectory() as tmp:
         for path, content in workspace.effective_documents(run_id).items():
             if path.startswith(folder + "/") and Path(path).name in names:

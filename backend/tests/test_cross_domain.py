@@ -254,4 +254,6 @@ def test_untouched_builtin_agents_are_brought_up_to_date_once(client, monkeypatc
     agent_store.seed()
     assert client.get("/api/agents/deep_dive").json()["instructions"] == old
     for key in ("deep_dive", "modernise"):
-        client.post(f"/api/agents/{key}/reset")
+        client.post(f"/api/agents/{key}/reset")  # the defaults back; a reset keeps the mode, so the stub explicitly
+    with session_scope() as s:
+        s.get(Agent, (SHARED, "deep_dive")).mode = "stub"

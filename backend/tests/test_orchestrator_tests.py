@@ -15,6 +15,7 @@ from app.db.session import session_scope
 from app.orchestrator import graph
 from app.orchestrator.stages import LEAN, STANDARD
 from tests.conftest import approve, start_run, wait_for
+from tests.test_agents_domains import ctx  # noqa: F401
 from tests.test_test_guardrails import put, service, suite  # noqa: F401
 
 _ids = itertools.count()
@@ -238,3 +239,145 @@ def test_the_orchestrator_suite_routes_its_findings_to_a_step_that_can_take_them
     assert "goes back to Orchestrator microservice from this step's gate" in text
     assert "needs a re-run from that step (Restart)" in text
     assert "in a run without one, the scenarios that go" in text
+
+
+def test_a_reordered_workflow_keeps_the_gate_wording_someone_changed():
+    steps = _v2_steps()
+    for st in steps:
+        if st["key"] == "gate_design":
+            st["title"], st["description"] = "Architecture board", "Our board reviews the design."
+    out = {st["key"]: st for st in workflow_store._with_orchestrator_tests(steps)}
+    assert (out["gate_design"]["title"], out["gate_design"]["description"]) == ("Architecture board",
+                                                                                "Our board reviews the design.")
+    assert out["gate_tests"]["title"] == "Approve domain service"  # the old built-in title: the new one
+    assert "orchestrator_service" not in out["gate_tests"]["reviews"]  # it has its own gate now
+    for st in steps:
+        if st["key"] == "gate_tests":
+            st["title"] = "QA sign-off"  # a title of its own
+    assert {st["key"]: st for st in workflow_store._with_orchestrator_tests(steps)}["gate_tests"]["title"] == \
+        "QA sign-off"
+
+
+def test_the_orchestrator_suite_needs_the_legacy_jdk_for_the_lifted_service(ctx):  # noqa: F811
+    from app.agents import common
+    from tests.test_agent_loops import _as
+
+    ctx, _, _ = ctx
+    _as(ctx, "orchestrator_tests", "Orchestrator acceptance tests", code={"changes_code": True})
+    ctx.settings = {**ctx.settings, "jdk_legacy_home": ""}
+    stuck = common.preflight(ctx)
+    assert stuck and "set the Legacy JDK home in Project settings" in stuck[0]
+    text = " ".join(defaults.INSTRUCTIONS["orchestrator_tests"].split())
+    assert "built and started with the legacy JDK" in text and "use the target JDK, this step's own" in text
+
+
+def test_publish_only_events_leave_nothing_to_orchestrate_and_a_rule_decided_elsewhere_is_theirs():
+    design = " ".join(defaults.INSTRUCTIONS["modulith_design"].split())
+    assert "there is nothing to orchestrate: the domain publishes them itself" in design
+    assert "`orchestrator_module: none` with `no_orchestrator_reason`" in design
+    assert "A rule another domain decides" in design and "is `other domain`, naming the contract" in design
+    deps = " ".join(defaults.INSTRUCTIONS["dependency_analysis"].split())
+    assert "the feature is `cross-domain`: its contract is designed" in deps
+
+
+DESIGN = """domain: loan
+feature: approve
+module: loan-domain
+artifact: com.acme:loan-domain
+base_package: com.acme.loan
+feature_package: com.acme.loan.approve
+orchestrator_module: none
+no_orchestrator_reason: Only publishes loan.approved, which notification turns into an email
+owned_tables: []
+read_only_tables: []
+utility_modules: []
+other_domain_dependencies: []
+context_ports: []
+schema_changes: []
+ui_changes: []
+stack_changes: []
+god_module_dependencies: []
+exceptions: []
+"""
+
+
+def _deps(strength: str) -> str:
+    return f"""feature: approve
+domain: loan
+decision: {{scope: cross-domain, reason: Publishes loan.approved}}
+dependencies:
+  - domain: notification
+    relation: calls
+    direction: outbound
+    strength: {strength}
+    touchpoints: [{{kind: event, ref: loan.approved}}]
+"""
+
+
+def test_a_design_with_no_orchestrator_skips_all_three_orchestrator_steps_without_running(tmp_path):
+    (tmp_path / "domain-design.yaml").write_text(DESIGN)
+    (tmp_path / "domain-dependencies.yaml").write_text(_deps("side-effect"))
+    for stage in ("monolith_orchestrator", "orchestrator_service", "orchestrator_tests"):
+        reason = modulith_scope.skip_reason(stage, tmp_path)
+        assert reason and reason.startswith(modulith_scope.NO_ORCHESTRATOR_DESIGNED), stage
+        assert "Only publishes loan.approved" in reason
+    note = modulith_scope.skip_note("monolith_orchestrator", "Orchestrator in monolith",
+                                    modulith_scope.skip_reason("monolith_orchestrator", tmp_path))
+    assert "The design has no orchestrator for this feature" in note
+    assert modulith_scope.skip_reason("linked_domain_contracts", tmp_path) is None  # its contract is still designed
+    (tmp_path / "domain-dependencies.yaml").write_text(_deps("hard"))  # e.g. the design edited by hand at its gate
+    assert modulith_scope.skip_reason("monolith_orchestrator", tmp_path) is None  # it needs an answer: built
+
+
+def test_no_orchestrator_is_accepted_only_for_a_feature_that_just_publishes(client, tmp_path):
+    from app import domain_modules, projects
+
+    (tmp_path / "domain-design.yaml").write_text(DESIGN)
+    (tmp_path / "domain-dependencies.yaml").write_text(_deps("side-effect"))
+    project = projects.DEFAULT
+    problems = " ".join(domain_modules.design_problems(project, "loan", "approve", tmp_path))
+    assert "orchestrator_module" not in problems  # publishes only: no orchestrator is right
+    (tmp_path / "domain-dependencies.yaml").write_text(_deps("hard"))  # it needs an answer from notification
+    problems = " ".join(domain_modules.design_problems(project, "loan", "approve", tmp_path))
+    assert "it needs an answer from notification: add orchestrator_module" in problems
+    (tmp_path / "domain-dependencies.yaml").write_text(_deps("side-effect"))
+    (tmp_path / "domain-design.yaml").write_text(DESIGN.replace(
+        "no_orchestrator_reason: Only publishes loan.approved, which notification turns into an email\n", ""))
+    problems = " ".join(domain_modules.design_problems(project, "loan", "approve", tmp_path))
+    assert "give no_orchestrator_reason" in problems
+    assert modulith_scope.skip_reason("monolith_orchestrator", tmp_path) is None  # no reason: not skipped either
+
+
+def test_a_feature_that_only_publishes_runs_without_an_orchestrator(client, monkeypatch):
+    """Lean, end to end: Domain dependencies records the only cross-domain link as a side effect it publishes, the
+    design has no orchestrator: the three orchestrator steps are skipped without an agent and their gate passes."""
+    import re as _re
+
+    from app.agents import stub
+
+    original, ran = stub.StubAgent.run, []
+
+    def run(self, ctx):
+        ran.append(self.stage)
+        out = original(self, ctx)
+        deps, design = ctx.output_dir / "domain-dependencies.yaml", ctx.output_dir / "domain-design.yaml"
+        if self.stage == "dependency_analysis":
+            deps.write_text(deps.read_text().replace("strength: hard", "strength: side-effect"))
+        if self.stage == "modulith_design":
+            text = _re.sub(r"orchestrator_module:\n(  .*\n)+", "orchestrator_module: none\n"
+                           "no_orchestrator_reason: Only publishes the event the other domain reacts to\n",
+                           design.read_text())
+            design.write_text(text)
+        return out
+
+    monkeypatch.setattr(stub.StubAgent, "run", run)
+    run_id = start_run(client, {"domain": "loan", "operation": f"pub{next(_ids)}", "workflow": "lean"}).json()["id"]
+    done, gates = _gates(client, run_id)
+    assert done["status"] == "completed"
+    assert [g for g, _ in gates] == ["gate_analysis", "gate_design", "gate_tests", "gate_release"]
+    assert not {"monolith_orchestrator", "orchestrator_service", "orchestrator_tests"} & set(ran)  # no agent ran
+    skipped = {s["stage"]: s["status"] for s in done["stages"]
+               if s["stage"] in ("monolith_orchestrator", "orchestrator_service", "orchestrator_tests")}
+    assert skipped == {k: "completed" for k in ("monolith_orchestrator", "orchestrator_service", "orchestrator_tests")}
+    gate = next(s for s in done["stages"] if s["stage"] == "gate_orchestrator")
+    assert gate["status"] == "approved" and "The design has no orchestrator" in gate["feedback"]

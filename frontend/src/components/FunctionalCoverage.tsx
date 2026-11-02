@@ -7,18 +7,20 @@ const OWNER: Record<string, string> = {
   "ui unchanged": "UI, unchanged",
 };
 
-// The test gates review one owner's ids each: the domain service's, then the orchestrator service's.
-const GATE_OWNER: Record<string, string> = { gate_tests: "domain", gate_orchestrator: "orchestrator" };
+// A gate that reviews an owner's acceptance suite shows that owner's ids: the domain's (Independent tests), the
+// orchestrator's (Orchestrator acceptance tests), or both when one gate reviews both (a workflow arranged that way).
+const SUITE_OWNER: Record<string, string> = { independent_tests: "domain", orchestrator_tests: "orchestrator" };
 
 /** The functional specification's coverage (app/functional_spec.py), a report: nothing here blocks approving. At the
  * analysis gate, whether the three documents agree; at the design gate, the allocation; at a test gate, its owner's
  * ids (a requirement counts only when the owner's acceptance suite proves it); at the release, every id. Gaps first. */
-export function FunctionalCoverage({ coverage, gate }: { coverage: Coverage; gate: string }) {
+export function FunctionalCoverage({ coverage, gate, reviews = [] }: { coverage: Coverage; gate: string; reviews?: string[] }) {
   if (!coverage.available) return <p className="text-sm text-subtle">{coverage.message}</p>;
   const problems = gate === "gate_analysis" ? coverage.analysis_problems : gate === "gate_design" ? coverage.allocation_problems : [];
   const later = gate !== "gate_analysis" && gate !== "gate_design";
-  const owner = GATE_OWNER[gate];
-  // A test gate: its owner's ids (and those without an owner, in a run without an allocation)
+  const owners = [...new Set(reviews.map((k) => SUITE_OWNER[k]).filter(Boolean))];
+  // One owner's test gate: its ids (and those without an owner, in a run without an allocation); otherwise every id
+  const owner = owners.length === 1 ? owners[0] : undefined;
   const ids = owner ? coverage.ids.filter((i) => i.owner === owner || i.owner === null) : coverage.ids;
   const gaps = ids.filter((i) => i.gap).map((i) => i.id);
   // The domain service's gate also approves the orchestrator module: its tests of the orchestrator's ids, for reference
@@ -146,7 +148,7 @@ export function FunctionalCoverage({ coverage, gate }: { coverage: Coverage; gat
               </table>
             </div>
           )}
-          {gate === "gate_tests" && moduleIds.length > 0 && (
+          {owner === "domain" && reviews.includes("monolith_orchestrator") && moduleIds.length > 0 && (
             <details className="mt-2">
               <summary className="cursor-pointer text-subtle">Orchestrator module ({moduleIds.length} of the orchestrator's ids)</summary>
               <p className="mt-1 text-xs text-subtle">

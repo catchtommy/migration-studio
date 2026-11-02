@@ -55,7 +55,7 @@ export function ApprovalPanel({
         Review the output of {gate.reviews.map(title).join(", ")} in the timeline. You can edit artifacts before approving. To change the agent, its inputs or
         the documents before the re-run, choose <em>Reject…</em>, then <em>Reject, amend first</em>.
       </p>
-      {coverage && <FunctionalCoverage coverage={coverage} gate={gate.gate} />}
+      {coverage && <FunctionalCoverage coverage={coverage} gate={gate.gate} reviews={gate.reviews} />}
 
       {!canApprove ? (
         <>

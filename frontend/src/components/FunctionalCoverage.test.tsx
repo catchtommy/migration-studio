@@ -43,12 +43,12 @@ test("a run without a specification says so", () => {
 });
 
 test("each test gate shows its owner's ids only", () => {
-  const { unmount } = render(<FunctionalCoverage coverage={coverage} gate="gate_tests" />);
+  const { unmount } = render(<FunctionalCoverage coverage={coverage} gate="gate_tests" reviews={["microservice_scaffold", "independent_tests"]} />);
   expect(screen.getByText(/The domain's ids:/)).toBeInTheDocument();
   expect(screen.getAllByRole("row").some((r) => r.textContent?.includes("FR-002"))).toBe(false); // the orchestrator's
   expect(screen.queryByText(/Not covered for its owner/)).toBeNull();
   unmount();
-  render(<FunctionalCoverage coverage={coverage} gate="gate_orchestrator" />);
+  render(<FunctionalCoverage coverage={coverage} gate="gate_orchestrator" reviews={["orchestrator_service", "orchestrator_tests"]} />);
   expect(screen.getByText(/The orchestrator's ids:/)).toBeInTheDocument();
   expect(screen.getByText(/Not covered for its owner: FR-002/)).toBeInTheDocument();
 });
@@ -61,7 +61,7 @@ test("the domain gate lists the orchestrator module's tests, and a supporting ro
       { ...coverage.ids[1], covered_by: [{ step: "monolith_orchestrator", title: "Orchestrator in monolith", by: "OrderTest", outside_owner: false }] },
     ],
   } as Coverage;
-  render(<FunctionalCoverage coverage={withModule} gate="gate_tests" />);
+  render(<FunctionalCoverage coverage={withModule} gate="gate_tests" reviews={["monolith_orchestrator", "microservice_scaffold", "independent_tests"]} />);
   expect(screen.getByText(/Orchestrator module \(1 of the orchestrator's ids\)/)).toBeInTheDocument();
   expect(screen.getByText(/OrderTest/)).toBeInTheDocument();
   expect(screen.getByText("(supporting: not the owner's acceptance suite)")).toBeInTheDocument();
@@ -82,7 +82,7 @@ test("once the code is lifted into the service, the service's test is shown and 
       },
     ],
   } as Coverage;
-  render(<FunctionalCoverage coverage={lifted} gate="gate_tests" />);
+  render(<FunctionalCoverage coverage={lifted} gate="gate_tests" reviews={["microservice_scaffold", "independent_tests"]} />);
   expect(screen.getByText(/Spring Boot microservice: LimitTest \(copied\)/)).toBeInTheDocument();
   expect(screen.getByText("(replaced by Spring Boot microservice)")).toBeInTheDocument();
 });
@@ -94,4 +94,10 @@ test("the box starts closed with a one-line status, and opens on a click", () =>
   expect(screen.getByText("FR 1/2 · BR 0/1 · MSG 0/0 · 1 not covered")).toBeInTheDocument();
   fireEvent.click(screen.getByText("Functional coverage"));
   expect(box.open).toBe(true);
+});
+
+test("a gate reviewing both suites (a workflow arranged that way) shows both owners' ids", () => {
+  render(<FunctionalCoverage coverage={coverage} gate="gate_tests" reviews={["orchestrator_service", "orchestrator_tests", "independent_tests"]} />);
+  expect(screen.getAllByRole("row").some((r) => r.textContent?.includes("FR-002"))).toBe(true); // the orchestrator's
+  expect(screen.getAllByRole("row").some((r) => r.textContent?.includes("FR-001"))).toBe(true); // the domain's
 });

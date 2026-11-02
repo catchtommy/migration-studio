@@ -376,6 +376,10 @@ def preflight(ctx: AgentContext) -> list[str]:
     from app.agents.tools import GIT_CHECKS
 
     checks = required_checks(ctx)
+    if ctx.stage == "orchestrator_tests" and not ctx.settings.get("jdk_legacy_home"):
+        return [blocker("Orchestrator acceptance tests starts the lifted domain service on the monolith's stack, so it "
+                        "needs the legacy JDK: set the Legacy JDK home in Project settings (the orchestrator service "
+                        "runs on the target JDK), then retry")]
     if checks & GIT_CHECKS and ctx.stage_def is not None and not ctx.stage_def.code:
         return [blocker(f"{ctx.stage_def.title} changes code, but its step isn't set to: set its Changes code on the "
                         "Workflows page (In the project's monolith, or In another repository), then retry")]

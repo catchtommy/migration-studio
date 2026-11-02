@@ -24,6 +24,9 @@ NOTHING_TO = {"linked_domain_contracts": "no contract to define with another dom
 # Steps that build on the orchestrator module: skipped too when the Orchestrator in monolith step built none.
 NEEDS_ORCHESTRATOR = ("orchestrator_service", "orchestrator_tests")
 NO_ORCHESTRATOR = "The Orchestrator in monolith step built no orchestrator"
+# The design's decision: a cross-domain feature that only publishes to the other domains has no orchestrator.
+NO_ORCHESTRATOR_DESIGNED = "The design has no orchestrator"
+ORCHESTRATOR_STEPS = ("monolith_orchestrator", *NEEDS_ORCHESTRATOR)
 
 
 def skip_reason(stage: str, output_dir: Path) -> str | None:
@@ -32,6 +35,10 @@ def skip_reason(stage: str, output_dir: Path) -> str | None:
     scope is cross-domain. Reads the workspace copy, so a reviewer's edit of the decision is honoured."""
     if stage not in SKIPPABLE:
         return None
+    if stage in ORCHESTRATOR_STEPS:
+        designed = _designed_without_orchestrator(output_dir)
+        if designed:
+            return f"{NO_ORCHESTRATOR_DESIGNED}: {designed}"
     if stage in NEEDS_ORCHESTRATOR:
         built = output_dir / contracts_store.ORCHESTRATOR_EXTRACTION_FILE
         if built.is_file():
@@ -66,7 +73,40 @@ def skip_reason(stage: str, output_dir: Path) -> str | None:
 DECIDED_BY = ("dependency_analysis", "domain_dependencies", "analysis")
 
 
+def _designed_without_orchestrator(output_dir: Path) -> str | None:
+    """The reason the design gives for having no orchestrator (domain-design.yaml `orchestrator_module: none` with
+    `no_orchestrator_reason`), when it gives one; None otherwise (domain-only features are skipped by their scope)."""
+    import yaml
+
+    f = output_dir / contracts_store.DOMAIN_DESIGN_FILE
+    try:
+        data = yaml.safe_load(f.read_text(encoding="utf-8")) if f.is_file() else None
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict) or data.get("orchestrator_module") not in ("none", None) \
+            or "orchestrator_module" not in data:
+        return None
+    reason = str(data.get("no_orchestrator_reason") or "").strip()
+    if not reason:
+        return None
+    # Only for a feature that just publishes: one needing an answer from another domain keeps its orchestrator, even
+    # when the design was edited by hand at its gate (the design step's own check refuses it).
+    deps = output_dir / contracts_store.DOMAIN_DEPENDENCIES_FILE
+    try:
+        found = contracts_store.load_domain_dependencies(deps.read_text(encoding="utf-8"))["dependencies"] \
+            if deps.is_file() else []
+    except contracts_store.InvalidDocument:
+        return None
+    if any(d.get("direction", "outbound") == "outbound" and d.get("strength") != "side-effect" for d in found):
+        return None
+    return reason
+
+
 def skip_note(stage: str, title: str, reason: str, decided_by: str = "the dependency step") -> str:
+    if reason.startswith(NO_ORCHESTRATOR_DESIGNED):
+        return (f"# {title}: skipped\n\nThe design has no orchestrator for this feature, so there is "
+                f"{NOTHING_TO[stage]}.\n\n**{reason}**\n\nIt only publishes to the other domains, which the domain "
+                "does itself. To build one, change the design (Modulith design) and re-run from there.\n")
     if reason.startswith(NO_ORCHESTRATOR):
         return (f"# {title}: skipped\n\nThis feature has no orchestrator, so there is {NOTHING_TO[stage]}.\n\n"
                 f"**{reason}**\n\nTo build one, re-run the Orchestrator in monolith step once the orchestrator "

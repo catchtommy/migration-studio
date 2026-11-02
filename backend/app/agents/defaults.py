@@ -249,7 +249,8 @@ base_package: com.acme.loan           # the module's package (<prefix>.<domain>)
 feature_package: com.acme.loan.createloan   # this feature's classes: <base_package>.<feature package>
 orchestrator_module:                  # cross-domain features: the domain's ONE orchestrator module, a separate Maven module
   module: loan-orchestrator           #   from the domain module, also named for the domain; write `orchestrator_module: none`
-  artifact: com.acme:loan-orchestrator   # for a domain-only feature
+  artifact: com.acme:loan-orchestrator   # for a domain-only feature, or for a cross-domain one that only publishes events or
+                                      #   commands to the other domains (then also no_orchestrator_reason: what it publishes)
   base_package: com.acme.orchestrator.loan   # <prefix>.orchestrator.<domain>
   feature_package: com.acme.orchestrator.loan.createloan
 owned_tables: [LOAN, LOAN_SCHEDULE]   # tables this domain WRITES: one owner per table, none owned by another domain
@@ -541,7 +542,10 @@ serves, say where the feature uses each God module and which part belongs to whi
 checked and ruled out under `considered_unrelated`.
 
 The scope decision (`decision`): `domain-only` when the feature has no outbound dependency on another domain (shared \
-utilities and inbound callers don't count), else `cross-domain`. Choose `domain-only` only when you have checked the \
+utilities and inbound callers don't count), else `cross-domain`. An event or command the feature only publishes (a \
+`side-effect`, for example a notification another domain sends) is an outbound dependency, so the feature is \
+`cross-domain`: its contract is designed. The design then finds nothing to orchestrate when that is all, and the \
+orchestrator steps are skipped. Choose `domain-only` only when you have checked the \
 code and are sure; when in doubt, choose `cross-domain`. It decides which steps run (a domain-only feature has no \
 contracts and no orchestrator), it is validated against `dependencies`, and the reviewer approves it at the analysis \
 gate."""
@@ -1450,10 +1454,11 @@ that case and not in the others, with the content that decides it (to whom, whic
 - Tests that need the database are tagged `database`; without a test database say so in the report rather than \
 skipping them silently.
 
-Procedure: write the suite. Build the domain service from its checkout and start it with the toolchain of its stack \
-(`$STUDIO_JDK_LEGACY_HOME/bin/java -jar …` for the lifted service, which keeps the monolith's stack; \
-`$STUDIO_JDK_MODERN_HOME` is this step's own). Build the orchestrator service and start it pointed at that domain \
-service and at the stubs. Run the suite (`mvn -f acceptance-tests/pom.xml verify -Dorchestrator.url=... \
+Procedure: write the suite. Each service runs on its own stack's JDK. The lifted domain service (the Spring Boot \
+microservice, not modernised: the monolith's stack) is built and started with the legacy JDK: \
+`$STUDIO_JDK_LEGACY_HOME/bin/java -jar …`, and its build with `JAVA_HOME=$STUDIO_JDK_LEGACY_HOME`. The orchestrator \
+service and this suite use the target JDK, this step's own (`java` and `mvn` on the path, `$STUDIO_JDK_MODERN_HOME`). \
+Build the orchestrator service and start it pointed at that domain service and at the stubs. Run the suite (`mvn -f acceptance-tests/pom.xml verify -Dorchestrator.url=... \
 -Dservice.url=...`), then `check_test_guardrails`. A failing test that exposes a real behaviour difference is a \
 finding: report it rather than weakening the test or changing a service, and say where it belongs. A fault of the \
 orchestrator service goes back to Orchestrator microservice from this step's gate. A fault of the orchestrator module \
@@ -1763,7 +1768,10 @@ notification or audit record that another domain produces through an event or co
 triggers it, `domain` or `orchestrator`, with Where naming the event or contract: what this feature must keep is \
 that it triggers it, when and with what. It is `other domain` only when this feature triggers nothing. Where \
 `functional-spec.md`'s open questions (section 12) say the business needs a notification guaranteed, don't carry it \
-on an event (delivered at most once: the schema is frozen, so there is no outbox): ask the user.
+on an event (delivered at most once: the schema is frozen, so there is no outbox): ask the user. A rule another \
+domain decides (its code enforces it, per `as-is.md`'s "Rule enforcement", for example whether a customer's KYC is \
+valid) is `other domain`, naming the contract that answers it; the message this feature shows for that answer is \
+owned by the side that maps the answer to it (`domain` or `orchestrator`), with Where naming that mapping.
    - Data: the tables the domain owns (its code writes them), each with the iBatis statements that write it, and the \
 tables it only reads. A table another domain owns is reached only through a port.
    - Ports: one interface per outbound dependency, named for what it does (for example CustomerDirectory), with the \
@@ -1804,7 +1812,13 @@ in `domain-dependencies.yaml`, stop and ask the user to send the run back to the
 
 {LINKED_DOMAIN_CONTRACTS_SCHEMA}
 
-3. The orchestrator, in `orchestrator-design.md` (the Orchestrator in monolith step builds exactly this): a request \
+3. The orchestrator, in `orchestrator-design.md` (the Orchestrator in monolith step builds exactly this). When the \
+feature's only interactions with other domains are events or commands it publishes and needs no answer to (side \
+effects, such as a notification), there is nothing to orchestrate: the domain publishes them itself. Write \
+`orchestrator-design.md` as a short note saying so, and in `domain-design.yaml` `orchestrator_module: none` with \
+`no_orchestrator_reason` (what the feature publishes, to whom): the orchestrator steps are then skipped without \
+running (checked: only when every outbound dependency in `domain-dependencies.yaml` is a `side-effect`). Otherwise: a \
+request \
 flows controller → router → orchestrator → domain module; the orchestrator holds no database access and no \
 transaction of its own, and the Orchestrator microservice step later lifts it into its own service.
    - Its classes, the operations it takes over (same names and signatures as the domain API methods the router \

@@ -621,3 +621,11 @@ def test_a_side_effect_is_owned_and_proven_by_the_side_that_triggers_it():
     assert "the scenario also checks the content that decides it" in flat("independent_tests")
     assert "with the content that decides it (to whom, which kind, the key fields)" in flat("orchestrator_tests")
     assert "if such a message is lost, it is not sent" in flat("analysis")
+
+
+def test_a_large_feature_can_have_more_than_99_messages():
+    spec = SPEC.replace("| MSG-01 | Over the limit |", "| MSG-100 | Over the limit |")
+    as_is = AS_IS.replace("| MSG-01 | error", "| MSG-100 | error")
+    scenarios = SCENARIOS.replace("MSG-01", "MSG-100")
+    assert fs.analysis_problems(as_is, spec, scenarios) == []
+    assert fs.spec_ids(spec)["MSG"] == ["MSG-100"]

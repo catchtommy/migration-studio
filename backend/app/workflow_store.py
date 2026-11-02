@@ -263,15 +263,23 @@ _LEAN_V2_KEYS = ["analysis", "dependency_analysis", "gate_analysis", "modulith_d
 
 
 def _with_orchestrator_tests(steps: list[dict]) -> list[dict]:
-    """A stored lean workflow in the built-in order, in the new one: the stored steps keep their settings (code, uses,
-    a gate's checklist); the gates take the new reviews and titles; Orchestrator acceptance tests changes code where
-    Orchestrator microservice does."""
+    """A stored lean workflow in the built-in order, in the new one: the stored steps keep their settings (code, uses;
+    a gate its title, description, reviews and checklist, where someone changed them); the tests gate no longer reviews
+    the orchestrator service, which has its own gate now; Orchestrator acceptance tests changes code where Orchestrator
+    microservice does."""
     stored = {st["key"]: st for st in steps}
+    old_tests = STANDARD.by_key["gate_tests"]  # the lean workflow's tests gate was the standard one's
     out = []
     for st in steps_of(LEAN):
         own = stored.get(st["key"])
-        if st["kind"] == "gate":
-            st = {**st, "checklist": (own or {}).get("checklist") or st["checklist"]}
+        if st["kind"] == "gate" and own is not None:
+            if st["key"] == "gate_tests":
+                kept = {k: own[k] for k in ("title", "description") if own.get(k) and own[k] != getattr(old_tests, k)}
+                reviews = [k for k in own.get("reviews") or [] if k != "orchestrator_service"]
+                st = {**st, **kept, "reviews": reviews or st["reviews"]}
+            else:
+                st = {**st, **{k: own[k] for k in ("title", "description", "reviews") if own.get(k)}}
+            st = {**st, "checklist": own.get("checklist") or st["checklist"]}
         elif own is not None:
             st = own
         elif st["key"] == "orchestrator_tests" and (stored.get("orchestrator_service") or {}).get("code"):

@@ -216,6 +216,18 @@ def domain_bridges(root: Path, base: str | None, domain: str) -> set[str]:
     return {posix(Path(p).parent) for p in toggles_at(root, base, domain)}
 
 
+def needs_an_answer(output_dir: Path) -> list[str]:
+    """The other domains this feature depends on for more than a side effect it publishes (domain-dependencies.yaml:
+    outbound dependencies whose strength isn't `side-effect`)."""
+    f = output_dir / cs.DOMAIN_DEPENDENCIES_FILE
+    try:
+        deps = cs.load_domain_dependencies(f.read_text(encoding="utf-8"))["dependencies"] if f.is_file() else []
+    except cs.InvalidDocument:
+        return []
+    return sorted({d["domain"] for d in deps if d.get("direction", "outbound") == "outbound"
+                   and d.get("strength") != "side-effect"})
+
+
 def _design_scope(output_dir: Path) -> str | None:
     """The feature's Modulith scope (domain-dependencies.yaml decision.scope): domain-only or cross-domain."""
     f = output_dir / cs.DOMAIN_DEPENDENCIES_FILE
@@ -275,10 +287,21 @@ def design_problems(project: str, domain: str, feature: str, output_dir: Path) -
     if isinstance(orch, dict):
         out += _declared_module(project, domain, feature, f"{where} orchestrator_module", orch, mods["orchestrator"],
                                 "orchestrator module")
+    elif scope == "cross-domain" and orch in ("none", "") and orch is not None:
+        # A cross-domain feature without an orchestrator: only when it just publishes to the other domains (side
+        # effects it needs no answer to), which the domain does itself. The orchestrator steps are then skipped.
+        if not str(data.get("no_orchestrator_reason") or "").strip():
+            out.append(f"{where}: orchestrator_module is none for a cross-domain feature: give no_orchestrator_reason "
+                       "(what the feature only publishes to the other domains)")
+        answered = needs_an_answer(output_dir)
+        if answered:
+            out.append(f"{where}: orchestrator_module can be none only when every outbound dependency is a side effect "
+                       f"the feature publishes; it needs an answer from {', '.join(answered)}: add orchestrator_module")
     elif scope == "cross-domain":
         out.append(f"{where}: add orchestrator_module (module, artifact, base_package, feature_package): a "
                    "cross-domain feature's orchestrator goes in the domain's one orchestrator module, a separate Maven "
-                   "module")
+                   "module (or `orchestrator_module: none` with no_orchestrator_reason, when the feature only publishes "
+                   "events or commands to the other domains and needs no answer)")
     elif orch not in (None, "none", ""):
         out.append(f"{where}: orchestrator_module is a mapping (module, artifact, base_package, feature_package), or "
                    "none for a domain-only feature")
