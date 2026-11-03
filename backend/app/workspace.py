@@ -113,6 +113,23 @@ def effective_documents_by_stage(run_id: str, before_stage: str | None = None,
         return documents
 
 
+def document_versions(run_id: str, before_stage: str | None = None) -> dict[str, dict]:
+    """Where each document in effect comes from (path: {"stage", "attempt", "artifact_id"}), as
+    effective_documents_by_stage picks them: the latest version each stage in effect wrote, later stages winning."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run.id)).all()
+        chain = [(ex.stage, ex.attempt) for ex in _effective(executions, run.stage_defs, before_stage)]
+        rows = s.execute(select(Artifact.id, Artifact.stage, Artifact.attempt, Artifact.path)
+                         .where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
+        out: dict[str, dict] = {}
+        for stage, attempt in chain:
+            for aid, a_stage, a_attempt, path in rows:
+                if a_stage == stage and a_attempt == attempt:
+                    out[path] = {"stage": stage, "attempt": attempt, "artifact_id": aid}
+        return out
+
+
 def rerun_changes(run_id: str, stage: str, sources: list[str]) -> tuple[list[str] | None, dict | None]:
     """For a step re-running in place, what changed since its last completed attempt started: the documents of
     `sources` (the earlier steps it builds on) that are new, edited or gone, as paths; and the other domains

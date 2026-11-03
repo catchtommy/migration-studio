@@ -109,6 +109,11 @@ class StageExecution(Base):
     checklist: Mapped[list | None] = mapped_column(JSONText)
     # AI tokens the attempt used (app/agents/usage.py): totals per model call, and per document written
     usage: Mapped[dict | None] = mapped_column(JSONText)
+    # Agent steps: the earlier documents the attempt used, each with the attempt that produced it
+    # ([{"path", "stage", "stage_title", "attempt", "artifact_id", "newer_attempt", "changed"}]), and the full prompt
+    # its agent was given (JSON: {"system", "brief", "tools"}), recorded when it started
+    inputs: Mapped[list | None] = mapped_column(JSONText)
+    prompt: Mapped[str | None] = mapped_column(LongText)
     started_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 

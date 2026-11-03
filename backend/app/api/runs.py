@@ -194,12 +194,15 @@ def _functional_coverage(run: Run) -> dict | None:
 
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
-def get_run(run_id: str, db: Session = Depends(get_db)):
+def get_run(run_id: str, db: Session = Depends(get_db), access: ProjectAccess = Depends(project_context)):
     run = _run_or_404(db, run_id)
     branches = _branches_to_confirm(run_id) if run.status == "awaiting_branches" else None
     if branches:
         db.refresh(run)  # the workflow's current code settings, picked up while it waits
     detail = RunDetail.model_validate(run)
+    if not access.can("runs.inspect"):  # what each attempt was given: for users allowed to inspect agents
+        for ex in detail.stages:
+            ex.inputs = None
     detail.rerun_blocked = workspace.rerun_blocked(run, list(run.stages))
     detail.changeable = changeable(run, list(run.stages))
     if run.scope == "operation":
@@ -410,7 +413,8 @@ def back_to_review(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.put("/runs/{run_id}/inputs", response_model=RunDetail, dependencies=[Depends(require("runs.edit"))])
-def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db)):
+def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db),
+                  access: ProjectAccess = Depends(project_context)):
     """Change the run's own paths and notes. Stages started afterwards (re-runs and retries) get the new ones."""
     run = _run_or_404(db, run_id)
     if run.status not in ("awaiting_approval", "changes_requested", "failed"):
@@ -419,7 +423,7 @@ def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db
     run.inputs = inputs if inputs["paths"] or inputs["notes"] else None
     db.commit()
     emit(run_id, "status", "Run inputs updated")
-    return get_run(run_id, db)
+    return get_run(run_id, db, access)
 
 
 RESTARTABLE = ("completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches")
@@ -708,6 +712,21 @@ def edit_artifact(artifact_id: int, body: ArtifactUpdate, db: Session = Depends(
     db.commit()
     emit(run.id, "artifact", f"Artifact edited by {user.display_name}: {artifact.path}", artifact.stage)
     return artifact
+
+
+@router.get("/runs/{run_id}/stages/{execution_id}/prompt", dependencies=[Depends(require("runs.inspect"))])
+def stage_prompt(run_id: str, execution_id: int, db: Session = Depends(get_db)) -> dict:
+    """The full prompt the attempt's agent was given: its system prompt (instructions and guardrails), its task message
+    (with the documents, the domain's guidance, notes and answers) and its tools; with the provider it ran on."""
+    import json
+
+    _run_or_404(db, run_id)
+    ex = db.get(StageExecution, execution_id)
+    if ex is None or ex.run_id != run_id:
+        raise HTTPException(404, "No such step attempt")
+    if not ex.prompt:
+        raise HTTPException(404, "Not recorded for this attempt (it ran before prompts were recorded, or is a gate)")
+    return json.loads(ex.prompt)
 
 
 @router.get("/runs/{run_id}/stages/{execution_id}/diff")

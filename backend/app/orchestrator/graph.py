@@ -102,6 +102,42 @@ def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef) -> lis
             for (source, path), content in sorted(docs.items(), key=lambda d: (sources.index(d[0][0]), d[0][1]))]
 
 
+def _record_inputs(run_id: str, exec_id: int, workflow: Workflow, stage: StageDef, ctx: AgentContext) -> None:
+    """What the attempt is given, kept on it (shown to users with runs.inspect): the earlier documents it uses with
+    the attempt that produced each, and the full prompt its agent gets (the same functions the agents call). Never
+    fails the step."""
+    import json
+    import logging
+
+    from app.agents import common
+
+    try:
+        sources = set(workflow.inputs_of(stage.key))
+        versions = workspace.document_versions(run_id, stage.key)
+        with session_scope() as s:
+            latest = {st: n for st, n in s.execute(
+                select(StageExecution.stage, func.max(StageExecution.attempt)).where(
+                    StageExecution.run_id == run_id, StageExecution.status == "completed",
+                    StageExecution.stage.in_(sources or {""})).group_by(StageExecution.stage))}
+        changed = set(ctx.changed_inputs or [])
+        inputs = [{"path": d.path, "stage": d.stage, "stage_title": d.stage_title,
+                   "attempt": (versions.get(d.path) or {}).get("attempt"),
+                   "artifact_id": (versions.get(d.path) or {}).get("artifact_id"),
+                   "newer_attempt": (latest.get(d.stage) if latest.get(d.stage, 0) > ((versions.get(d.path) or {})
+                                                                                     .get("attempt") or 0) else None),
+                   "changed": d.path in changed} for d in ctx.previous_artifacts]
+        prompt = None
+        if ctx.config:
+            prompt = json.dumps({"system": common.system_prompt(ctx), "brief": common.brief(ctx),
+                                 "tools": common.tools_of(ctx), "mode": ctx.config.get("mode"),
+                                 "provider": (ctx.settings or {}).get("ai_provider")})
+        with session_scope() as s:
+            ex = s.get(StageExecution, exec_id)
+            ex.inputs, ex.prompt = inputs, prompt
+    except Exception:  # noqa: BLE001 - a record for people; the step runs without it
+        logging.getLogger(__name__).exception("Could not record what %s was given", stage.key)
+
+
 def _locked_documents(workflow: Workflow, run_id: str, stage: StageDef) -> set[str]:
     """The documents of the steps a gate before this one approved (their latest attempt): this step may not change
     them, so what was approved stays what was approved."""
@@ -506,6 +542,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             # Continuing on its commits: the checks compare with where the step first started, not with them.
             base_sha=resume["base_sha"] if resume and resume["code_kept"] and stage.code else None,
         )
+        _record_inputs(run_id, exec_id, workflow, stage, ctx)
         try:
             if config is None:
                 raise RuntimeError(f"Agent {stage.key!r} no longer exists in the agent library")

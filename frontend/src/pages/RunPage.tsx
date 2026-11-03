@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api, MONOLITH, runSubject } from "../lib/api";
 import { useRunEvents, useWorkflows, useCan } from "../lib/hooks";
@@ -27,13 +27,22 @@ export function RunPage() {
   const events = useRunEvents(runId);
   const { data: questions = [] } = useQuery({ queryKey: ["questions", runId], queryFn: () => api.questions(runId) });
   const openQuestion = questions.find((q) => q.status === "open");
-  const [selected, setSelected] = useState<string | null>(null);
+  // A link to a document version (?step=) opens that step and keeps it, as if the user had picked it.
+  const [params] = useSearchParams();
+  const linkedStep = params.get("step");
+  const [selected, setSelected] = useState<string | null>(linkedStep);
 
   // Follow the run's current stage until the user picks one themselves.
-  const [pinned, setPinned] = useState(false);
+  const [pinned, setPinned] = useState(!!linkedStep);
   useEffect(() => {
     if (!pinned && run?.current_stage) setSelected(run.current_stage);
   }, [run?.current_stage, pinned]);
+  useEffect(() => {
+    if (linkedStep) {
+      setSelected(linkedStep);
+      setPinned(true);
+    }
+  }, [linkedStep, params]);
 
   if (error) return <p className="text-bad">{(error as Error).message}</p>;
   if (!run) return <p className="text-subtle">Loading…</p>;

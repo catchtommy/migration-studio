@@ -8,6 +8,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   "runs.start": "Run migrations",
   "runs.approve": "Approve workflow runs",
   "runs.edit": "Edit documents & answer agents",
+  "runs.inspect": "See agent inputs & prompts",
   "project.manage": "Manage project",
   "settings.manage": "Manage global settings & database",
   "users.manage": "Manage users & roles",

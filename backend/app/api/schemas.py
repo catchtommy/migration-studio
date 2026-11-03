@@ -63,6 +63,8 @@ class StageExecutionOut(ORM):
     rerun: bool | None = None  # re-ran a completed stage in place
     checklist: list[dict] | None = None  # gates: the checklist items ticked at this attempt [{"item", "by", "at"}]
     usage: dict | None = None  # AI tokens the attempt used (app/agents/usage.py)
+    # the earlier documents the attempt used, with their versions (only for users with runs.inspect)
+    inputs: list[dict] | None = None
     started_at: datetime
     finished_at: datetime | None
 

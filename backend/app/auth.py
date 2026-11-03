@@ -28,6 +28,8 @@ PERMISSIONS: dict[str, tuple[str, str]] = {
     "runs.start": ("Run migrations", "Start migration runs and retry failed ones"),
     "runs.approve": ("Approve workflow runs", "Approve or reject runs at their gates"),
     "runs.edit": ("Edit documents & answer agents", "Edit run documents and inputs, answer agents' questions"),
+    "runs.inspect": ("See agent inputs & prompts", "The documents each step used, with their versions, and the full "
+                     "prompt its agent was given"),
     "project.manage": ("Manage project", "The project's settings (repository, stack, toolchains) and its members"),
     "settings.manage": ("Manage global settings & database", "AI provider, network, Copilot sign-in, database"),
     "users.manage": ("Manage users & roles", "Add users, reset passwords, assign roles, edit roles"),

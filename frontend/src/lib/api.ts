@@ -175,8 +175,29 @@ export interface StageExecution {
   rerun?: boolean | null; // re-ran a completed step in place ("Re-run from here")
   checklist?: ChecklistTick[] | null; // gates: the checklist items ticked at this attempt
   usage?: StepUsage | null; // the AI tokens the attempt used (null: no model call)
+  inputs?: StepInput[] | null; // the earlier documents it was given (only with runs.inspect; null: not recorded)
   started_at: string;
   finished_at: string | null;
+}
+
+/** An earlier document a step attempt was given, and which attempt of which step wrote it. */
+export interface StepInput {
+  path: string;
+  stage: string;
+  stage_title: string;
+  attempt: number;
+  artifact_id: number | null;
+  newer_attempt: number | null; // that step has a newer completed attempt than the one used
+  changed: boolean; // changed since this step's previous attempt
+}
+
+/** The full prompt a step attempt's agent was given, as recorded when it started. */
+export interface StepPrompt {
+  system: string; // instructions, with shared texts filled in, and the Guardrails section
+  brief: string; // the task message: documents, domain guidance, notes, answers
+  tools: string[];
+  mode: string | null;
+  provider: string | null;
 }
 
 /** One file's share of a step's tokens: the output tokens of the responses that wrote it. */
@@ -677,6 +698,7 @@ export type Permission =
   | "runs.start"
   | "runs.approve"
   | "runs.edit"
+  | "runs.inspect"
   | "project.manage"
   | "settings.manage"
   | "users.manage"
@@ -843,6 +865,7 @@ export const api = {
   downloadRunDocuments: (runId: string) => download(`/runs/${runId}/documents.zip`, "documents.zip"),
   downloadDomainDocuments: (key: string) => download(`/domains/${key}/documents.zip`, `${key}-documents.zip`),
   updateArtifact: (id: number, content: string) => request<Artifact>(`/artifacts/${id}`, json("PUT", { content })),
+  stagePrompt: (runId: string, executionId: number) => request<StepPrompt>(`/runs/${runId}/stages/${executionId}/prompt`),
   diff: (runId: string, executionId: number) => request<{ diff: string }>(`/runs/${runId}/stages/${executionId}/diff`),
   questions: (runId: string) => request<Question[]>(`/runs/${runId}/questions`),
   answer: (questionId: number, answer: string) => request<Question>(`/questions/${questionId}/answer`, json("POST", { answer })),

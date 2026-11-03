@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { api, type AuditEvent, type Question, type RunDetail, type StageDef } from "../lib/api";
 import { stageStatuses } from "../lib/stageStatus";
 import { ActivityLog } from "./ActivityLog";
@@ -9,11 +10,14 @@ import { ChangeStepPanel, changedSince } from "./ChangeStepPanel";
 import { chosen, DocumentPicker, type DocumentChoice } from "./DocumentPicker";
 import { DiffView } from "./DiffView";
 import { TokenUsage } from "./TokenUsage";
+import { StepInputs } from "./StepInputs";
 import { DownloadButton } from "./DownloadButton";
 import { StatusBadge } from "./StatusBadge";
 import { useCan } from "../lib/hooks";
 
-type Tab = "output" | "changes" | "activity" | "tokens";
+type Tab = "output" | "changes" | "activity" | "tokens" | "inputs";
+
+const TAB_LABELS: Record<Tab, string> = { output: "Output", changes: "Changes", activity: "Activity", tokens: "Tokens", inputs: "Inputs & prompt" };
 
 function StageInputs({ stage, stages }: { stage: StageDef; stages: StageDef[] }) {
   const earlier = stages.slice(0, stages.findIndex((s) => s.key === stage.key)).filter((s) => s.kind === "agent");
@@ -35,19 +39,29 @@ export function StageDetail({ stage, stages, run, events, questions }: {
   questions: Question[];
 }) {
   const { status, attempts } = stageStatuses(stages, run).get(stage.key)!;
-  const [attemptIdx, setAttemptIdx] = useState(attempts.length - 1);
+  // A link to a document version (?step=&attempt=&doc=) opens that attempt and document of this step.
+  const [params] = useSearchParams();
+  const linked = params.get("step") === stage.key ? { attempt: Number(params.get("attempt")), doc: Number(params.get("doc")) || null } : null;
+  const linkedIdx = linked ? attempts.findIndex((a) => a.attempt === linked.attempt) : -1;
+  const [attemptIdx, setAttemptIdx] = useState(linkedIdx >= 0 ? linkedIdx : attempts.length - 1);
   const [tab, setTab] = useState<Tab>("output");
   const { data: artifacts = [], isLoading: loadingArtifacts } = useQuery({ queryKey: ["artifacts", run.id], queryFn: () => api.artifacts(run.id) });
+  const canInspect = useCan("runs.inspect");
 
-  useEffect(() => setAttemptIdx(attempts.length - 1), [stage.key, attempts.length]);
+  useEffect(() => setAttemptIdx(linkedIdx >= 0 ? linkedIdx : attempts.length - 1), [stage.key, attempts.length, linkedIdx, params]);
+  useEffect(() => {
+    if (linked) setTab("output");
+  }, [params]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const execution = attempts[attemptIdx];
   const isLatest = attemptIdx === attempts.length - 1;
   const canEdit = useCan("runs.edit");
   const editable = canEdit && isLatest && (run.status === "awaiting_approval" || run.status === "changes_requested") && !!run.pending_gate?.reviews.includes(stage.key);
   const shown = artifacts.filter((a) => a.stage === stage.key && a.attempt === execution?.attempt);
-  const [doc, setDoc] = useState<DocumentChoice>("all");
-  useEffect(() => setDoc("all"), [stage.key, execution?.attempt]);
+  const linkedDoc = linked && linked.attempt === execution?.attempt ? linked.doc : null;
+  const [doc, setDoc] = useState<DocumentChoice>(linkedDoc ?? "all");
+  useEffect(() => setDoc(linkedDoc ?? "all"), [stage.key, execution?.attempt, linkedDoc]);
+  const tabs: Tab[] = ["output", "changes", "activity", "tokens", ...(canInspect && stage.kind === "agent" ? (["inputs"] as Tab[]) : [])];
   const gateApprovals = run.approvals.filter((a) => a.gate === stage.key);
   const title = (key: string) => stages.find((s) => s.key === key)?.title ?? key;
   const answered = questions.filter((q) => q.stage === stage.key && q.attempt === execution?.attempt && q.status === "answered");
@@ -150,13 +164,13 @@ export function StageDetail({ stage, stages, run, events, questions }: {
       ) : (
         <>
           <nav className="flex gap-4 border-b border-border text-sm">
-            {(["output", "changes", "activity", "tokens"] as Tab[]).map((t) => (
+            {tabs.map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`-mb-px border-b-2 pb-2 capitalize ${tab === t ? "border-accent font-medium" : "border-transparent text-subtle hover:text-fg"}`}
+                className={`-mb-px border-b-2 pb-2 ${tab === t ? "border-accent font-medium" : "border-transparent text-subtle hover:text-fg"}`}
               >
-                {t}
+                {TAB_LABELS[t]}
               </button>
             ))}
           </nav>
@@ -181,6 +195,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
           {tab === "changes" && <DiffView runId={run.id} executionId={execution.id} />}
           {tab === "activity" && <ActivityLog events={events} stage={stage.key} />}
           {tab === "tokens" && <TokenUsage execution={execution} attempts={attempts} />}
+          {tab === "inputs" && canInspect && <StepInputs runId={run.id} execution={execution} />}
         </>
       )}
     </div>
