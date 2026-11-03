@@ -90,16 +90,12 @@ def _ownership() -> dict[str, dict]:
 
 
 def _previous_artifacts(workflow: Workflow, run_id: str, stage: StageDef) -> list[PriorDocument]:
-    """The latest attempt's documents from each earlier stage this stage uses. Contents come from the database, which
-    holds reviewers' manual edits."""
+    """The documents in effect from each earlier stage this stage uses: the same versions the step finds in its
+    workspace (not a failed or rolled-back attempt's). Contents come from the database, which holds reviewers' manual
+    edits."""
     sources = workflow.inputs_of(stage.key)
-    with session_scope() as s:
-        rows = s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage.in_(sources))
-                         .order_by(Artifact.id)).all()
-        latest = {}
-        for a in rows:
-            latest[a.stage] = max(latest.get(a.stage, 0), a.attempt)
-        docs = {(a.stage, a.path): a.content for a in rows if a.attempt == latest[a.stage]}
+    docs = {(src, path): content for path, (src, content)
+            in workspace.effective_documents_by_stage(run_id, stage.key).items() if src in sources}
     return [PriorDocument(stage=source, stage_title=workflow.by_key[source].title, path=path,
                           content=content if stage.include_content else None)
             for (source, path), content in sorted(docs.items(), key=lambda d: (sources.index(d[0][0]), d[0][1]))]
@@ -479,6 +475,9 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             log=lambda msg: emit(run_id, "log", msg, stage.key),
             config=config or {}, stage_def=stage, inputs=_inputs(run_id, stage.key),
             previous_artifacts=_previous_artifacts(workflow, run_id, stage),
+            # Re-running in place: which of the documents it builds on changed since its last attempt
+            changed_inputs=(workspace.changed_inputs(run_id, stage.key, workflow.inputs_of(stage.key))
+                            if refresh else None),
             answered=questions.answered_for(run_id, stage.key),
             catalogue=(discovery_store.domains_brief(domain) if discovery else
                        contracts_store.catalogue_brief(domain, settings)),

@@ -92,14 +92,47 @@ def _chain(s, run: Run, before_stage: str | None) -> list[StageExecution]:
 def effective_documents(run_id: str, before_stage: str | None = None) -> dict[str, str]:
     """The run's documents in effect (path: content): the latest version each stage in effect wrote, later stages
     winning, with reviewers' edits."""
+    return {path: content for path, (_stage, content) in effective_documents_by_stage(run_id, before_stage).items()}
+
+
+def effective_documents_by_stage(run_id: str, before_stage: str | None = None,
+                                 until=None) -> dict[str, tuple[str, str]]:
+    """The documents in effect (path: (the stage that wrote it, content)), as effective_documents. `until`: as they were
+    in effect then, from the attempts that had finished by that time (what a step that started then was given)."""
     with session_scope() as s:
         run = s.get(Run, run_id)
-        chain = [(ex.stage, ex.attempt) for ex in _chain(s, run, before_stage)]
+        executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run.id)).all()
+        if until is not None:
+            executions = [e for e in executions if e.finished_at is not None and e.finished_at <= until]
+        chain = [(ex.stage, ex.attempt) for ex in _effective(executions, run.stage_defs, before_stage)]
         artifacts = s.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
-        documents: dict[str, str] = {}
+        documents: dict[str, tuple[str, str]] = {}
         for stage, attempt in chain:
-            documents.update({a.path: a.content for a in artifacts if a.stage == stage and a.attempt == attempt})
+            documents.update({a.path: (stage, a.content or "") for a in artifacts
+                              if a.stage == stage and a.attempt == attempt})
         return documents
+
+
+def changed_inputs(run_id: str, stage: str, sources: list[str]) -> list[str] | None:
+    """The documents of `sources` (earlier steps this step builds on) that changed since this step's last completed
+    attempt started: new, edited or gone, as paths. None when the step never completed (nothing to compare with)."""
+    with session_scope() as s:
+        last = s.scalars(select(StageExecution).where(
+            StageExecution.run_id == run_id, StageExecution.stage == stage, StageExecution.status == "completed")
+            .order_by(StageExecution.started_at.desc())).first()
+        since = last.started_at if last is not None else None
+    if since is None:
+        return None
+    now = {p: c for p, (st, c) in effective_documents_by_stage(run_id, stage).items() if st in sources}
+    then = {p: c for p, (st, c) in effective_documents_by_stage(run_id, stage, until=since).items() if st in sources}
+    changed = {p for p in {*now, *then} if now.get(p) != then.get(p)}
+    with session_scope() as s:  # a reviewer's edit changes the stored document in place: edited since it started
+        from datetime import timedelta
+
+        changed |= {a.path for a in s.scalars(select(Artifact).where(
+            Artifact.run_id == run_id, Artifact.stage.in_(sources), Artifact.updated_at > since))
+            if a.path in now and a.created_at and a.updated_at - a.created_at > timedelta(seconds=1)}
+    return sorted(changed)
 
 
 def amendment_changed_inputs(run_id: str, source: str, follower: str) -> bool:

@@ -168,6 +168,22 @@ def refresh_brief(ctx: AgentContext) -> str:
             "they are and say so.")
 
 
+def changed_inputs_brief(ctx: AgentContext) -> str:
+    """For a re-run in place: exactly which earlier documents changed since the step last ran, so it reads them again
+    and follows them, rather than keeping what it wrote."""
+    if ctx.changed_inputs is None:
+        return ""
+    if not ctx.changed_inputs:
+        return ("## Earlier documents since your last attempt\nThe documents of the earlier steps you build on are "
+                "unchanged since your last attempt.")
+    titles = {d.path: d.stage_title for d in ctx.previous_artifacts}
+    listed = "\n".join(f"- `{p}`" + (f" ({titles[p]})" if p in titles else " (no longer there)") for p in ctx.changed_inputs)
+    return ("## Earlier documents changed since your last attempt\n"
+            "These documents you build on changed since you last ran. Read each of them again now (don't rely on what "
+            "you wrote before), and update your documents wherever they follow from the changes; keep the rest as it "
+            f"is:\n{listed}")
+
+
 def resume_brief(ctx: AgentContext) -> str:
     """For a retry after the step stopped: carry on from the work the stopped attempt kept, rather than redo it."""
     r = ctx.resume or {}
@@ -275,6 +291,9 @@ def brief(ctx: AgentContext) -> str:
         parts.append(amend_brief(ctx))
     elif ctx.refresh:
         parts.append(refresh_brief(ctx))
+    changed = changed_inputs_brief(ctx)
+    if changed:
+        parts.append(changed)
     if ctx.resume:
         parts.append(resume_brief(ctx))
     if ctx.previous_artifacts:

@@ -54,6 +54,9 @@ class StubAgent(StageAgent):
         if ctx.refresh:
             lines += ["", "## Re-run", f"Updated in place from the previous attempt ({len(ctx.previous_outputs)} "
                                          "document(s)) with the agent's current settings."]
+            if ctx.changed_inputs is not None:
+                lines += ["", "Earlier documents changed since the last attempt: "
+                          + (", ".join(f"`{p}`" for p in ctx.changed_inputs) or "none")]
         out.write_text("\n".join(lines) + "\n", encoding="utf-8")
         artifacts = [ArtifactOut(name=out.name, path=ctx.rel(out), kind="markdown")]
         artifacts += _sample_functional_files(ctx, out)

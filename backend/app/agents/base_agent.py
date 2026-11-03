@@ -115,6 +115,8 @@ class AgentContext:
     # A restart from a completed stage: update this stage's previous documents (paths below) instead of starting over.
     refresh: bool = False
     previous_outputs: list[str] = field(default_factory=list)
+    # A re-run in place: the earlier documents it builds on that changed since its last attempt (None: not a re-run)
+    changed_inputs: list[str] | None = None
     # A retry after this step stopped (failed) with its work kept: {"attempt", "error", "documents": paths restored,
     # "commits": its commits (one line each), "files": code files it changed, "code_kept": its commits are in place}.
     resume: dict | None = None

@@ -189,3 +189,57 @@ def test_a_step_whose_work_was_undone_runs_again_even_when_not_ticked(client, mo
     assert len(_attempts(run, "microservice_scaffold")) == before["microservice_scaffold"] + 1  # undone: runs again
     assert _attempts(run, "microservice_scaffold")[-1]["status"] == "completed"
     assert any("run again too: their earlier work is no longer in effect" in m for m in _log(run_id))
+
+
+def test_a_step_re_running_in_place_is_told_which_earlier_documents_changed(client, monkeypatch):
+    from app.agents import common as agent_common
+
+    seen = {}
+    original = stub.StubAgent.run
+
+    def run(self, ctx):
+        seen.setdefault(self.stage, []).append((ctx.changed_inputs, agent_common.changed_inputs_brief(ctx),
+                                                sorted(d.path.rsplit("/", 1)[-1] for d in ctx.previous_artifacts)))
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", run)
+    run_id = _lean(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    approve(client, run_id)
+    wait_for(client, run_id, {"awaiting_approval"})  # at the design gate
+    r = client.post(f"/api/runs/{run_id}/restart", json={"stage": "analysis", "notes": "Re-validate the spec"})
+    assert r.status_code == 200, r.text
+    wait_for(client, run_id, {"awaiting_approval"})
+    approve(client, run_id)
+    wait_for(client, run_id, {"awaiting_approval"})
+    first, again = seen["modulith_design"][0], seen["modulith_design"][-1]
+    assert first[0] is None  # its first run: nothing to compare with
+    changed, brief, given = again
+    assert any(p.endswith("/as-is.md") for p in changed)  # Analysis rewrote it with the re-run's notes
+    assert "Read each of them again now" in brief and "as-is.md" in brief
+    assert {"as-is.md", "functional-spec.md", "test-scenarios.md", "cross-domain.yaml",
+            "domain-dependencies.yaml"} <= set(given)  # the documents in effect, from both steps
+    design = [s for s in client.get(f"/api/runs/{run_id}").json()["stages"] if s["stage"] == "modulith_design"][-1]
+    assert "The workflow is re-running from Analysis with these notes: Re-validate the spec" in design["feedback"]
+
+
+def test_the_documents_listed_are_the_ones_in_effect_not_a_failed_attempt(client, monkeypatch):
+    from app.orchestrator import graph
+    from app.orchestrator.stages import LEAN
+
+    original, fail = stub.StubAgent.run, {"analysis": False}
+
+    def run(self, ctx):
+        if fail.get(self.stage):
+            (ctx.output_dir / "half-done.md").write_text("partial")
+            raise RuntimeError("stopped half way")
+        return original(self, ctx)
+
+    monkeypatch.setattr(stub.StubAgent, "run", run)
+    run_id = _lean(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    fail["analysis"] = True
+    assert client.post(f"/api/runs/{run_id}/restart", json={"stage": "analysis"}).status_code == 200
+    wait_for(client, run_id, {"failed"})
+    names = {d.path.rsplit("/", 1)[-1] for d in graph._previous_artifacts(LEAN, run_id, LEAN.by_key["modulith_design"])}
+    assert "half-done.md" not in names and "as-is.md" in names  # the failed attempt's documents aren't in effect

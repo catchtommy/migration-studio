@@ -103,7 +103,10 @@ class Runner:
                                                      and d["key"] in ran],
                         "route": stage, "amend": None}  # a re-run of the workflow, not a reviewer's amendment
         if notes:
-            values["feedback"] = {stage: notes}
+            # the first step gets the notes; the later steps re-running in place are told why the workflow re-runs
+            title = next((d.get("title") or d["key"] for d in stages if d["key"] == stage), stage)
+            values["feedback"] = {stage: notes, **{k: f"The workflow is re-running from {title} with these notes: {notes}"
+                                                   for k in values["refresh"] if k != stage}}
         # Continue as if the step before had just finished (START for the first step); a pending gate is dropped.
         previous = node_before(Workflow.from_dicts(stages), stage)
         with self._lock:
