@@ -94,7 +94,7 @@ LATER_COLUMNS = {("stage_executions", "rerun"), ("runs", "repository"), ("runs",
                  ("runs", "started_by"), ("runs", "delivery"), ("workflows", "git"),
                  ("runs", "repositories"), ("stage_executions", "repos"),
                  ("runs", "legacy"), ("agents", "guardrails"), ("stage_executions", "checklist"),
-                 ("runs", "agents_kept_at"), ("stage_executions", "usage")}
+                 ("runs", "agents_kept_at"), ("stage_executions", "usage"), ("runs", "pending_change")}
 
 
 def _add_missing_columns(conn) -> None:

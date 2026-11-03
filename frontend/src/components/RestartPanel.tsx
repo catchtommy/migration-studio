@@ -32,7 +32,22 @@ export function RestartPanel({ run, stage, stages, completed }: { run: RunDetail
       setNotes("");
     },
   });
-  if (!canRun || stage.kind !== "agent" || !completed || !RESTARTABLE.includes(run.status)) return null;
+  if (!canRun || stage.kind !== "agent" || !completed) return null;
+  if (!RESTARTABLE.includes(run.status)) {
+    if (!["running", "awaiting_input"].includes(run.status)) return null;
+    // The run is working: say why it can't re-run now, and what can be done instead
+    const reason = run.changeable?.[stage.key]
+      ? "The run is working: use Change this step (the working step stops first), or wait for it to stop"
+      : "The run is working: wait for it to stop or reach a gate, then re-run";
+    return (
+      <span className="ml-auto flex flex-col items-end gap-0.5">
+        <button disabled className="rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium opacity-50" title={reason}>
+          ↻ Re-run from here
+        </button>
+        <span className="max-w-xs text-right text-xs text-subtle">{reason}</span>
+      </span>
+    );
+  }
 
   const at = stages.findIndex((s) => s.key === stage.key);
   const later = stages.slice(at + 1).filter((s) => s.kind === "agent");

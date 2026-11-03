@@ -4,7 +4,10 @@ export type DisplayStatus = "pending" | "awaiting_branches" | StageExecution["st
 
 /**
  * Status of each stage for the timeline. A stage's latest execution is superseded (shown as pending)
- * when an earlier stage has run again since — that happens after a rejection loops the workflow back.
+ * when an earlier stage has run again from its start since — that happens after a rejection loops the workflow back,
+ * or a fresh re-run. An earlier stage re-run in place ("rerun": a re-run updating its documents, a reviewer's
+ * amendment, Change this step) builds on the later stages' work instead of undoing it, as the server counts it
+ * (app/workspace.py _effective): a later stage kept through it stays completed.
  *
  * The run's own status and current stage come first for the step it is on: a step being re-run or retried shows as
  * running (and every step after it as pending) as soon as the run moves to it, before its agent records an
@@ -33,7 +36,8 @@ export function stageStatuses(stages: StageDef[], run: RunDetail): Map<string, {
     // Waiting for its branches to be confirmed (before it starts) is not an approval: the run page asks for them.
     else if (onStep && i === current) status = run.status === "running" ? "running" : "awaiting_branches";
     result.set(stage.key, { status, latest, attempts });
-    for (const e of attempts) if (!newestEarlier || after(e, newestEarlier)) newestEarlier = e;
+    // Only an agent step that started over undoes the steps after it (a gate's new attempt, approving again, doesn't)
+    if (stage.kind === "agent") for (const e of attempts) if (!e.rerun && (!newestEarlier || after(e, newestEarlier))) newestEarlier = e;
   });
   return result;
 }

@@ -56,6 +56,10 @@ export function ApprovalPanel({
         the documents before the re-run, choose <em>Reject…</em>, then <em>Reject, amend first</em>.
       </p>
       {coverage && <FunctionalCoverage coverage={coverage} gate={gate.gate} reviews={gate.reviews} />}
+      <p className="mt-2 text-xs text-subtle">
+        The mistake is in an earlier approved step (Analysis, Domain dependencies, Modulith design)? Open it in the timeline and use <em>Change this step</em>: it is
+        corrected and carried forward to the steps you choose.
+      </p>
 
       {!canApprove ? (
         <>

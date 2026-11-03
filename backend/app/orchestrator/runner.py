@@ -15,8 +15,8 @@ from app.db.session import emit, session_scope
 from app import delivery, git_auth, legacy, projects, repos
 from app.orchestrator import questions
 from app.orchestrator.checkpointer import SqlAlchemySaver
-from app.orchestrator.graph import build_graph, node_before
-from app.orchestrator.stages import Workflow
+from app.orchestrator.graph import build_graph, follow_note, node_before
+from app.orchestrator.stages import FOLLOWS_DOCUMENTS, Workflow
 from app.tools import git_ops
 from app.workspace import ensure as ensure_workspace
 from app.workspace import exclude_nested, recut, release_workspace, start_fresh
@@ -120,6 +120,37 @@ class Runner:
         else:
             prepare = (lambda: start_fresh(run_id, stage)) if fresh else None
         self._submit(run_id, None, prepare=prepare)
+
+    def amend(self, run_id: str, stage: str, notes: str, follow: list[str]) -> None:
+        """A change to an approved step, fixed forward: `stage` makes only the requested change (in place) and its gate
+        asks again; of the steps after it that already ran, those in `follow` update their work where the change
+        reaches them, the others are kept as they are (and a gate reviewing only kept steps keeps its approval)."""
+        with session_scope() as s:
+            run = s.get(Run, run_id)
+            stages = run.stage_defs
+            ran = {e.stage for e in run.stages if e.status == "completed"}
+        keys = [d["key"] for d in stages]
+        at = keys.index(stage)
+        titles = {d["key"]: d.get("title") or d["key"] for d in stages}
+        later = [d["key"] for d in stages[at + 1:] if d["kind"] == "agent" and d["key"] in ran]
+        follow = [k for k in later if k in follow]
+        kept = [k for k in later if k not in follow]
+        values: dict = {
+            "route": stage, "refresh": [stage, *follow],
+            "feedback": {stage: notes, **{k: follow_note(titles[stage], notes, k) for k in follow}},
+            # Domain dependencies following Analysis re-runs only if the change touched what it reads
+            "amend": {"stage": stage, "skip": kept, "kept": kept,
+                      "check": [k for k in follow if stage in FOLLOWS_DOCUMENTS.get(k, ())]},
+        }
+        previous = node_before(Workflow.from_dicts(stages), stage)
+        with self._lock:
+            if run_id in self._active:
+                raise RunBusyError(f"Run {run_id} is already executing")
+        with session_scope() as s:  # the gate waiting now is dropped (as in restart)
+            s.execute(delete(StageExecution).where(StageExecution.run_id == run_id,
+                                                   StageExecution.status == "awaiting_approval"))
+        self.graph_for(run_id).update_state(self._config(run_id), values, as_node=previous)
+        self._submit(run_id, None)
 
     def retry(self, run_id: str, notes: str | None = None) -> None:
         """Run the failed step again. `notes` reach its agent with the step (what to do differently), as a reviewer's
@@ -230,6 +261,8 @@ class Runner:
             from app.agents.common import request_stop
             request_stop(run_id, on=False)  # a stop asked for ends with this execution; a retry runs normally
 
+        if self._apply_pending_change(run_id):  # a change to an approved step was asked for while it worked
+            return
         if gate and gate.get("kind") == "branches" and not gate["repository"].get("checked_out"):
             _fetch_for_question(run_id, gate["repository"]["url"])
         review = error is None and not gate and delivery.wants_review(run_id)
@@ -263,6 +296,34 @@ class Runner:
             emit(run_id, "status", "Workflow finished: review the code changes and commit them to git")
         elif not gate:
             emit(run_id, "status", "Migration run completed")
+
+    def _apply_pending_change(self, run_id: str) -> bool:
+        """When a change to an approved step was asked for while the run worked: now that the working step stopped (or
+        the run reached a gate, or finished), go back to that step instead of showing the run as failed or waiting."""
+        from app.orchestrator import graph
+
+        with session_scope() as s:
+            run = s.get(Run, run_id)
+            change = run.pending_change if run is not None else None
+            if not change:
+                return False
+            run.pending_change = None
+            run.status, run.error, run.pending_rerun, run.current_stage = "running", None, None, change["stage"]
+        graph.discard_stopped_work(run_id)  # the stopped step starts over later: its unfinished work is undone
+        questions.cancel_open(run_id)
+        title = next((d.get("title") for d in run.stage_defs if d["key"] == change["stage"]), change["stage"])
+        emit(run_id, "status", f"Going back to {title} for the change {change.get('by') or 'a reviewer'} asked for",
+             change["stage"])
+        try:
+            delivery.refresh_code_settings(run_id)
+            self.amend(run_id, change["stage"], change["notes"], change.get("follow") or [])
+        except Exception as e:  # noqa: BLE001 - the run shows what happened instead of staying "running"
+            log.exception("Applying the change to run %s failed", run_id)
+            with session_scope() as s:
+                run = s.get(Run, run_id)
+                run.status, run.error = "failed", f"Couldn't go back to {title} for the requested change: {e}"
+            emit(run_id, "error", f"Couldn't go back to {title} for the requested change: {e}", change["stage"])
+        return True
 
     def forget(self, run_id: str) -> None:
         """Drop a deleted run's checkpoints."""

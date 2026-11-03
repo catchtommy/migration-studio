@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.schemas import (
-    AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, ChecklistTick, Decision, EventOut,
+    AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, ChangeStep, ChecklistTick,
+    Decision, EventOut,
     QuestionOut,
     RetryIn, RunCreate, RunDetail, RunOut, Rerun, Restart, StartOverIn, WorkflowUpdateIn,
 )
@@ -200,6 +201,7 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
         db.refresh(run)  # the workflow's current code settings, picked up while it waits
     detail = RunDetail.model_validate(run)
     detail.rerun_blocked = workspace.rerun_blocked(run, list(run.stages))
+    detail.changeable = changeable(run, list(run.stages))
     if run.scope == "operation":
         detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
                                   if run.legacy else
@@ -421,6 +423,106 @@ def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db
 
 
 RESTARTABLE = ("completed", "failed", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches")
+
+
+WORKING = ("running", "awaiting_input")
+
+
+def changeable(run: Run, executions: list[StageExecution]) -> dict[str, str]:
+    """The run's steps a person can change after they ran (Change this step): completed agent steps that write
+    documents only and that a gate reviews (Analysis, Domain dependencies, Modulith design in the lean workflow), by
+    key with their title. Code steps are re-run with Re-run from here instead."""
+    completed = {e.stage for e in executions if e.status == "completed"}
+    reviewed = {k for d in run.stage_defs if d["kind"] == "gate" for k in d.get("reviews") or []}
+    return {d["key"]: d.get("title") or d["key"] for d in run.stage_defs
+            if d["kind"] == "agent" and not d.get("code") and d["key"] in completed and d["key"] in reviewed}
+
+
+@router.post("/runs/{run_id}/change", response_model=RunOut)
+def change_step(run_id: str, body: ChangeStep, db: Session = Depends(get_db),
+                access: ProjectAccess = Depends(project_context)):
+    """Change an approved documents step and fix forward: it makes only the requested change, and the already-run
+    steps in `follow` update their work in place (the others are kept). While the run works, the change waits for the
+    working step to stop at its next turn."""
+    if not (access.can("runs.start") or access.can("runs.approve")):
+        raise HTTPException(403, "Changing a step needs the permission to run or approve migrations")
+    user = access.user
+    run = _run_or_404(db, run_id)
+    executions = list(db.scalars(select(StageExecution).where(StageExecution.run_id == run_id)))
+    allowed = changeable(run, executions)
+    if body.stage not in allowed:
+        raise HTTPException(422, f"{body.stage} can't be changed this way: only a completed step that writes documents "
+                                 "and that a gate approves (use Re-run from here for a step that changes code)")
+    notes = body.notes.strip()
+    if not notes:
+        raise HTTPException(422, "Say what to change")
+    blocked = workspace.rerun_blocked(run, executions).get(body.stage)
+    if blocked:
+        raise HTTPException(409, f"{allowed[body.stage]} can't be changed yet: {blocked}")
+    if run.pending_change:
+        raise HTTPException(409, f"A change to {run.pending_change['stage']} is already waiting for the working step "
+                                 "to stop")
+    keys = [d["key"] for d in run.stage_defs]
+    completed = {e.stage for e in executions if e.status == "completed"}
+    later = [k for k in keys[keys.index(body.stage) + 1:] if k in completed
+             and next(d for d in run.stage_defs if d["key"] == k)["kind"] == "agent"]
+    wrong = [k for k in body.follow if k not in later]
+    if wrong:
+        raise HTTPException(422, f"Only steps after {allowed[body.stage]} that already ran can follow the change: "
+                                 f"{', '.join(wrong)}")
+    follow = list(body.follow)
+    working = run.status in WORKING or get_runner().is_active(run_id)
+    if working and run.current_stage in later and run.current_stage not in follow:
+        follow.append(run.current_stage)  # the step being stopped starts over: it always follows
+    # A step whose work is no longer in effect (a step before it started over, or failed starting over) has nothing
+    # to keep: it runs again whatever was ticked, or the steps after it would miss its documents and code.
+    in_effect = {e.stage for e in workspace._effective(executions, run.stage_defs, None)}
+    undone = [k for k in later if k not in in_effect and k not in follow]
+    follow += undone
+    follow = [k for k in later if k in follow]  # in workflow order
+    change = {"stage": body.stage, "notes": notes, "follow": follow, "by": user.display_name,
+              "at": utcnow().isoformat()}
+    title = allowed[body.stage]
+    if working:
+        run.pending_change = change
+        db.commit()
+        common.request_stop(run_id, reason=f"Stopped: {user.display_name} asked to change {title}")
+        questions.cancel_open(run_id)
+        emit(run_id, "status", f"{user.display_name} asked to change {title}: the working step stops at its next turn, "
+                               f"then the run goes back to {title}", body.stage)
+        if not get_runner().is_active(run_id):  # it finished meanwhile: nothing will stop, so apply the change now
+            common.request_stop(run_id, on=False)
+            get_runner()._apply_pending_change(run_id)
+        db.refresh(run)
+        return run
+    if run.status not in RESTARTABLE:
+        raise HTTPException(409, "The run can't go back to an earlier step right now")
+    if run.status == "changes_requested" and run.pending_rerun:
+        latest = db.scalar(select(Approval).where(Approval.run_id == run_id, Approval.gate == run.pending_rerun["gate"])
+                           .order_by(Approval.id.desc()).limit(1))
+        if latest is not None and latest.decision == "reject":
+            db.delete(latest)  # the held rejection never took effect; the change replaces it
+    graph.discard_stopped_work(run_id)
+    before, before_stage = run.status, run.current_stage
+    run.status, run.error, run.pending_rerun, run.current_stage = "running", None, None, body.stage
+    db.commit()
+    kept = [k for k in later if k not in follow]
+    emit(run_id, "status", f"{user.display_name} changed {title}: {notes[:200]}"
+         + (f"; {len(follow)} later step(s) update in place" if follow else "")
+         + (f", {len(kept)} kept as they are" if kept else ""), body.stage)
+    if undone:
+        titles = {d["key"]: d.get("title") or d["key"] for d in run.stage_defs}
+        emit(run_id, "log", f"{', '.join(titles[k] for k in undone)} run again too: their earlier work is no longer in "
+                            "effect (a step before them started over), so there is nothing to keep", body.stage)
+    delivery.refresh_code_settings(run_id)
+    db.refresh(run)
+    try:
+        get_runner().amend(run_id, body.stage, notes, follow)
+    except RunBusyError as e:
+        run.status, run.current_stage = before, before_stage
+        db.commit()
+        raise HTTPException(409, str(e))
+    return run
 
 
 @router.post("/runs/{run_id}/restart", response_model=RunOut)

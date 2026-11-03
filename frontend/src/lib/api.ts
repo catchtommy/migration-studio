@@ -244,6 +244,9 @@ export interface RunDetail extends Run {
   stopping?: boolean; // an admin asked the working run to stop: its agent ends at its next step
   rerun_blocked?: Record<string, string>; // top down: steps that can't be re-run yet, with the reason (an earlier step failed)
   functional_coverage?: FunctionalCoverage | null; // at a gate and once done: the functional specification's coverage
+  // a change to an approved step asked for while the run works: applied when the working step stops
+  pending_change?: { stage: string; notes: string; follow: string[]; by: string; at: string } | null;
+  changeable?: Record<string, string>; // the steps "Change this step" applies to (key -> title)
 }
 
 /** The functional specification's coverage (app/functional_spec.py report): a report, never a block. */
@@ -819,6 +822,8 @@ export const api = {
   startOver: (id: string, workflow: string) => request<Run>(`/runs/${id}/start-over`, json("POST", { workflow })),
   retry: (id: string, fresh = false, notes?: string) => request<Run>(`/runs/${id}/retry`, json("POST", { fresh, notes })),
   stopRun: (id: string) => request<{ stopping: boolean }>(`/runs/${id}/stop`, { method: "POST" }),
+  changeStep: (id: string, stage: string, notes: string, follow: string[]) =>
+    request<Run>(`/runs/${id}/change`, json("POST", { stage, notes, follow })),
   /** upcoming: the steps not reached yet take the workflow's current ones; rerun: re-run from the earliest step a change
    * affects; keep: keep what the steps produced although their agents changed (the next steps use the current agents). */
   updateRunWorkflow: (id: string, mode: "upcoming" | "rerun" | "keep" = "upcoming") =>

@@ -63,6 +63,9 @@ class Run(Base):
     # A rejection held back so people can amend agents, inputs or documents before the re-run:
     # {"gate", "target_stage", "comments"}. Set while the status is changes_requested.
     pending_rerun: Mapped[dict | None] = mapped_column(JSONText)
+    # A change to an approved step asked for while the run was working ({"stage", "notes", "follow", "by", "at"}):
+    # applied once the working step stops (app/orchestrator/runner.py amend)
+    pending_change: Mapped[dict | None] = mapped_column(JSONText)
     # When someone chose to keep what the run's steps produced although their agents changed since: changes up to then
     # are not offered again (the upcoming steps use the current agents anyway).
     agents_kept_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

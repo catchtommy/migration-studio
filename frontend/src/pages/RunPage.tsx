@@ -63,6 +63,11 @@ export function RunPage() {
           </h1>
           <StatusBadge status={run.status} />
           <StopRun run={run} />
+          {run.pending_change && (
+            <span className="text-sm text-warn">
+              Change to {run.changeable?.[run.pending_change.stage] ?? run.pending_change.stage} requested by {run.pending_change.by}: stopping the working step…
+            </span>
+          )}
         </div>
         <p className="mt-1 text-xs text-subtle">
           <span className="font-mono">{run.branch}</span>

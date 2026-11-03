@@ -630,6 +630,15 @@ def make_publish_node(key: str):
 
 
 SYSTEM_REVIEWER = "Migration Studio"  # who records a gate that passed by itself
+
+
+def follow_note(changed: str, comments: str, key: str) -> str:
+    """What a step that follows an amended earlier one is told: update only where the change reaches it (an acceptance
+    suite: run again, unchanged)."""
+    return (f"{changed} was changed at the reviewer's request: {comments}\n"
+            + (ACCEPTANCE_FOLLOW if key in ACCEPTANCE_STEPS else
+               "Update your work only where it follows from that change (what you copied or built on from it); "
+               "everything else stays exactly as it is."))
 # The acceptance suites prove the code they test: following a fix of that code, they run again unchanged, so the fix is
 # proven against the same tests.
 ACCEPTANCE_STEPS = ("independent_tests", "orchestrator_tests")
@@ -647,13 +656,29 @@ def _nothing_to_review(run_id: str, gate: StageDef, state: MigrationState) -> st
     return "; ".join(dict.fromkeys(reasons))
 
 
+def _kept_since_approved(run_id: str, workflow: Workflow, gate: StageDef, state: MigrationState) -> str | None:
+    """Why the gate passes with its earlier approval: a change to an earlier step kept every step it reviews as it was
+    (amend "kept"), and a person approved it before. None when it must ask again."""
+    kept = set((state.get("amend") or {}).get("kept") or [])
+    reviews = [k for k in gate.reviews if k in workflow.by_key]
+    if not kept or not reviews or not set(reviews) <= kept:
+        return None
+    with session_scope() as s:
+        earlier = s.scalar(select(Approval).where(Approval.run_id == run_id, Approval.gate == gate.key,
+                                                  Approval.decision == "approve")
+                           .order_by(Approval.id.desc()).limit(1))
+    if earlier is None:
+        return None
+    return f"kept: the steps it reviews weren't changed, approved earlier by {earlier.reviewer}"
+
+
 def make_gate_node(workflow: Workflow, gate: StageDef):
     after = workflow.next_stage(gate.key) or END
     approved_to = publish_node_key(gate.key) if _publishes(workflow, gate) else after
 
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
-        nothing = _nothing_to_review(run_id, gate, state)
+        nothing = _nothing_to_review(run_id, gate, state) or _kept_since_approved(run_id, workflow, gate, state)
         if nothing:  # every step it reviews was skipped (a domain-only feature at the orchestrator's gate)
             with session_scope() as s:
                 attempt = 1 + s.scalar(select(func.count()).where(
@@ -662,7 +687,7 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
                                      feedback=nothing, finished_at=utcnow()))
                 s.add(Approval(run_id=run_id, gate=gate.key, decision="approve", comments=nothing,
                                reviewer=SYSTEM_REVIEWER))
-            emit(run_id, "approval", f"{gate.title}: nothing to review, passed by itself ({nothing})", gate.key)
+            emit(run_id, "approval", f"{gate.title}: passed by itself ({nothing})", gate.key)
             return {"route": approved_to}
         # Everything before interrupt() re-executes on resume, so keep it idempotent.
         with session_scope() as s:
@@ -708,10 +733,7 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
                       or target in FOLLOWS_DOCUMENTS.get(k, ())]
             skip = [k for k in between if k not in follow]
             for k in follow:  # what they follow, and nothing more
-                feedback[k] = (f"{workflow.by_key[target].title} was changed at the reviewer's request: {comments}\n"
-                               + (ACCEPTANCE_FOLLOW if k in ACCEPTANCE_STEPS else
-                                  "Update your work only where it follows from that change (what you copied or built "
-                                  "on from it); everything else stays exactly as it is."))
+                feedback[k] = follow_note(workflow.by_key[target].title, comments, k)
             check = [k for k in follow if not workflow.by_key[k].code]
             emit(run_id, "approval", f"{gate.title}: rejected, {workflow.by_key[target].title} makes the requested "
                                      "change only"

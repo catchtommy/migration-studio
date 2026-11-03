@@ -64,3 +64,24 @@ test("attempts are ordered by their number, whatever order the ids come in (Orac
   expect(s.latest?.attempt).toBe(2); // the one that can be edited at the gate
   expect(s.status).toBe("completed"); // not superseded: nothing earlier ran after it
 });
+
+test("a step kept through an in-place change of an earlier step stays completed", () => {
+  const s = stageStatuses(stages, run([
+    { ...ex("a", "completed"), started_at: "2026-11-03T09:00" },
+    { ...ex("b", "completed"), started_at: "2026-11-03T10:00" },
+    { ...ex("g", "approved"), started_at: "2026-11-03T10:30" },
+    { ...ex("a", "completed", 2), started_at: "2026-11-03T11:00", rerun: true }, // Change this step: in place
+    { ...ex("g", "approved", 2), started_at: "2026-11-03T11:30" }, // approved again
+  ]));
+  expect(s.get("a")!.status).toBe("completed");
+  expect(s.get("b")!.status).toBe("completed"); // kept: its work is still in effect
+});
+
+test("an earlier step that started over still marks the steps after it pending", () => {
+  const s = stageStatuses(stages, run([
+    { ...ex("a", "completed"), started_at: "2026-11-03T09:00" },
+    { ...ex("b", "completed"), started_at: "2026-11-03T10:00" },
+    { ...ex("a", "completed", 2), started_at: "2026-11-03T11:00" }, // fresh: not in place
+  ]));
+  expect(s.get("b")!.status).toBe("pending");
+});

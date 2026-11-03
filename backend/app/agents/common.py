@@ -24,14 +24,18 @@ class RunStopped(AgentFailed):
     """An admin stopped the run (to delete it, or start its feature over with another workflow)."""
 
 
-# Runs being stopped: their agent ends at its next turn or tool call (app/run_cleanup.py).
-_stopping: set[str] = set()
+# Runs being stopped, with why: their agent ends at its next turn or tool call (app/run_cleanup.py, a change asked
+# for to an approved step).
+_stopping: dict[str, str] = {}
 _stopping_lock = threading.Lock()
 
 
-def request_stop(run_id: str, on: bool = True) -> None:
+def request_stop(run_id: str, on: bool = True, reason: str = "Stopped by an admin") -> None:
     with _stopping_lock:
-        (_stopping.add if on else _stopping.discard)(run_id)
+        if on:
+            _stopping[run_id] = reason
+        else:
+            _stopping.pop(run_id, None)
 
 
 def stop_requested(run_id: str) -> bool:
@@ -40,8 +44,10 @@ def stop_requested(run_id: str) -> bool:
 
 
 def raise_if_stopped(ctx: AgentContext) -> None:
-    if stop_requested(ctx.run_id):
-        raise RunStopped("Stopped by an admin")
+    with _stopping_lock:
+        reason = _stopping.get(ctx.run_id)
+    if reason:
+        raise RunStopped(reason)
 
 
 def system_prompt(ctx: AgentContext) -> str:
@@ -305,7 +311,7 @@ def run_tool(ctx: AgentContext, toolbox: Toolbox, name: str, args: object) -> tu
     from app.orchestrator.questions import QuestionAbandoned
 
     if stop_requested(ctx.run_id):  # an admin is stopping the run: no more work
-        return "Not run: an admin is stopping this run. Don't call any more tools; finish now.", True
+        return "Not run: this run is being stopped. Don't call any more tools; finish now.", True
     try:
         return toolbox.run(name, args), False
     except ToolError as e:

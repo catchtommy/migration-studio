@@ -106,6 +106,10 @@ class RunDetail(RunOut):
     workspace: str | None
     inputs: dict | None
     pending_rerun: dict | None  # a rejection waiting for amendments: {"gate", "target_stage", "comments"}
+    # a change to an approved step asked for while the run works: {"stage", "notes", "follow", "by", "at"}
+    pending_change: dict | None = None
+    # the steps Change this step applies to (completed documents steps a gate reviews), key -> title
+    changeable: dict[str, str] = {}
     stages: list[StageExecutionOut]
     approvals: list[ApprovalOut]
     pending_gate: dict | None = None
@@ -158,6 +162,15 @@ class Decision(BaseModel):
 class ChecklistTick(BaseModel):
     item: str = Field(max_length=300)
     done: bool = True
+
+
+class ChangeStep(BaseModel):
+    """A change to an approved documents step (Analysis, Domain dependencies, Modulith design): that step makes only
+    this change, and the already-run steps in `follow` update their work in place; the other already-run steps are
+    kept as they are."""
+    stage: str
+    notes: str = Field(min_length=1, max_length=20_000)
+    follow: list[str] = []
 
 
 class Restart(BaseModel):

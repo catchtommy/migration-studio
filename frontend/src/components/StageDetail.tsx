@@ -5,6 +5,7 @@ import { stageStatuses } from "../lib/stageStatus";
 import { ActivityLog } from "./ActivityLog";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { RestartPanel } from "./RestartPanel";
+import { ChangeStepPanel, changedSince } from "./ChangeStepPanel";
 import { chosen, DocumentPicker, type DocumentChoice } from "./DocumentPicker";
 import { DiffView } from "./DiffView";
 import { TokenUsage } from "./TokenUsage";
@@ -57,9 +58,15 @@ export function StageDetail({ stage, stages, run, events, questions }: {
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-lg font-semibold">{stage.title}</h2>
           <StatusBadge status={run.status === "changes_requested" && run.pending_rerun?.gate === stage.key ? "changes_requested" : status} />
+          <ChangeStepPanel run={run} stage={stage} stages={stages} />
           <RestartPanel run={run} stage={stage} stages={stages} completed={attempts.some((a) => a.status === "completed")} />
         </div>
         <p className="mt-1 text-sm text-subtle">{stage.description}</p>
+        {stage.kind === "agent" && changedSince(run, stages, stage.key) && (
+          <p className="mt-1 text-xs text-warn">
+            Ran before {changedSince(run, stages, stage.key)} was changed: kept as it was. Re-run it if the change reaches it.
+          </p>
+        )}
         {stage.kind === "agent" && <StageInputs stage={stage} stages={stages} />}
       </header>
 
