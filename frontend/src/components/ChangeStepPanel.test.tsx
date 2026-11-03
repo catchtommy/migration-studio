@@ -88,3 +88,9 @@ test("a step that runs again anyway is ticked and locked, with the reason", () =
   expect(box.checked && box.disabled).toBe(true);
   expect(screen.getByText("runs again: its earlier work is no longer in effect")).toBeInTheDocument();
 });
+
+test("the panels say when the monolith has moved on since the run started", () => {
+  show(<ChangeStepPanel run={run("awaiting_approval", { monolith_behind: 3 })} stage={stages[0]} stages={stages} />);
+  fireEvent.click(screen.getByRole("button", { name: "✎ Change this step" }));
+  expect(screen.getByText(/its base branch has 3 newer commits/)).toBeInTheDocument();
+});

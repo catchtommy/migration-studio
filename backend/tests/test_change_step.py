@@ -87,6 +87,7 @@ def test_only_the_ticked_steps_update_and_a_gate_of_kept_steps_keeps_its_approva
     assert len(_attempts(run, "orchestrator_service")) == before["orchestrator_service"] + 1
     domain_gate = _attempts(run, "gate_tests")[-1]
     assert domain_gate["status"] == "approved" and "approved earlier by" in domain_gate["feedback"]
+    assert "Module in monolith" in domain_gate["feedback"] and "kept as they were" in domain_gate["feedback"]
     from app import workspace  # kept steps' work is still in effect: their documents count, nothing was undone
     in_effect = {e.stage for e in workspace._effective(_executions(run_id), _stage_defs(run_id), None)}
     assert {"modular_monolith", "microservice_scaffold", "independent_tests"} <= in_effect
@@ -243,3 +244,86 @@ def test_the_documents_listed_are_the_ones_in_effect_not_a_failed_attempt(client
     wait_for(client, run_id, {"failed"})
     names = {d.path.rsplit("/", 1)[-1] for d in graph._previous_artifacts(LEAN, run_id, LEAN.by_key["modulith_design"])}
     assert "half-done.md" not in names and "as-is.md" in names  # the failed attempt's documents aren't in effect
+
+
+def test_a_redone_design_withdraws_the_contracts_its_earlier_approval_recorded(client):
+    """A domain dropped from the dependencies must not come back from the catalogue: a contract only this run's design
+    had goes, the domain stops consuming one another feature provides, a live contract stays, and what the design
+    still has is kept."""
+    from app import contracts_store
+    from app.db.models import Contract
+
+    run_id = _lean(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        project, domain = run.project, run.domain
+        tag = run_id[:6]
+        s.add(Contract(project=project, key=f"x{tag}.only-ours", provider=f"x{tag}", kind="api", name="Gone",
+                       consumers=[domain], status="proposed", run_id=run_id))
+        s.add(Contract(project=project, key=f"x{tag}.others", provider=f"x{tag}", kind="api", name="Shared",
+                       consumers=[domain, "reports"], status="approved", run_id="someone-else"))
+        s.add(Contract(project=project, key=f"x{tag}.live", provider=f"x{tag}", kind="api", name="Live",
+                       consumers=[domain], status="provided-by-service", run_id=run_id))
+        s.add(Contract(project=project, key=f"x{tag}.kept", provider=f"x{tag}", kind="api", name="Kept",
+                       consumers=[domain], status="proposed", run_id=run_id))
+    withdrawn = contracts_store.withdraw_run_contracts(run_id, keep={f"x{tag}.kept"})
+    assert {f"x{tag}.only-ours", f"x{tag}.others", f"x{tag}.live"} <= set(withdrawn)
+    with session_scope() as s:
+        assert s.get(Contract, (project, f"x{tag}.only-ours")) is None
+        assert s.get(Contract, (project, f"x{tag}.others")).consumers == ["reports"]
+        live = s.get(Contract, (project, f"x{tag}.live"))
+        assert live is not None and live.consumers == []  # provided by a service: never removed
+        assert s.get(Contract, (project, f"x{tag}.kept")).consumers == [domain]
+        for key in ("others", "live", "kept"):
+            s.delete(s.get(Contract, (project, f"x{tag}.{key}")))
+
+
+def test_re_running_modulith_design_withdraws_and_its_approval_records_again(client):
+    from app.db.models import Contract
+
+    run_id = _lean(client)
+    wait_for(client, run_id, {"awaiting_approval"})
+    approve(client, run_id)
+    wait_for(client, run_id, {"awaiting_approval"})
+    approve(client, run_id)  # the design approved: its contracts in the catalogue
+    run = wait_for(client, run_id, {"awaiting_approval"})
+    with session_scope() as s:
+        domain = s.get(Run, run_id).domain
+        recorded = [c.key for c in s.scalars(select(Contract).where(Contract.run_id == run_id))]
+    assert recorded
+    r = client.post(f"/api/runs/{run_id}/change", json={"stage": "modulith_design", "notes": "Drop the old domain",
+                                                         "follow": []})
+    assert r.status_code == 200, r.text
+    wait_for(client, run_id, {"awaiting_approval"})
+    assert any("Withdrew this feature's earlier contracts from the catalogue" in m for m in _log(run_id))
+    approve(client, run_id)  # approved again: recorded again
+    wait_for(client, run_id, {"awaiting_approval", "completed"})
+    with session_scope() as s:
+        for key in recorded:  # each recorded again: this domain consuming it, or providing it to another
+            row = s.scalars(select(Contract).where(Contract.key == key)).first()
+            assert row is not None and (domain in row.consumers or row.provider == domain), key
+
+
+def test_the_design_is_told_which_domains_left_or_joined_the_dependencies():
+    from types import SimpleNamespace
+
+    from app.agents import common as agent_common
+
+    ctx = SimpleNamespace(changed_inputs=[".migration/loan/approve/domain-dependencies.yaml"], previous_artifacts=[],
+                          dependency_changes={"removed": ["treasury"], "added": ["customer"]})
+    brief = agent_common.changed_inputs_brief(ctx)
+    assert "**No longer a dependency: treasury.**" in brief and "Don't keep it from your earlier documents" in brief
+    assert "**New dependency: customer.**" in brief
+
+
+def test_earlier_answers_are_labelled_and_give_way_to_the_current_documents():
+    from types import SimpleNamespace
+
+    from app.agents import common as agent_common
+
+    ctx = SimpleNamespace(answered=[("Who owns table T?", "Domain X", 1), ("Is the limit per day?", "Yes", 2)])
+    brief = agent_common.answers_brief(ctx)
+    assert brief.startswith("## Answers from earlier attempts")
+    assert "The current request and the current documents come first" in brief
+    assert "Attempt 1: Q: Who owns table T?\nA: Domain X" in brief and "Attempt 2:" in brief

@@ -113,26 +113,48 @@ def effective_documents_by_stage(run_id: str, before_stage: str | None = None,
         return documents
 
 
-def changed_inputs(run_id: str, stage: str, sources: list[str]) -> list[str] | None:
-    """The documents of `sources` (earlier steps this step builds on) that changed since this step's last completed
-    attempt started: new, edited or gone, as paths. None when the step never completed (nothing to compare with)."""
+def rerun_changes(run_id: str, stage: str, sources: list[str]) -> tuple[list[str] | None, dict | None]:
+    """For a step re-running in place, what changed since its last completed attempt started: the documents of
+    `sources` (the earlier steps it builds on) that are new, edited or gone, as paths; and the other domains
+    domain-dependencies.yaml and cross-domain.yaml gained or lost ({"removed", "added"}, None when the same). (None,
+    None) when the step never completed: nothing to compare with."""
+    import yaml
+    from datetime import timedelta
+
     with session_scope() as s:
         last = s.scalars(select(StageExecution).where(
             StageExecution.run_id == run_id, StageExecution.stage == stage, StageExecution.status == "completed")
             .order_by(StageExecution.started_at.desc())).first()
         since = last.started_at if last is not None else None
     if since is None:
-        return None
-    now = {p: c for p, (st, c) in effective_documents_by_stage(run_id, stage).items() if st in sources}
-    then = {p: c for p, (st, c) in effective_documents_by_stage(run_id, stage, until=since).items() if st in sources}
+        return None, None
+    now_all = effective_documents_by_stage(run_id, stage)
+    then_all = effective_documents_by_stage(run_id, stage, until=since)
+    now = {p: c for p, (st, c) in now_all.items() if st in sources}
+    then = {p: c for p, (st, c) in then_all.items() if st in sources}
     changed = {p for p in {*now, *then} if now.get(p) != then.get(p)}
     with session_scope() as s:  # a reviewer's edit changes the stored document in place: edited since it started
-        from datetime import timedelta
-
         changed |= {a.path for a in s.scalars(select(Artifact).where(
             Artifact.run_id == run_id, Artifact.stage.in_(sources), Artifact.updated_at > since))
             if a.path in now and a.created_at and a.updated_at - a.created_at > timedelta(seconds=1)}
-    return sorted(changed)
+
+    def domains(documents: dict[str, tuple[str, str]]) -> set[str]:
+        out: set[str] = set()
+        for path, (_st, content) in documents.items():
+            field, name = (("dependencies", "domain") if path.endswith("/domain-dependencies.yaml") else
+                           ("interactions", "target") if path.endswith("/cross-domain.yaml") else (None, None))
+            if field is None:
+                continue
+            try:
+                out |= {str(d.get(name)) for d in (yaml.safe_load(content) or {}).get(field) or []
+                        if isinstance(d, dict) and d.get(name)}
+            except (yaml.YAMLError, AttributeError):
+                pass
+        return out
+
+    before, after = domains(then_all), domains(now_all)
+    deps = None if before == after else {"removed": sorted(before - after), "added": sorted(after - before)}
+    return sorted(changed), deps
 
 
 def amendment_changed_inputs(run_id: str, source: str, follower: str) -> bool:

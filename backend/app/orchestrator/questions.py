@@ -69,11 +69,12 @@ def answer(question_id: int, text: str, answered_by: str) -> Question:
     return q
 
 
-def answered_for(run_id: str, stage: str) -> list[tuple[str, str]]:
+def answered_for(run_id: str, stage: str) -> list[tuple[str, str, int]]:
+    """The step's answered questions, from every attempt: (question, answer, attempt), oldest first."""
     with session_scope() as s:
         rows = s.scalars(select(Question).where(Question.run_id == run_id, Question.stage == stage,
                                                 Question.status == "answered").order_by(Question.id)).all()
-        return [(q.question, q.answer) for q in rows]
+        return [(q.question, q.answer, q.attempt) for q in rows]
 
 
 def cancel_open(run_id: str | None = None) -> None:

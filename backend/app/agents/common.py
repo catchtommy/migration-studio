@@ -177,11 +177,35 @@ def changed_inputs_brief(ctx: AgentContext) -> str:
         return ("## Earlier documents since your last attempt\nThe documents of the earlier steps you build on are "
                 "unchanged since your last attempt.")
     titles = {d.path: d.stage_title for d in ctx.previous_artifacts}
+    deps = ctx.dependency_changes or {}
+    domains = ""
+    if deps.get("removed"):
+        domains += (f"\n\n**No longer a dependency: {', '.join(deps['removed'])}.** The domain dependencies don't "
+                    "list it any more. Remove everything you wrote about it: its ports, contracts and their specs, "
+                    "integration decisions, orchestrator calls and allocation rows, and any mention of it. Don't "
+                    "keep it from your earlier documents or from the contracts catalogue.")
+    if deps.get("added"):
+        domains += (f"\n\n**New dependency: {', '.join(deps['added'])}.** Design it as you would any other: ports, "
+                    "contracts, integration decisions and the orchestrator where needed.")
     listed = "\n".join(f"- `{p}`" + (f" ({titles[p]})" if p in titles else " (no longer there)") for p in ctx.changed_inputs)
     return ("## Earlier documents changed since your last attempt\n"
             "These documents you build on changed since you last ran. Read each of them again now (don't rely on what "
             "you wrote before), and update your documents wherever they follow from the changes; keep the rest as it "
-            f"is:\n{listed}")
+            f"is:\n{listed}{domains}")
+
+
+def answers_brief(ctx: AgentContext) -> str:
+    """The answers a person gave this step's earlier attempts. They can be out of date after the documents were
+    corrected (an answer naming a domain since removed, say), so the current request and documents come first."""
+    lines = []
+    for item in ctx.answered:
+        q, a = item[0], item[1]
+        attempt = item[2] if len(item) > 2 else None
+        lines.append((f"Attempt {attempt}: " if attempt else "") + f"Q: {q}\nA: {a}")
+    return ("## Answers from earlier attempts\n"
+            "A person gave these while earlier attempts of this step ran. The current request and the current "
+            "documents come first: where an answer no longer fits them (it names a domain, table, rule or file they "
+            "don't have any more, say), don't rely on it, and ask again if you need to.\n\n" + "\n\n".join(lines))
 
 
 def resume_brief(ctx: AgentContext) -> str:
@@ -306,8 +330,7 @@ def brief(ctx: AgentContext) -> str:
     if ctx.domain_modules:
         parts.append(ctx.domain_modules)
     if ctx.answered:
-        parts.append("## Answers you already received\n" +
-                     "\n\n".join(f"Q: {q}\nA: {a}" for q, a in ctx.answered))
+        parts.append(answers_brief(ctx))
     if ctx.feedback:
         heading = ("## The change the reviewer asked for (the only thing to change)" if ctx.amend else
                    "## Notes for this re-run (what changed, what to update)" if ctx.refresh else

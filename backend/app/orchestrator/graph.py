@@ -444,7 +444,18 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
         missing = None if code_dir is not None else _missing_repository(run_id, stage_now, domain, monolith)
         code_dir = code_dir or "."
         discovery = domain == discovery_store.MONOLITH or state["operation"] == discovery_store.FEATURES_OP
+        designs = {contracts_store.LINKED_CONTRACTS_FILE, contracts_store.DECISIONS_FILE} & set((config or {}).get("outputs") or [])
+        if designs and attempt > 1 and not discovery:
+            # The design is redone: the contracts its earlier approval put in the catalogue would steer it back to
+            # them (a domain since removed from the dependencies, say). Recorded again when it is approved.
+            withdrawn = contracts_store.withdraw_run_contracts(run_id)
+            if withdrawn:
+                emit(run_id, "log", f"Withdrew this feature's earlier contracts from the catalogue while its design is "
+                                    f"redone (recorded again when it is approved): {', '.join(withdrawn)}", stage.key)
         workspace.materialize_documents(run_id, ws)  # the documents in effect, from the database, for this step
+        # Re-running in place: which of the documents it builds on changed since its last attempt, and the domains
+        changes = (workspace.rerun_changes(run_id, stage.key, workflow.inputs_of(stage.key)) if refresh
+                   else (None, None))
         if not discovery and contracts_store.export_specs(ws):
             emit(run_id, "log", f"Copied the contracts catalogue's specs to {contracts_store.CATALOGUE_DIR}/",
                  stage.key)
@@ -476,8 +487,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             config=config or {}, stage_def=stage, inputs=_inputs(run_id, stage.key),
             previous_artifacts=_previous_artifacts(workflow, run_id, stage),
             # Re-running in place: which of the documents it builds on changed since its last attempt
-            changed_inputs=(workspace.changed_inputs(run_id, stage.key, workflow.inputs_of(stage.key))
-                            if refresh else None),
+            changed_inputs=changes[0], dependency_changes=changes[1],
             answered=questions.answered_for(run_id, stage.key),
             catalogue=(discovery_store.domains_brief(domain) if discovery else
                        contracts_store.catalogue_brief(domain, settings)),
@@ -668,7 +678,9 @@ def _kept_since_approved(run_id: str, workflow: Workflow, gate: StageDef, state:
                            .order_by(Approval.id.desc()).limit(1))
     if earlier is None:
         return None
-    return f"kept: the steps it reviews weren't changed, approved earlier by {earlier.reviewer}"
+    titles = ", ".join(workflow.by_key[k].title for k in reviews)
+    return (f"kept: {titles} kept as they were (not updated after the change), approved earlier by "
+            f"{earlier.reviewer}")
 
 
 def make_gate_node(workflow: Workflow, gate: StageDef):

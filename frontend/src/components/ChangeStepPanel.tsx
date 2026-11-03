@@ -141,6 +141,7 @@ export function ChangeStepPanel({ run, stage, stages }: { run: RunDetail; stage:
         {asking.length > 0 && ` ${asking.length} approval gate${asking.length === 1 ? "" : "s"} on the way ask again; a gate whose steps are all kept keeps its approval.`}
         {working && ` The working step (${title(run.current_stage ?? "")}) stops at its next turn first.`}
       </p>
+      <MonolithNote run={run} />
       <div className="flex justify-end gap-2">
         <button className="rounded-md px-3 py-1.5 text-sm text-subtle hover:bg-muted" onClick={() => setOpen(false)}>
           Cancel
@@ -155,6 +156,17 @@ export function ChangeStepPanel({ run, stage, stages }: { run: RunDetail; stage:
       </div>
       {change.error && <p className="text-sm text-bad">{String(change.error)}</p>}
     </section>
+  );
+}
+
+/** A re-run or change reads the monolith as it was when the run started; say so when its base branch moved on. */
+export function MonolithNote({ run }: { run: RunDetail }) {
+  if (!run.monolith_behind) return null;
+  return (
+    <p className="text-xs text-warn">
+      Works on the monolith as it was when this run started: its base branch has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"}. To
+      work from the latest code, re-run from a step with <em>Start fresh</em> on a new branch.
+    </p>
   );
 }
 

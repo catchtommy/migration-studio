@@ -97,7 +97,7 @@ class AgentContext:
     inputs: AgentInputs = field(default_factory=AgentInputs)
     # Documents from the earlier stages this stage uses (see StageDef.uses), latest attempt of each, in order.
     previous_artifacts: list[PriorDocument] = field(default_factory=list)
-    answered: list[tuple[str, str]] = field(default_factory=list)  # (question, answer) from earlier attempts
+    answered: list[tuple] = field(default_factory=list)  # (question, answer, attempt) from this and earlier attempts
     catalogue: str = ""  # cross-domain ownership, conventions and contracts (markdown)
     domain_modules: str = ""  # the module and service steps: the domain's modules, which they extend (markdown)
     ownership: dict = field(default_factory=dict)  # domain key -> {"tables": [...], "packages": [...]}
@@ -117,6 +117,8 @@ class AgentContext:
     previous_outputs: list[str] = field(default_factory=list)
     # A re-run in place: the earlier documents it builds on that changed since its last attempt (None: not a re-run)
     changed_inputs: list[str] | None = None
+    # A re-run in place: other domains added to or removed from domain-dependencies.yaml since its last attempt
+    dependency_changes: dict | None = None
     # A retry after this step stopped (failed) with its work kept: {"attempt", "error", "documents": paths restored,
     # "commits": its commits (one line each), "files": code files it changed, "code_kept": its commits are in place}.
     resume: dict | None = None

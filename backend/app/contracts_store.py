@@ -831,6 +831,75 @@ def _retrying(record):
 
 
 @_retrying
+def withdraw_run_contracts(run_id: str, keep: set[str] | None = None) -> list[str]:
+    """This run's contracts in the catalogue that its design no longer has (all of them when `keep` is None: its design
+    is being redone). Consumers are domains, so the run's domain stays a consumer while another run of the domain still
+    uses the contract; a contract no other run uses and no service provides yet is removed. They are recorded again
+    when the design is approved. Returns the keys withdrawn."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        if run is None:
+            return []
+        used = _contracts_used_by_other_runs(s, run)  # key -> domains of the other runs using it
+        withdrawn = []
+        for row in s.scalars(select(Contract).where(Contract.project == run.project)):
+            if keep is not None and row.key in keep:
+                continue
+            ours, consumed = row.run_id == run_id, run.domain in (row.consumers or [])
+            if not ours and not consumed:
+                continue
+            others = used.get(row.key, set())
+            if ours and not others and row.status not in _LIVE:
+                s.delete(row)  # only this run's design had it
+            elif consumed and run.domain not in others:
+                row.consumers = [c for c in row.consumers or [] if c != run.domain]
+            else:
+                continue  # another run of the domain still uses it
+            withdrawn.append(row.key)
+        return sorted(withdrawn)
+
+
+def _contracts_used_by_other_runs(s, run: Run) -> dict[str, set[str]]:
+    """The contract keys the other runs of the project use in their latest design (linked-domain contracts and
+    integration decisions), with the domains of those runs."""
+    used: dict[str, set[str]] = {}
+    rows = s.scalars(select(Artifact).join(Run, Run.id == Artifact.run_id).where(
+        Run.project == run.project, Artifact.run_id != run.id,
+        Artifact.name.in_((LINKED_CONTRACTS_FILE, DECISIONS_FILE)))).all()
+    latest: dict[tuple[str, str], Artifact] = {}
+    for a in rows:
+        k = (a.run_id, a.name)
+        if k not in latest or a.attempt > latest[k].attempt:
+            latest[k] = a
+    domains = {r.id: r.domain for r in s.scalars(select(Run).where(Run.project == run.project))}
+    import yaml
+
+    for (other, _name), a in latest.items():
+        try:  # only the keys: each file's own checks ran when it was written
+            items = (yaml.safe_load(a.content or "") or {}).get("contracts") or []
+        except (yaml.YAMLError, AttributeError):
+            continue
+        for c in items:
+            if isinstance(c, dict) and c.get("key"):
+                used.setdefault(str(c["key"]), set()).add(domains.get(other, ""))
+    return used
+
+
+def _design_contract_keys(s, run_id: str, reviewed_stages: list[str]) -> set[str]:
+    """The contract keys the run's design has now: its linked-domain contracts and its integration decisions'."""
+    keys: set[str] = set()
+    linked = _latest_artifact(s, run_id, reviewed_stages, LINKED_CONTRACTS_FILE)
+    if linked is not None:
+        keys |= {c["key"] for c in parse_linked_domain_contracts(linked.content)}
+    decisions = _latest_decisions(s, run_id, reviewed_stages)
+    if decisions is not None:
+        try:
+            keys |= {c["key"] for c in parse_decisions(decisions.content, keys)["contracts"]}
+        except InvalidDocument:
+            pass
+    return keys
+
+
 def record_linked_domain_contracts(run_id: str, reviewed_stages: list[str]) -> int:
     """On approval of a gate: record the linked-domain contracts in the catalogue as proposed, with this run's domain
     as a consumer. The linked domain's team has not accepted them yet; integration decisions that use them are
@@ -841,10 +910,13 @@ def record_linked_domain_contracts(run_id: str, reviewed_stages: list[str]) -> i
         if artifact is None:
             return 0
         contracts = parse_linked_domain_contracts(artifact.content)
+        keep = _design_contract_keys(s, run_id, reviewed_stages)
         base = PurePosixPath(artifact.path).parent
         for c in contracts:
             _upsert_contract(s, run.project, run_id, c, base, "proposed", [run.domain])
-        return len(contracts)
+    # the design approved now no longer has these (an earlier approval recorded them): out of the catalogue
+    withdraw_run_contracts(run_id, keep)
+    return len(contracts)
 
 
 @_retrying

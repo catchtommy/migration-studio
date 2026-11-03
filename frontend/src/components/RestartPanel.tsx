@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type RunDetail, type StageDef } from "../lib/api";
 import { useCan } from "../lib/hooks";
+import { MonolithNote } from "./ChangeStepPanel";
 
 /** The next version of a feature branch's name: feature/x -> feature/x-v2, feature/x-v2 -> feature/x-v3. */
 export function nextBranch(branch: string): string {
@@ -92,6 +93,7 @@ export function RestartPanel({ run, stage, stages, completed }: { run: RunDetail
         {gates > 0 && ` The ${gates} approval gate${gates === 1 ? "" : "s"} on the way ask for approval again.`}
         {run.status === "awaiting_approval" && " The approval waiting now is replaced."}
       </p>
+      {!onNewBranch && <MonolithNote run={run} />}
       <fieldset className="grid gap-2 sm:grid-cols-2">
         <legend className="sr-only">How to re-run</legend>
         {[
