@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { api, type ChecklistItem, type FunctionalCoverage as Coverage, type RerunScope, type StageDef } from "../lib/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { api, type ChecklistItem, type FunctionalCoverage as Coverage, type RerunScope, type RunDetail, type StageDef } from "../lib/api";
 import { FunctionalCoverage } from "./FunctionalCoverage";
 import { RerunScopeChoice } from "./RerunScopeChoice";
 import { useCan, useMe, useRefreshRun } from "../lib/hooks";
@@ -28,9 +28,30 @@ export function ApprovalPanel({
   const checklist = gate.checklist ?? [];
   const open = checklist.filter((c) => !c.done).length;
 
+  const queryClient = useQueryClient();
+  // The checklist as the run page has it: a tick shows at once, the server's answer (the checklist it returns) then
+  // replaces it, and nothing waits for the whole run to reload (its functional coverage is the slow part).
+  const setChecklist = (update: (items: ChecklistItem[]) => ChecklistItem[]) =>
+    queryClient.setQueryData<RunDetail>(["run", runId], (run) =>
+      run?.pending_gate ? { ...run, pending_gate: { ...run.pending_gate, checklist: update(run.pending_gate.checklist ?? []) } } : run,
+    );
   const tick = useMutation({
     mutationFn: (body: { item: string; done: boolean }) => api.tickChecklist(runId, body),
-    onSuccess: () => refreshRun(),
+    onMutate: async ({ item, done }) => {
+      await queryClient.cancelQueries({ queryKey: ["run", runId] }); // a reload in flight would undo the tick shown
+      const before = queryClient.getQueryData<RunDetail>(["run", runId]);
+      const by = auth?.user?.display_name ?? null;
+      setChecklist((items) => items.map((c) => (c.item === item ? { ...c, done, by: done ? by : null, at: done ? new Date().toISOString() : null } : c)));
+      return { before };
+    },
+    onError: (_error, _body, context) => {
+      if (context?.before) queryClient.setQueryData(["run", runId], context.before); // as it was: the tick failed
+    },
+    // the server's record of this item (who ticked it, when); the others may have been ticked since
+    onSuccess: (items, { item }) => {
+      const saved = items.find((c) => c.item === item);
+      if (saved) setChecklist((all) => all.map((c) => (c.item === item ? saved : c)));
+    },
   });
 
   const decide = useMutation({
@@ -102,7 +123,7 @@ export function ApprovalPanel({
                         type="checkbox"
                         className="mt-0.5"
                         checked={c.done}
-                        disabled={tick.isPending}
+                        disabled={tick.isPending && tick.variables?.item === c.item}
                         onChange={(e) => tick.mutate({ item: c.item, done: e.target.checked })}
                       />
                       <span className={c.done ? "text-subtle line-through" : ""}>{c.item}</span>

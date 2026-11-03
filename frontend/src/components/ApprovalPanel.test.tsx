@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { vi } from "vitest";
 import { api, type ChecklistItem, type StageDef } from "../lib/api";
 import { ApprovalPanel } from "./ApprovalPanel";
@@ -75,4 +75,34 @@ test("after rejecting, the buttons stay busy until the page has the run's new st
   expect(decide).toHaveBeenCalledTimes(1);
   refreshed();
   await waitFor(() => expect(screen.queryByRole("button", { name: "Rejecting and re-running…" })).toBeNull());
+});
+
+test("a tick shows at once, before the server answers, without reloading the whole run", async () => {
+  let answer: (items: ChecklistItem[]) => void = () => {};
+  vi.spyOn(api, "tickChecklist").mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+  const items: ChecklistItem[] = [
+    { item: "Architect: as-is.md reviewed", done: false, by: null, at: null },
+    { item: "Test lead: test-scenarios.md reviewed", done: false, by: null, at: null },
+  ];
+  const client = new QueryClient();
+  client.setQueryData(["run", "r1"], { id: "r1", pending_gate: { gate: "gate_docs", reviews: ["as_is_doc"], checklist: items } });
+  function FromCache() {
+    const { data } = useQuery<{ pending_gate: { gate: string; reviews: string[]; checklist: ChecklistItem[] } }>({
+      queryKey: ["run", "r1"],
+      queryFn: () => new Promise(() => {}),
+      staleTime: Infinity,
+    });
+    return data ? <ApprovalPanel runId="r1" gate={data.pending_gate} stages={stages} /> : null;
+  }
+  render(
+    <QueryClientProvider client={client}>
+      <FromCache />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Approve…" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /Architect/ }));
+  await waitFor(() => expect(screen.getByRole("checkbox", { name: /Architect/ })).toBeChecked()); // before any answer
+  expect(screen.getByRole("checkbox", { name: /Test lead/ })).not.toBeDisabled(); // the others stay usable
+  answer([{ ...items[0], done: true, by: "Ada", at: "2026-11-03T10:00:00Z" }, items[1]]);
+  await waitFor(() => expect(screen.getByText("Ada")).toBeInTheDocument()); // the server's record of who ticked it
 });
