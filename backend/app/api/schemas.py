@@ -476,6 +476,7 @@ class FeatureOut(BaseModel):
     entry_points: list[str]
     tables: list[str]
     calls: list[str]
+    used_by: list[dict] = []  # entry points outside the domain: [{"domain" (or "external"), "entry_point"}]
     run_id: str | None  # discovery run that listed it; None when added by hand
     missing_from_latest: bool
     migration: RunBrief | None  # latest migration run of this feature

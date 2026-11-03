@@ -324,6 +324,8 @@ class Feature(Base):
     entry_points: Mapped[list] = mapped_column(JSONText, default=list)
     tables: Mapped[list] = mapped_column(JSONText, default=list)
     calls: Mapped[list] = mapped_column(JSONText, default=list)  # other domains it reaches into
+    # entry points outside the domain that use it: [{"domain": other domain's key or "external", "entry_point"}]
+    used_by: Mapped[list | None] = mapped_column(JSONText)
     run_id: Mapped[str | None] = mapped_column(String(36))  # discovery run that listed it; None = added by hand
     # Kept because it has migration runs, although the latest approved feature list no longer has it.
     missing_from_latest: Mapped[bool] = mapped_column(Boolean, default=False)

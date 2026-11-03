@@ -57,13 +57,17 @@ def changed_since_added(text: dict) -> bool:
     return updated - created > timedelta(seconds=5)
 
 
+# Shared texts that decide what a feature's agents treat as in scope: a startup warning when they were edited.
+SCOPING_TEXTS = ("feature_rules", "fixed_rules")
+
+
 def seed() -> None:
     """Add the shared texts the database doesn't have yet, bring the ones never edited up to the current defaults,
     then (once) give existing agents' instructions placeholders wherever they still hold a block's default text word
     for word, so later changes to the block reach them."""
     from app.agents.defaults import templated
 
-    added, upgraded, kept = [], [], []
+    added, upgraded, kept, kept_keys = [], [], [], []
     with session_scope() as s:
         have = {r.key: r for r in s.scalars(select(SharedText).where(SharedText.project == SHARED))}
         for key, (title, description, text) in SHARED_TEXTS.items():
@@ -83,6 +87,7 @@ def seed() -> None:
                 upgraded.append(title)
             else:
                 kept.append(title)  # edited: a newer default is available (Reset takes it)
+                kept_keys.append(key)
         if s.get(Setting, (GLOBAL, _TEMPLATED_MARKER)) is None:
             for agent in s.scalars(select(Agent)):
                 agent.instructions = templated(agent.instructions or "")
@@ -91,6 +96,12 @@ def seed() -> None:
                          ("kept as edited (a newer default is available; Reset takes it)", kept)):
         if titles:
             log.info("Shared texts %s: %s", what, ", ".join(titles))
+    scoping = [SHARED_TEXTS[k][0] for k in kept_keys if k in SCOPING_TEXTS]
+    if scoping:
+        log.warning("Shared texts %s were edited, so they keep their old wording: a feature's analysis may still stop "
+                    "at its own domain's entry points (other domains' flows and external systems that use it are "
+                    "entry points too in this release). Check them on the Agents page (Shared texts) and Reset them "
+                    "if nothing else in them matters.", ", ".join(scoping))
 
 
 def texts() -> dict[str, str]:

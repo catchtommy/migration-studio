@@ -72,7 +72,8 @@ def _inputs(run_id: str, stage: str) -> AgentInputs:
             rows = s.scalars(select(Feature).where(Feature.project == run.project, Feature.domain == run.domain)
                              .order_by(Feature.key)).all()
             info = lambda f: {"key": f.key, "name": f.name, "description": f.description,  # noqa: E731
-                              "entry_points": f.entry_points or [], "tables": f.tables or [], "calls": f.calls or []}
+                              "entry_points": f.entry_points or [], "tables": f.tables or [], "calls": f.calls or [],
+                              "used_by": f.used_by or []}
             feature = next((info(f) for f in rows if f.key == run.operation), None)
             others = [info(f) for f in rows if f.key != run.operation]
         return AgentInputs(

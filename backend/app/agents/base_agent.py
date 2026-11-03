@@ -55,6 +55,9 @@ class AgentInputs:
                               f.get("tables")), ("Domains it is listed as calling", f.get("calls"))):
             if values:
                 lines.append(f"{title}: " + ", ".join(f"`{v}`" for v in values))
+        if f.get("used_by"):  # entry points outside the domain, from the feature list: a start, not the list
+            lines.append("Also used by (entry points outside the domain, from the feature list; search for the "
+                         "others too): " + ", ".join(f"`{u['entry_point']}` ({u['domain']})" for u in f["used_by"]))
         if self.other_features:
             lines.append(f"\n### Other features of {self.domain_name or 'this domain'}: out of scope")
             for o in self.other_features[:40]:

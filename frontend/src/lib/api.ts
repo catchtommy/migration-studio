@@ -514,6 +514,7 @@ export interface Feature {
   entry_points: string[];
   tables: string[];
   calls: string[]; // other domains it reaches into
+  used_by?: { domain: string; entry_point: string }[]; // entry points outside the domain that use it ("external" too)
   run_id: string | null; // discovery run that listed it; null when added by hand
   missing_from_latest: boolean; // kept because it is being migrated, though the latest list dropped it
   migration: RunBrief | null; // latest migration run

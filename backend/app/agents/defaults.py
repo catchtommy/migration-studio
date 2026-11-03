@@ -106,6 +106,9 @@ features:
     entry_points: [LoanController.create, /loan/create.do, LoanMapper.xml#insertLoan]
     tables: [LOAN, LOAN_SCHEDULE]   # tables it reads or writes
     calls: [customer]               # other domains it reaches into
+    used_by:                        # entry points OUTSIDE this domain that use the feature, if any
+      - domain: broker              # another domain's key, or external (a partner system, a batch feed)
+        entry_point: BrokerOnboardingService.register -> LoanService.create
 ```"""
 
 # Machine-readable result of the dependency finder: for one feature, exactly which other domains it is related to.
@@ -427,7 +430,9 @@ Requests flow JSP → Controller → Service → DAO → iBatis SQL map."""
 
 # The migration's fixed rules, stated once for the lean workflow's agents (each older agent states its own).
 _FIXED_RULES = """Fixed rules of this migration. They hold for every step and are not negotiated:
-- The UI is frozen: URLs, parameters, JSPs, forms, redirects and response shapes stay exactly as they are.
+- The UI is frozen: URLs, parameters, JSPs, forms, redirects and response shapes stay exactly as they are; so are \
+the external interfaces (web service, message and file formats) other systems use: their shape stays the same, while \
+the code behind them is migrated and routed to the new API like any other entry point.
 - The database is frozen: no DDL, no new or changed table, column, index, view, sequence or trigger, no data move, so \
 no outbox and no stored projection. Each domain reads and writes only the tables it owns, in the existing schema.
 - The migration is step by step: one feature at a time, each step small, reviewed at its gate, and reversible.
@@ -465,7 +470,9 @@ In scope; out of scope (other features named, not described).
 ## 3. Users and roles
 | Role | What they can do | What they can't |
 ## 4. Business process
-The main flow as numbered steps, in business words.
+The main flow as numbered steps, in business words. Then each way the function is started (its entry points: a
+screen, another business area's process, a partner system), who starts it and why, and what differs for it (steps,
+rules, information, messages).
 ## 5. Functional requirements
 | ID | The system shall … | Criticality | Rules | Other party |
 (FR-001, FR-002 …; Criticality "to be confirmed" unless the code makes it obvious; Rules: the BR ids it applies;
@@ -520,7 +527,8 @@ the business
 Anything that can't be tested this way, with the reason; "None" otherwise.
 ```
 Every functional requirement and business rule of `functional-spec.md` is covered by at least one scenario (its \
-`Covers:` line). A message is cited by its MSG id; its exact text is only in `functional-spec.md`. Checks on \
+`Covers:` line). Every way the function is started (section 4 of the specification) has at least one scenario of its \
+own, starting there, plus one for each thing that differs for it; name it in the scenario's title. A message is cited by its MSG id; its exact text is only in `functional-spec.md`. Checks on \
 database rows are not part of this document: the acceptance tests take them from `as-is.md`."""
 
 # How the cross-domain dependencies of one feature are found (the lean workflow's Domain dependencies step; Analysis
@@ -531,7 +539,11 @@ they reach another domain. A dependency counts only if a call path from this fea
 a shared method branches by action or mode, follow only this feature's branch. For every related domain:
 - Outbound: the services, DAOs, iBatis statements and tables of that domain this feature calls, reads or writes, \
 named exactly (`package.Class#method`, the statement id, the table).
-- Inbound: code of other domains that calls this feature's classes or reads or writes its tables (search for usages).
+- Inbound: code of other domains that calls this feature's classes or reads or writes its tables (search for usages). \
+Every entry point of another domain in `as-is.md`'s "Entry points" is one: an inbound dependency on that domain \
+with its caller as the touchpoint, `relation: called-by`, or `relation: shares-transaction` instead when it shares the \
+caller's transaction. Inbound dependencies \
+never make the feature cross-domain.
 - Shared transactions, shared tables, JSP includes and Spring XML wiring that cross the domain line.
 - Strength: `hard` (fails without it), `soft` (degrades) or `side-effect` (nothing needs the answer).
 Name domains by key, never "other modules". Code that belongs to no single domain is not a dependency, but classify \
@@ -1015,7 +1027,10 @@ context, and the router: in the bridge package, implementing the legacy service'
 legacy bean's id while the legacy bean gets a new one. It reads the toggle on every call and delegates to the legacy \
 bean (`legacy`, also for an unknown value) or to the domain module (`monolith`), converting the types the copy has in \
 another package (in mappers in the bridge package when it is more than a line or two). If a caller has no bean seam \
-(rule above), add its toggle branch; if neither fits, stop and ask. There is one router per legacy bean for the whole \
+(rule above), add its toggle branch; if neither fits, stop and ask. Every entry point of `domain-design.md`'s "Entry \
+points" (other domains' and external ones included) must reach the module this way: its caller through the router, or \
+a toggle branch in that caller when it calls a concrete class, `new` or a static method, or the DAO or SQL directly \
+(never in the DAO itself); unused ones are left as they are. There is one router per legacy bean for the whole \
 domain: when the router in your checkout (a feature already merged into the base branch built it) already takes over the bean, add this \
 feature's methods to it, each reading this feature's toggle, and leave the merged features' methods and toggles \
 exactly as they are.
@@ -1038,6 +1053,9 @@ wiring change outside what is allowed seems necessary. Decide everything else yo
 ### Checklist (the steps you took)
 ### What was copied (a table: item, from, to) and the router (bean id, legacy bean's new id, toggle property)
 ### Toggle branches (per caller: why no bean seam fits, the lines added, moved and rewritten, the test that pins it)
+### Entry points: each entry point of `domain-design.md` and how it now reaches the module (router or toggle branch), \
+and the unused ones left as they are; then "Changes in other domains' files": the toggle branches in another domain's \
+code, listed apart so that domain's team can coordinate the merge
 ### How behaviour was proven the same: the characterization tests with the toggle at `legacy` and at `monolith` \
 (classes, scenario counts), existing tests all passing and none modified or ignored, SQL text of copied statements \
 identical, the wiring test
@@ -1210,7 +1228,7 @@ Procedure:
 1. Baseline. Record the monolith commit you copy from (`git rev-parse HEAD` in the monolith checkout) as `module_commit`. Write the ordered checklist of the steps below at the top of `microservice.md`.
 2. Skeleton, only when the service project is not in your checkout (no feature merged it into the base branch yet): a POM for Java 8 with only the allowed dependencies, a main class that starts the embedded server, a Spring context, the health endpoint. It must build and start. When the project is there, add to it: skip this step.
 3. Copy this feature's part of the module: its package, the `shared` and `util` classes it uses, the packages of the features in `uses_features` it calls, their SQL maps and their tests. Not the other features' packages: those are lifted by their own runs (a class already in the service, from a merged feature, is reused, not copied over). The domain module only. The orchestrator module, when there is one, is not copied: the Orchestrator microservice step makes it a service of its own, which calls this one. The bridge package of the monolith is never copied either: its context adapters become request-header adapters, and its `local` adapters are replaced by the adapters below. The copied tests must pass.
-4. The REST layer: one operation per operation of this feature's OpenAPI document (the merged features' endpoints stay as they are), with its operationId; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
+4. The REST layer: one operation per operation of this feature's OpenAPI document (the merged features' endpoints stay as they are), with its operationId; these include the operations other domains' and external entry points use (`domain-design.md`'s "Entry points"), so every entry point can call the service; thin controllers that delegate to the module's API; every exception mapped to a documented status and the REST rules' error body (one exception handler for the \
 service), the request headers read and the response headers echoed on every response (a filter). Add contract tests against the OpenAPI document, and JSON round-trip tests for dates (explicit format and time zone), decimals, nulls and enums.
 5. Context adapters from request headers, one per context port.
 6. Integration, from `integration-decisions.yaml`: adapters for the ports of other domains (REST clients to the monolith's facade endpoints, which the Monolith integration step adds later, so stub them in \
@@ -1382,7 +1400,7 @@ What the suite covers:
 the rows the call leaves in the existing schema. The rows to check come from `as-is.md` (its statements and tables), \
 not from the scenarios, which are written in business terms. A scenario's expected error message (its MSG id) is \
 checked by the `errorCode` that `domain-design.md`'s "Errors" table gives that MSG id (the text users see is the \
-UI's, unchanged); a confirmation or warning, which is not an error, by the successful response it follows from. `cross-domain.yaml` lists, per interaction, the scenarios that need the other domain stubbed.
+UI's, unchanged); a confirmation or warning, which is not an error, by the successful response it follows from. `cross-domain.yaml` lists, per interaction, the scenarios that need the other domain stubbed. A scenario that starts at an entry point (another domain's flow, an external channel) calls the operation `domain-design.md`'s "Entry points" gives it, with that entry point's inputs; the caller's own flow end to end is the Monolith integration step's router test, not this suite's.
 - The other domains the service calls, stubbed with WireMock from their OpenAPI contracts on ports the suite \
 chooses, the service configured to call them there; and checks that the events the service publishes match their \
 AsyncAPI contracts. For a requirement whose effect is a notification, letter or record another domain produces from \
@@ -1451,6 +1469,8 @@ expected error message by the `errorCode` the "Errors" table gives its MSG id).
 configured to call them there. The domain service is never stubbed: it is the real one. A notification, letter or \
 record the orchestrator triggers through a contract (a call or a message): the scenario checks that it is made in \
 that case and not in the others, with the content that decides it (to whom, which kind, the key fields).
+- Each entry point that goes to the orchestrator (`domain-design.md`'s "Entry points"): its scenarios call the \
+operation it uses, with that entry point's inputs.
 - Tests that need the database are tagged `database`; without a test database say so in the report rather than \
 skipping them silently.
 
@@ -1572,7 +1592,12 @@ Write `integration-routing.yaml` in this format, and run `check_release_guardrai
 
 Write `integration.md`: the flow at each value (`legacy`: the as-is code; `monolith`: controller → router → \
 orchestrator or domain module; `service`: controller → router → client → orchestrator service or domain service), \
-how to switch the toggle and back, the rollback steps, and what to monitor after the switch.
+how to switch the toggle and back, the rollback steps, and what to monitor after the switch. Then "Entry points": \
+each entry point of `domain-design.md` (other domains' and external ones included) and how it reaches the new API at \
+`service` (the router, or its toggle branch, which asks the router), with a router test for each other domain's \
+entry point; and "Before switching to service": every entry point that shares its caller's transaction and is still \
+an open decision, plus the transactional callers in `microservice-extraction.yaml`'s `open_decisions`. The feature is \
+not switched to `service` while one is open.
 
 {_COVERAGE} Here: the MSG ids only: each error message with its `errorCode` mapped back and the client test that \
 proves it. Requirements and rules are covered by the domain and orchestrator steps, not here.""",
@@ -1609,7 +1634,14 @@ mappings that serve one operation (for example the form and its submit) into one
 
 For each feature record its entry points (class and method, URL, iBatis statement ids), the tables it reads or \
 writes, and the other domains it calls. Keys are short and stable, like `create-loan`; they become the names of \
-the migrations.
+the migrations. Then search the monolith for usages of each feature's own service and DAO methods and statements \
+outside the domain, and record under `used_by` the other domains' flows and external entry points (web services, \
+listeners, jobs) that use it: they are entry points of the same feature, never a feature of their own.
+
+When the domain already has features (your brief lists them under "already listed"), keep their keys and how they \
+are grouped (runs \
+migrate them by these keys), add what is new to them (entry points, `used_by`), and add a new feature only for an \
+operation none of them covers.
 
 Write `features.md` (a table of the features, then a short section per feature) and `features.yaml` in this format:
 
@@ -1627,9 +1659,18 @@ Which other domains the feature depends on is the next step's work (Domain depen
 
 {_FIXED_RULES}
 
-Start from the feature's entry points and follow every call down to the SQL, once. Record what the code actually \
+Find every entry point of the functionality first. The entry points you are given are a start, not the list: \
+search the monolith for usages of the functionality's own service and DAO methods, its iBatis statement ids and its \
+tables, and find every caller, in this domain, in other domains (another domain's flow that creates a client, say) \
+and external ones (web service endpoints, message listeners, file or batch jobs). For each caller read only the \
+calling method, the path from its entry point to it (not its other branches) and its transaction setting; stop at \
+the call. "Also used by" in the feature's details is a hint, not the list. When the search finds more than about 10 \
+distinct entry points, group them and ask the user which are in use instead of tracing them all.
+
+Then start from the entry points and follow every call down to the SQL, once. Record what the code actually \
 does, including behaviour that looks accidental; do not describe how it should work. Give a file and line for every \
-statement about the code, and mark an assumption as one. Where the trace reaches another domain's code or table (by \
+statement about the code, and mark an assumption as one. Where the functionality's own trace reaches another domain's \
+code or table to call or read it (by \
 the domain ownership you are given), record the crossing and don't trace that domain's internals. Do record what \
 comes back from it that changes this feature's behaviour: the results it uses, the errors it raises, and what the \
 user then sees (for example another domain rejects an expired KYC and the user gets a message). That behaviour \
@@ -1642,7 +1683,12 @@ rule and each message its id once, and use the same id in every document that me
 Write:
 1. `as-is.md`, the AS-IS documentation (audience: architects and developers; start it with the line \
 "Audience: architects and developers"):
-   - Entry points: URLs, HTTP methods, request parameters, the JSP or other caller.
+   - Entry points: every entry point found, each with: where it starts (this domain, another domain by key, or an \
+external system), its URL, method, job, listener or calling class and method (file and line), how it calls the \
+functionality (the legacy service's bean, a concrete class, `new` or a static call, or the DAO or SQL directly), \
+whether it shares the caller's transaction, the permission check it passes, what it passes and expects back, and \
+what differs from the others (inputs, steps before or after, rules, messages). An entry point nothing reaches any \
+more is listed as "unused" with the evidence (no mapping or link, a job not scheduled, a caller never called).
    - The call chain, class by class and method by method, with file paths.
    - Every iBatis statement executed: statement id, SQL, tables and columns read or written.
    - Transactions, caching, security checks and anything configured in XML rather than code.
@@ -1676,8 +1722,13 @@ lines.
 The studio checks that the three documents agree (every BR and MSG id in both `as-is.md` and `functional-spec.md`, \
 the specification's sections present, every FR and BR covered by a scenario) and sends you back to fix what doesn't.
 
+An entry point that shares its caller's transaction (another domain's flow that inserts its own rows and calls this \
+function in one transaction, say) is a risk for the later service split: say so in its "Entry points" row, and in \
+the specification's open questions in business words (both records are kept or lost together today).
+
 Ask the user when a rule's intent is unclear (for example whether an odd branch is a bug or deliberate), when you \
-cannot find a piece of the flow, or when it is unclear which domain owns a class or table.""",
+cannot find a piece of the flow, when it is unclear which domain owns a class or table, or whether an entry point is \
+still in use.""",
 
     "dependency_analysis": f"""You find, for ONE feature of a legacy monolith, exactly which other domains it depends \
 on, and decide its Modulith scope. These are the migration's most critical documents: the scope decision decides \
@@ -1738,8 +1789,9 @@ step, `cross-domain.yaml` and `domain-dependencies.yaml` (its `decision.scope`, 
 read the contracts catalogue you are given, and verify against the code where the design depends on it. When the run \
 has no `functional-spec.md` (it started before there was one), take the business rules and messages from `as-is.md`. When the scope is `domain-only`, sections 2, 3 and 4 below have nothing to \
 design: say so in a line each, write `contracts: []` in `linked-domain-contracts.yaml` and `decisions: []` in \
-`integration-decisions.yaml`, and write `orchestrator-design.md` as a short note saying there is nothing to \
-orchestrate.
+`integration-decisions.yaml` (except the contracts this domain provides to other domains' entry points, see "Entry \
+points" below: those are recorded there all the same), and write `orchestrator-design.md` as a short note saying \
+there is nothing to orchestrate.
 
 1. The domain. In `domain-design.md`:
    - Its key, what it is responsible for and what it is not, and the feature's place in it (next to the domain's \
@@ -1779,11 +1831,26 @@ methods this feature needs and, per method, the contract key it calls.
    - Context ports: every ambient input from the analysis, with file and line, and the port that replaces each.
    - UI: how each controller reaches the public API through the router that takes over the legacy service's bean \
 (`legacy` → the as-is service, `monolith` → the domain, or the orchestrator when there is one).
+   - "Entry points": a table `| Entry point | Starts in | API operation | Reached through (router / toggle branch) | \
+Goes to (domain / orchestrator) | Notes |`, one row for every entry point in `as-is.md`'s "Entry points", whichever \
+domain or system it starts in, so that every one of them calls the new code once the feature is migrated. A caller \
+of the legacy service's bean goes through the router; one that calls a concrete class, `new` or a static method, or \
+the DAO or SQL directly gets a toggle branch in that caller (never in a DAO). The router decides per method of the \
+legacy interface, not per caller: entry points that call the same legacy method go to the same operation and the same \
+place (domain or orchestrator), and it can't tell them apart. Where an entry point needs different processing: the \
+same operation with the difference as an explicit input taken from the call's own arguments (the default), or, when \
+the difference can only be known from who calls, a separate operation reached by a toggle branch in that caller that \
+calls a router method made for it; an orchestrator operation only when its extra steps call other domains and need \
+their answers. Never work out the caller from a header. Steps the calling domain does itself stay with it. \
+For another domain's entry point, the operation is a contract this domain provides to it: record it in the \
+integration decisions with that domain as a consumer. An entry point that shares its caller's transaction is an open \
+decision for the reviewer (keep the call in-process, add a compensation, or accept the split); while it is open, the \
+feature isn't switched to its service. Unused entry points: list them as "unused", with nothing to design.
    - Utility modules (Maven coordinates, and why each is one) and God modules (each one the feature uses, and how the \
 dependency is removed: what moves into this domain and what is reached through a contract).
    - Guardrail check: a table of every guardrail above with its status (met, or exception) and the evidence.
    Also write `openapi.yaml`: the feature's public API as an OpenAPI 3.1 document, one operation per method of the \
-public API, faithful to current behaviour in what it does, with its shapes from the REST rules above rather than the \
+public API (every operation the "Entry points" table names among them), faithful to current behaviour in what it does, with its shapes from the REST rules above rather than the \
 legacy responses. And write `domain-design.yaml` in this format:
 
 {DOMAIN_DESIGN_SCHEMA}
@@ -1915,7 +1982,7 @@ _GUARDRAIL_SPANS: dict[str, list[tuple[str, str]]] = {
     "independent_tests": [("Hard rules for this step.", "\n\nWhat the suite covers:")],
     "orchestrator_tests": [("Hard rules for this step.", "\n\nRead first:")],
     "service_tests": [("Hard rules for this step.", "\n\nWhat to test")],
-    "analysis": [("Fixed rules of this migration.", "\n\nStart from the feature's entry points")],
+    "analysis": [("Fixed rules of this migration.", "\n\nFind every entry point of the functionality first")],
     "dependency_analysis": [("Fixed rules of this migration.", "\n\nBuild on the Analysis step's documents"),
                             ("Never a dependency on another domain", "\n\nIf a touchpoint you find")],
     "modulith_design": [("Fixed rules of this migration.", "\n\nREST API design rules.")],
@@ -2032,9 +2099,14 @@ Stage instructions follow."""
 FEATURE_RULES = """**Stay on this feature.** This run migrates this feature only; the domain's other features are out \
 of scope (listed below), even where they share its controllers, services, DAOs, JSPs or tables.
 - Analysis (AS-IS, deep dive, dependencies): follow only the code paths that start at this feature's entry points. \
-In shared classes, cover only the methods and branches this feature reaches; leave the rest out.
+This feature's entry points include every caller of its functionality, in any domain or external system (another \
+domain's flow that uses it, say, or a partner's web service): Analysis finds them. Trace each only from its entry \
+point to the call; the caller's own logic, beyond what it passes, what it expects back and whether it shares the \
+transaction, stays out. In shared classes, cover only the methods and branches this feature reaches; leave the rest \
+out.
 - Design (contracts, domain, orchestration, integration, code): design for this feature's flow only. Don't add APIs, \
-operations, events, entities or contracts that only another feature needs. Where a shared table or component must \
+operations, events, entities or contracts that only another feature needs; an operation one of this feature's entry \
+points needs (whichever domain it is in) is this feature's. Where a shared table or component must \
 keep working for the other features, note that as a constraint; don't design it.
 - Earlier documents of this run may mention other features or flows; use only what concerns this one.
 - If you can't tell whether something belongs to this feature, ask the user rather than include it."""

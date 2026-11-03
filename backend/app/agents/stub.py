@@ -726,6 +726,10 @@ def _sample_functional_files(ctx: AgentContext, main) -> list[ArtifactOut]:
         other = next((d for d in sorted(ctx.ownership) if d != ctx.domain), "another area")
         with main.open("a", encoding="utf-8") as f:
             if main.name == fs.AS_IS_FILE:
+                f.write(f"\n## Entry points\n| Entry point | Starts in | Calls the functionality via | Transaction | "
+                        f"What differs |\n|---|---|---|---|---|\n| [stub] {ctx.operation} screen | {ctx.domain} | "
+                        f"the legacy service's bean | its own | - |\n| [stub] {other}'s flow that uses it | {other} | "
+                        "the legacy service's bean | its own | fewer inputs |\n")
                 f.write("\n## Rule enforcement\n| BR id | Enforced in | Code location | Condition as implemented | "
                         "What the code does |\n|---|---|---|---|---|\n| BR-001 | server | [stub] | [stub] | "
                         "Rejects the request |\n\n## Messages\n| MSG id | Kind | Trigger | Produced by | View or message key |"

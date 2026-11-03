@@ -97,6 +97,25 @@ def parse_bounded_contexts(text: str) -> list[dict]:
     return out
 
 
+def _used_by(item: dict, where: str, known: set[str]) -> list[dict]:
+    """A feature's entry points outside its domain (optional): [{"domain": a known domain or "external",
+    "entry_point"}]."""
+    raw = item.get("used_by")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise InvalidDocument(f"{where}: used_by must be a list of {{domain, entry_point}}")
+    out = []
+    for j, u in enumerate(raw, 1):
+        if not isinstance(u, dict) or not u.get("entry_point") or not u.get("domain"):
+            raise InvalidDocument(f"{where} used_by {j}: give the domain (or external) and the entry_point")
+        domain = str(u["domain"]).strip()
+        if domain != "external" and domain not in known:
+            raise InvalidDocument(f"{where} used_by {j}: {domain} is not a known domain (or write external)")
+        out.append({"domain": domain, "entry_point": str(u["entry_point"]).strip()})
+    return out
+
+
 def parse_features(text: str) -> list[dict]:
     data = _load(text, FEATURES_FILE)
     items = data.get("features")
@@ -123,6 +142,7 @@ def parse_features(text: str) -> list[dict]:
         unknown = [d for d in feature["calls"] if d not in known]
         if unknown:
             raise InvalidDocument(f"{where}: calls {', '.join(unknown)}, which is not a known domain")
+        feature["used_by"] = _used_by(item, where, known)
         out.append(feature)
     return out
 
@@ -222,6 +242,7 @@ def _record_features(run_id: str, domain: str, features: list[dict]) -> str:
                 s.add(row)
             row.name, row.description = f["name"], f["description"]
             row.entry_points, row.tables, row.calls = f["entry_points"], f["tables"], f["calls"]
+            row.used_by = f.get("used_by") or None
             row.run_id, row.missing_from_latest = run_id, False
         for key, row in existing.items():
             if key in migrated:
@@ -244,6 +265,7 @@ def _run_brief(run: Run | None) -> dict | None:
 def _feature_dict(f: Feature, run: Run | None) -> dict:
     return {"key": f.key, "domain": f.domain, "name": f.name, "description": f.description,
             "entry_points": f.entry_points or [], "tables": f.tables or [], "calls": f.calls or [],
+            "used_by": f.used_by or [],
             "run_id": f.run_id, "missing_from_latest": bool(f.missing_from_latest),
             "migration": _run_brief(run), "created_at": f.created_at, "updated_at": f.updated_at}
 
@@ -347,4 +369,14 @@ def domains_brief(domain: str) -> str:
                          + (f": {d.description}" if d.description else "")
                          + f". Tables {', '.join(d.owned_tables or []) or '–'}; packages "
                          + f"{', '.join(d.owned_packages or []) or '–'}")
+        existing = s.scalars(select(Feature).where(Feature.project == projects.current(), Feature.domain == domain)
+                             .order_by(Feature.id)).all()
+        if existing:  # a re-run of the feature listing: keep these keys and their grouping
+            migrating = set(s.scalars(select(Run.operation).where(Run.project == projects.current(),
+                                                                  Run.domain == domain, MIGRATION_RUN)))
+            lines.append(f"\n## Features of `{domain}` already listed (keep their keys and grouping)")
+            for f in existing:
+                points = ", ".join(f"`{p}`" for p in (f.entry_points or [])[:6])
+                lines.append(f"- `{f.key}` {f.name}" + (" (being migrated)" if f.key in migrating else "")
+                             + (f": {points}" if points else ""))
         return "\n".join(lines)
