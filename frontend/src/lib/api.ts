@@ -633,6 +633,12 @@ export interface LoginStep {
   result: { status: "completed" | "declined" | "needs-plaintext-consent"; host: string | null; login: string | null } | null;
 }
 
+/** Where the studio keeps its files on the server. `source` "env": set by STUDIO_DATA_DIR, so it can't be changed here. */
+export interface DataFolder {
+  path: string;
+  source: "env" | "settings" | "default";
+}
+
 export type DatabaseDialect = "postgresql" | "oracle" | "sqlite";
 
 /** The studio's own database connection. `database` is the PostgreSQL database name, the Oracle service name or the
@@ -950,6 +956,8 @@ export const api = {
   updateRole: (key: string, body: { name: string; description: string; permissions: Permission[] }) => request<Role>(`/roles/${key}`, json("PUT", body)),
   deleteRole: (key: string) => request<void>(`/roles/${key}`, { method: "DELETE" }),
   permissions: () => request<PermissionInfo[]>("/permissions"),
+  dataFolder: () => request<DataFolder>("/data-folder"),
+  changeDataFolder: (body: { path: string; copy_data: boolean }) => request<DataFolder>("/data-folder", json("PUT", body)),
   databaseStatus: () => request<DatabaseStatus>("/database"),
   testDatabase: (config: DatabaseConfig) => request<{ ok: boolean; version: string }>("/database/test", json("POST", config)),
   configureDatabase: (body: { config: DatabaseConfig; copy_data: boolean; replace: boolean }) =>

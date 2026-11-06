@@ -2,11 +2,14 @@
 
 import json
 from datetime import timezone
+from pathlib import Path
 
 from sqlalchemy import JSON, DateTime, Text
 from sqlalchemy.dialects.oracle import NCLOB, TIMESTAMP
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
+
+from app.config import settings
 
 
 class JSONText(TypeDecorator):
@@ -47,6 +50,20 @@ class LongText(TypeDecorator):
         if dialect.name == "oracle":
             return dialect.type_descriptor(NCLOB())
         return dialect.type_descriptor(Text())
+
+
+class DataFolderPath(TypeDecorator):
+    """A path under the data folder: absolute in the code, stored relative to the data folder with forward slashes, so
+    the folder can move (or the database go to a server on another OS) without touching the rows."""
+
+    impl = LongText
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return None if value is None else Path(value).relative_to(settings.data_dir).as_posix()
+
+    def process_result_value(self, value, dialect):
+        return None if value is None else str(settings.data_dir / value)
 
 
 class NonNullText(TypeDecorator):

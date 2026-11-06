@@ -226,7 +226,7 @@ class Runner:
                 emit(run_id, "status", f"Reading the monolith from the shared read-only copy of "
                                        f"{shared['branch'] or 'its default branch'} at {shared['sha'][:10]}"
                                        f"{': ' + shared['subject'] if shared.get('subject') else ''}")
-                inp = {"run_id": run_id, "domain": domain, "operation": operation, "workspace": workspace,
+                inp = {"run_id": run_id, "domain": domain, "operation": operation,
                        "feedback": {}, "stage_shas": {}}
             elif initial:
                 emit(run_id, "status", f"Preparing workspace: branch {branch}"
@@ -244,7 +244,7 @@ class Runner:
                 # The other repositories steps change code in are checked out when their branches are confirmed,
                 # just before the first such step (see app/delivery.py).
                 exclude_nested(Path(workspace))
-                inp = {"run_id": run_id, "domain": domain, "operation": operation, "workspace": workspace,
+                inp = {"run_id": run_id, "domain": domain, "operation": operation,
                        "feedback": {}, "stage_shas": {}}
             else:
                 ensure_workspace(run_id)

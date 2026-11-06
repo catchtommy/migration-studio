@@ -101,6 +101,58 @@ function DatabaseSection() {
   );
 }
 
+function DataFolderSection() {
+  const queryClient = useQueryClient();
+  const { data: folder } = useQuery({ queryKey: ["data-folder"], queryFn: api.dataFolder });
+  const [path, setPath] = useState("");
+  const [copyData, setCopyData] = useState(true);
+  const [movedFrom, setMovedFrom] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: () => api.changeDataFolder({ path, copy_data: copyData }),
+    onSuccess: (next) => {
+      if (folder && next.path !== folder.path) setMovedFrom(folder.path);
+      queryClient.setQueryData(["data-folder"], next);
+      setPath("");
+    },
+  });
+  if (!folder) return null;
+  return (
+    <section id="data-folder" className="space-y-4">
+      <h2 className="font-semibold">Data folder</h2>
+      <div className="rounded-md border border-border bg-surface px-3 py-2 text-sm">
+        <span className="block break-all font-medium">{folder.path}</span>
+        <span className="block text-xs text-subtle">Where the server keeps run workspaces, repository copies, the database connection and the encryption key.</span>
+        {movedFrom && <span className="block break-all text-xs text-ok">Changed. The old folder is still there: {movedFrom}. You can delete it once you have checked everything works.</span>}
+      </div>
+      {folder.source === "env" ? (
+        <p className="text-sm text-subtle">Set by STUDIO_DATA_DIR (the backend's environment or backend/.env); change it there, or remove it to choose the folder here.</p>
+      ) : (
+        <form
+          className="space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save.mutate();
+          }}
+        >
+          <Field label="New folder (full path on the server)">
+            <input className={input} value={path} onChange={(e) => setPath(e.target.value)} placeholder="D:\\studio\\data or /var/lib/studio/data" />
+          </Field>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={copyData} onChange={(e) => setCopyData(e.target.checked)} />
+            Copy the current data to this empty folder (untick if it already holds a copy)
+          </label>
+          <div className="flex items-center gap-3">
+            <button type="submit" disabled={!path.trim() || save.isPending} className="rounded-md border border-border bg-surface px-3 py-1.5 text-sm font-medium hover:border-accent/50 disabled:opacity-50">
+              {save.isPending ? "Changing…" : "Change data folder"}
+            </button>
+            {save.error && <span className="text-sm text-bad">{(save.error as Error).message}</span>}
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
+
 export function SettingsPage() {
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ["settings"], queryFn: api.settings });
@@ -202,6 +254,7 @@ export function SettingsPage() {
         </form>
 
         <DatabaseSection />
+        <DataFolderSection />
       </div>
     </Guarded>
   );

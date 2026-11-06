@@ -2,6 +2,7 @@
 backend/.venv/
 backend/data/
 backend/.env
+backend/data-location.json
 __pycache__/
 .pytest_cache/
 frontend/node_modules/

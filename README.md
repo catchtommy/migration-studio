@@ -305,6 +305,11 @@ every document agents write (md, yaml, contract specs) with reviewers' edits, ea
 checkpoints of paused runs. Backing up the database backs up the studio; nothing under `backend/data` needs a backup
 except, for convenience, `database.json`.
 
+- **Data folder**: run workspaces, repository copies, `database.json` and `secret.key` live in `backend/data` unless
+  you choose another folder (Settings → Data folder, which can copy the data there; no run may be working) or set
+  `STUDIO_DATA_DIR` in the environment or `backend/.env`, which takes precedence and locks the Settings field. The
+  choice is kept in `backend/data-location.json`. Runs store their workspace relative to this folder, so it can also be
+  moved by hand while the studio is stopped, on Windows or Linux: move it, point the setting at it, and start.
 - **Where the connection is kept**: `backend/data/database.json`, readable by its owner only (it holds the password).
   The `STUDIO_DATABASE_URL` environment variable overrides it, e.g.
   `postgresql+psycopg://user:pass@host:5432/studio` or `oracle+oracledb://user:pass@host:1521/?service_name=STUDIO`;

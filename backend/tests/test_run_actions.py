@@ -134,3 +134,31 @@ def test_restart_of_the_step_after_a_code_step_runs_that_step(client, tmp_path):
     run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_commit", "awaiting_branches", "failed"}, timeout=60)
     assert (run["status"], run["current_stage"]) != ("awaiting_commit", agents[0])
     assert len(ex(run, agents[1])) == before + 1 and len(ex(run, agents[0])) == 1
+
+
+def test_retry_after_the_data_folder_moved_uses_the_new_folder(client, tmp_path, monkeypatch):
+    """Runs started before the move keep working: nothing they saved says where the data folder was."""
+    import shutil
+    from pathlib import Path
+
+    from app.config import settings
+
+    upstream, key, proj = setup_project(client, tmp_path)
+    wf = proj.get("/api/workflows/standard").json()
+    agents = [s["key"] for s in wf["steps"] if s["kind"] == "agent"]
+    _fail_once(monkeypatch, agents[1])
+    run_id = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()["id"]
+    run = drive(proj, run_id, {"failed"})
+    assert run["status"] == "failed" and run["current_stage"] == agents[1]
+
+    old, moved = Path(run["workspace"]), tmp_path / "moved"
+    (moved / "workspaces").mkdir(parents=True)
+    shutil.move(str(old), str(moved / "workspaces" / run_id))
+    shutil.copytree(settings.repos_dir, moved / "repos", symlinks=True)
+    monkeypatch.setattr(settings, "data_dir", moved)
+    assert Path(proj.get(f"/api/runs/{run_id}").json()["workspace"]) == moved / "workspaces" / run_id
+
+    assert proj.post(f"/api/runs/{run_id}/retry").status_code == 200
+    run = wait_for(proj, run_id, {"awaiting_approval", "awaiting_commit", "awaiting_branches", "failed"}, timeout=60)
+    assert run["status"] != "failed", run["error"]
+    assert not old.exists(), "the retry recreated the workspace at its old path"

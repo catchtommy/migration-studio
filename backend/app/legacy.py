@@ -112,6 +112,15 @@ def _remove(project: str, path: Path) -> None:
             pass
 
 
+def repair_moved() -> None:
+    """Git records absolute paths between a mirror and its worktrees, which go stale when the data folder moves."""
+    for mirror in settings.repos_dir.glob("*/*.git"):
+        names = mirror / "worktrees"
+        copies = [root(mirror.parent.name) / w.name for w in names.iterdir()] if names.is_dir() else []
+        if existing := [str(c) for c in copies if c.exists()]:
+            git_ops.git(mirror, "worktree", "repair", *existing)
+
+
 def _record(project: str, url: str, branch: str, mirror: Path, sha: str) -> dict:
     info = git_ops.commit_info(mirror, sha) or {}
     data = {"url": url, "branch": branch, "sha": sha, "subject": info.get("subject", ""),

@@ -4,11 +4,12 @@ import logging
 
 from sqlalchemy import URL
 
-from app import agent_store, auth, domain_store, projects, shared_texts, workflow_store
+from app import agent_store, auth, domain_store, legacy, projects, shared_texts, workflow_store
 from app.db import session, transfer
 from app import workspace
 from app.config import settings
 from app.orchestrator.runner import get_runner
+from app.tools import git_ops
 
 log = logging.getLogger(__name__)
 
@@ -34,4 +35,8 @@ def open_database(url: URL) -> None:
     cleaned = workspace.cleanup_leftovers(settings.workspaces_dir)  # folders Windows held when they were replaced
     if cleaned:
         log.info("Deleted %d workspace folder(s) left from earlier checkouts", cleaned)
+    try:  # the data folder may have been moved by hand
+        legacy.repair_moved()
+    except (OSError, git_ops.GitError):
+        log.exception("Could not repair the shared copies of the monolith")
     log.info("Using %s database", url.get_backend_name())

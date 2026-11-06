@@ -34,6 +34,13 @@ def _project_of(run_id: str) -> str:
         return s.get(Run, run_id).project
 
 
+def _workspace_of(run_id: str) -> Path:
+    """Where the run's workspace is. Not part of the graph's state: checkpoints of older runs saved the path it had when
+    they started, and the data folder may have moved since."""
+    with session_scope() as s:
+        return Path(s.get(Run, run_id).workspace)
+
+
 def _set_run(run_id: str, **fields) -> None:
     with session_scope() as s:
         run = s.get(Run, run_id)
@@ -401,7 +408,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
     def node(state: MigrationState) -> dict:
         run_id = state["run_id"]
         projects.set_current(_project_of(run_id))  # nodes may run on another thread than the runner's
-        ws = Path(state["workspace"])
+        ws = _workspace_of(run_id)
         feedback = state.get("feedback", {}).get(stage.key)
         refresh = stage.key in (state.get("refresh") or [])
         settings = get_settings()
@@ -791,7 +798,7 @@ def make_gate_node(workflow: Workflow, gate: StageDef):
             return {"route": target, "feedback": feedback,
                     "refresh": [*(state.get("refresh") or []), target, *follow],
                     "amend": {"stage": target, "skip": skip, "check": check}}
-        workspace.roll_back(run_id, Path(state["workspace"]), state["stage_shas"][target]["start"], target)
+        workspace.roll_back(run_id, _workspace_of(run_id), state["stage_shas"][target]["start"], target)
         emit(run_id, "approval", f"{gate.title}: rejected, re-running from {workflow.by_key[target].title}", gate.key)
         return {"route": target, "feedback": feedback, "amend": None}
 

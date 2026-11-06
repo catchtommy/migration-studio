@@ -91,13 +91,13 @@ def test(body: DatabaseIn) -> dict:
         raise HTTPException(422, f"Could not connect: {e}")
 
 
-def _busy() -> str | None:
+def busy(doing: str = "switching the database") -> str | None:
     if not session.is_configured():
         return None
     with session.session_scope() as s:
         working = s.scalars(select(Run.id).where(Run.status.in_(["running", "awaiting_input"]))).all()
     if working or get_runner().has_active():
-        return f"{len(working)} run(s) are working; wait for them to stop before switching the database"
+        return f"{len(working)} run(s) are working; wait for them to stop before {doing}"
     return None
 
 
@@ -108,7 +108,7 @@ def configure(body: ConfigureIn) -> dict:
     if not _switching.acquire(blocking=False):
         raise HTTPException(409, "The database is already being switched")
     try:
-        if reason := _busy():
+        if reason := busy():
             raise HTTPException(409, reason)
         cfg = _config(body.config)
         url = cfg.url()

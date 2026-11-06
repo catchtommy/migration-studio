@@ -6,7 +6,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from app.db.types import JSONText, LongText, NonNullText, UTCDateTime
+from app.db.types import DataFolderPath, JSONText, LongText, NonNullText, UTCDateTime
 from app.orchestrator.stages import STANDARD
 
 
@@ -38,7 +38,7 @@ class Run(Base):
     # (awaiting_commit: the workflow finished; a person reviews the code changes and commits them, see app/delivery.py)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     current_stage: Mapped[str | None] = mapped_column(String(64))
-    workspace: Mapped[str | None] = mapped_column(LongText)
+    workspace: Mapped[str | None] = mapped_column(DataFolderPath)
     branch: Mapped[str | None] = mapped_column(String(255))
     base_sha: Mapped[str | None] = mapped_column(String(64))  # monolith commit the run branch started from
     repository: Mapped[str | None] = mapped_column(LongText)  # git URL or path the run works on (None: blank workspace)
