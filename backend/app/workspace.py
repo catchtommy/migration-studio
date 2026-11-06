@@ -484,8 +484,10 @@ def release_completed() -> int:
 
 def exclude_nested(ws: Path) -> None:
     """Keep the run's other repositories (checked out inside the workspace) out of the root repository."""
+    if not (ws / ".git").exists():  # creating .git/info here would leave what looks like a repository, but isn't
+        raise FileNotFoundError(f"The workspace {ws} is not a git repository")
     exclude = ws / ".git" / "info" / "exclude"
-    exclude.parent.mkdir(parents=True, exist_ok=True)
+    exclude.parent.mkdir(exist_ok=True)
     text = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
     missing = [line for line in ("/.studio/", f"/{DOCS_ROOT}/") if line not in text.splitlines()]
     if missing:  # also the studio's documents, which live in the database

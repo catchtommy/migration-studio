@@ -441,6 +441,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             delivery.apply_confirmation(run_id, proposal["repository"]["key"], answer,
                                         lambda msg: emit(run_id, "log", msg, stage.key))
 
+        workspace.ensure(run_id)  # rebuilt if it was lost since the run was picked up: git needs it from here on
         workspace.exclude_nested(ws)  # documents live in the database, never in the workspace's git
         workspace.untrack_documents(ws)
         stopped = _stopped_attempt(run_id, stage.key)  # a retry after it failed: continue from what it kept

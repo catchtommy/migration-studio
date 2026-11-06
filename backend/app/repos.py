@@ -99,6 +99,11 @@ def latest_for_run(project: str, url: str | None, user_id: int | None, log) -> s
     return str(path)
 
 
+def is_fetching() -> bool:
+    with _locks_guard:
+        return bool(_fetching)
+
+
 def fetch_in_background(project: str, user_id: int | None = None) -> bool:
     """Start a fetch of the project's monolith unless one is running; False when one already was."""
     url = project_repository(project)
