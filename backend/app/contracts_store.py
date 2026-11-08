@@ -862,16 +862,22 @@ def withdraw_run_contracts(run_id: str, keep: set[str] | None = None) -> list[st
 def _contracts_used_by_other_runs(s, run: Run) -> dict[str, set[str]]:
     """The contract keys the other runs of the project use in their latest design (linked-domain contracts and
     integration decisions), with the domains of those runs."""
+    return contracts_used_by_runs(s, run.project, {run.id})
+
+
+def contracts_used_by_runs(s, project: str, excluding: set[str]) -> dict[str, set[str]]:
+    """The contract keys the project's runs, other than `excluding`, use in their latest design (linked-domain contracts
+    and integration decisions), with the domains of those runs."""
     used: dict[str, set[str]] = {}
     rows = s.scalars(select(Artifact).join(Run, Run.id == Artifact.run_id).where(
-        Run.project == run.project, Artifact.run_id != run.id,
+        Run.project == project, Artifact.run_id.not_in(excluding),
         Artifact.name.in_((LINKED_CONTRACTS_FILE, DECISIONS_FILE)))).all()
     latest: dict[tuple[str, str], Artifact] = {}
     for a in rows:
         k = (a.run_id, a.name)
         if k not in latest or a.attempt > latest[k].attempt:
             latest[k] = a
-    domains = {r.id: r.domain for r in s.scalars(select(Run).where(Run.project == run.project))}
+    domains = {r.id: r.domain for r in s.scalars(select(Run).where(Run.project == project))}
     import yaml
 
     for (other, _name), a in latest.items():

@@ -37,7 +37,7 @@ export function StartOver({ run }: { run: RunDetail }) {
       <h3 className="font-semibold text-bad">Start {run.operation} over with another workflow</h3>
       <p className="text-subtle">
         Every run of this feature is deleted with everything recorded for it: steps, documents, approvals, questions, logs and workspace, the
-        dependencies its design recorded and the contracts it proposed that no one accepted yet. A run that is working is stopped first. Then a new run
+        dependencies its design recorded and the contracts it recorded that no other run uses (contracts already provided stay). A run that is working is stopped first. Then a new run
         starts with the chosen workflow. Code pushed and documents published to the repositories stay in git. This can't be undone.
       </p>
       <label className="block">

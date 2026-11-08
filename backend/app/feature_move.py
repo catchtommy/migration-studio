@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 # doesn't block: approving it later can't undo the move (discovery_store._record_features, _record_contexts).
 WORKING = ("pending", "running", "awaiting_input")
 STARTED = ("Its migration has started, so it can't move. An admin can reset it first: that deletes its runs, documents, "
-           "dependencies and proposed contracts, while approved contracts and pushed code stay.")
+           "dependencies and the contracts no other run uses, while contracts already provided and pushed code stay.")
 
 
 class Refused(RuntimeError):
@@ -161,6 +161,12 @@ def _reference_updates(moving, remaining, others, source, target, moved_tables, 
     return sorted(updates.values(), key=lambda u: u["id"])
 
 
+def _names_feature(contract: str, keys: set[str]) -> bool:
+    """Whether a contract's name is one of these features' keys, or starts with one (view-broker-completed)."""
+    name = contract.rsplit(".", 1)[-1].lower()
+    return any(name == k or name.startswith(f"{k}-") for k in keys)
+
+
 def _check_by_hand(s, project: str, src: Domain, moving, others) -> dict:
     """What may need a person: the data doesn't say which feature each of these is about, so none is edited."""
     source, keys = src.key, {f.key.lower() for f in moving}
@@ -174,7 +180,7 @@ def _check_by_hand(s, project: str, src: Domain, moving, others) -> dict:
         "dependencies": [{"source": d.source, "interaction": d.interaction, "contract": d.contract,
                           "status": d.status} for d in dependencies],
         "contracts": [{"key": c.key, "status": c.status, "consumers": c.consumers or [],
-                       "matches_moved_feature": c.key.rsplit(".", 1)[-1].lower() in keys} for c in contracts],
+                       "matches_moved_feature": _names_feature(c.key, keys)} for c in contracts],
         "listing_paths": ((src.agent_inputs or {}).get(discovery_store.FEATURES_AGENT) or {}).get("paths") or [],
     }
 

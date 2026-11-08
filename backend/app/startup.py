@@ -4,7 +4,7 @@ import logging
 
 from sqlalchemy import URL
 
-from app import agent_store, auth, domain_store, legacy, projects, shared_texts, workflow_store
+from app import agent_store, auth, domain_store, legacy, projects, run_cleanup, shared_texts, workflow_store
 from app.db import session, transfer
 from app import workspace
 from app.config import settings
@@ -35,6 +35,9 @@ def open_database(url: URL) -> None:
     cleaned = workspace.cleanup_leftovers(settings.workspaces_dir)  # folders Windows held when they were replaced
     if cleaned:
         log.info("Deleted %d workspace folder(s) left from earlier checkouts", cleaned)
+    removed = run_cleanup.remove_orphan_contracts()
+    if removed:
+        log.info("Removed %d contract(s) left by runs deleted earlier, which nothing else uses", removed)
     try:  # the data folder may have been moved by hand
         legacy.repair_moved()
     except (OSError, git_ops.GitError):

@@ -471,8 +471,8 @@ from the **Discovery** panel on the Domains page.
    list*.
    **Moving features to another domain** (a domain too large to migrate as one): select features on a domain's
    **Features** tab, choose a new or existing domain, and review what changes. Features, tables, packages and `calls` /
-   `used_by` updates can each be unticked. A started feature can't move until an admin resets it, which leaves approved
-   contracts and pushed code in place. A new domain copies the context, default workflow, and agent paths and notes,
+   `used_by` updates can each be unticked. A started feature can't move until an admin resets it, which removes the contracts
+   its runs recorded unless another run uses them or they're already provided; pushed code stays in place. A new domain copies the context, default workflow, and agent paths and notes,
    but not repositories. Later listings of the old domain refuse the feature, and later bounded contexts leave moved
    tables with their new owner. Calls between features of one domain aren't recorded, so a split can turn some into
    calls between domains that the review can't show: check these yourself. Moving back isn't an exact undo (added

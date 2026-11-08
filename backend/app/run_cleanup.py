@@ -3,9 +3,10 @@ over with another workflow. A run that is working is stopped first: its agent en
 (app/agents/common.py request_stop), a question it waits on is cancelled.
 
 What a run recorded: its stages, documents, approvals, questions and logs, its graph checkpoints and workspace, the
-cross-domain dependencies its approved design recorded, and the contracts it proposed that no one accepted yet
-(contracts already approved or provided belong to the catalogue other domains rely on, so they stay). Code it pushed
-and documents it published to the monolith's repository are in git, outside the studio: they are not undone.
+cross-domain dependencies its approved design recorded, and the contracts it recorded that no remaining run's design
+uses. A contract another run's design uses stays, as does one already provided (by the monolith or a service) or
+deprecated: something was built against it. Code it pushed and documents it published to the monolith's repository
+are in git, outside the studio: they are not undone.
 """
 
 import time
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from app import contracts_store
 from app.agents import common
 from app.db.models import Approval, Artifact, AuditEvent, Contract, Dependency, Question, Run, StageExecution
 from app.db.session import session_scope
@@ -47,6 +49,24 @@ def stop(run_ids: list[str], wait: float = STOP_WAIT) -> None:
                            "step. Try again in a minute")
 
 
+FORGOTTEN = ("proposed", "approved")  # a contract nothing was built against yet goes with the run that recorded it
+
+
+def remove_orphan_contracts() -> int:
+    """Contracts left by runs deleted before deleting a run removed what it recorded (only proposed ones went then):
+    the same rule as `delete`, for runs already gone. Returns how many were removed."""
+    with session_scope() as s:
+        existing = set(s.scalars(select(Run.id)))
+        orphans = [c for c in s.scalars(select(Contract).where(Contract.status.in_(FORGOTTEN),
+                                                                Contract.run_id.is_not(None)))
+                   if c.run_id not in existing]
+        used = {p: contracts_store.contracts_used_by_runs(s, p, set()) for p in {c.project for c in orphans}}
+        removed = [c for c in orphans if c.key not in used[c.project]]
+        for c in removed:
+            s.delete(c)
+    return len(removed)
+
+
 def delete(project: str, run_ids: list[str]) -> int:
     """Delete these runs (stopped already) and everything recorded for them. Returns how many were deleted."""
     from app.orchestrator.runner import get_runner
@@ -57,12 +77,15 @@ def delete(project: str, run_ids: list[str]) -> int:
         runs = s.scalars(select(Run).where(Run.project == project, Run.id.in_(run_ids))).all()
         ids = [r.id for r in runs]
         workspaces = [r.workspace for r in runs if r.workspace]
+        used = contracts_store.contracts_used_by_runs(s, project, set(ids))
         for model in (StageExecution, Artifact, Approval, AuditEvent, Question):
             s.query(model).filter(model.run_id.in_(ids)).delete(synchronize_session=False)
         s.query(Dependency).filter(Dependency.project == project, Dependency.run_id.in_(ids)).delete(
             synchronize_session=False)
-        s.query(Contract).filter(Contract.project == project, Contract.run_id.in_(ids),
-                                 Contract.status == "proposed").delete(synchronize_session=False)
+        for row in s.scalars(select(Contract).where(Contract.project == project, Contract.run_id.in_(ids),
+                                                    Contract.status.in_(FORGOTTEN))):
+            if row.key not in used:
+                s.delete(row)
         s.query(Run).filter(Run.id.in_(ids)).delete(synchronize_session=False)
     for run_id in ids:
         get_runner().forget(run_id)  # its graph checkpoints

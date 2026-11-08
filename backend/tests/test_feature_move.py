@@ -140,7 +140,7 @@ def test_a_started_feature_cannot_move_until_it_is_reset(proj):
     started(proj, "loan", "approve")
     review = preview(proj, ["approve", "close"])
     row = next(f for f in review["features"] if f["key"] == "approve")
-    assert "can't move" in row["blocked"] and "approved contracts and pushed code stay" in row["blocked"]
+    assert "can't move" in row["blocked"] and "contracts already provided and pushed code stay" in row["blocked"]
     assert not row["ticked"] and row["migration"]
     # Named in a request without unticking it, the whole move is refused
     r = proj.post("/api/domains/loan/features/move", json={
@@ -360,6 +360,9 @@ def test_what_to_check_by_hand_is_listed_and_left_alone(proj):
         s.add(Contract(project=proj.key, key="loan.pay-fee", provider="loan", kind="api", name="Pay", status="approved",
                        consumers=["reports"]))
         s.add(Contract(project=proj.key, key="loan.other", provider="loan", kind="api", name="Other", consumers=[]))
+        s.add(Contract(project=proj.key, key="loan.pay-fee-completed", provider="loan", kind="event", name="Paid",
+                       consumers=[]))
+        s.add(Contract(project=proj.key, key="loan.pay-feeless", provider="loan", kind="api", name="Free", consumers=[]))
     run = started(proj, "reports", "caller")
     with projects.use(proj.key), session_scope() as s:
         s.add(Dependency(project=proj.key, run_id=run["id"], interaction="i", source="reports", target="loan",
@@ -368,7 +371,7 @@ def test_what_to_check_by_hand_is_listed_and_left_alone(proj):
     assert checks["calling_features"] == [{"domain": "reports", "feature": "caller"}]
     assert [d["source"] for d in checks["dependencies"]] == ["reports"]
     assert {c["key"]: c["matches_moved_feature"] for c in checks["contracts"]} == \
-        {"loan.other": False, "loan.pay-fee": True}
+        {"loan.other": False, "loan.pay-fee": True, "loan.pay-fee-completed": True, "loan.pay-feeless": False}
     assert checks["listing_paths"] == ["com/old/loan/"]
     move(proj, ["pay-fee"])
     assert features_of(proj, "reports")["caller"]["calls"] == ["loan"]
