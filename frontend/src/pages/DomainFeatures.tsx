@@ -11,6 +11,7 @@ import { AgentModeNote } from "../components/AgentModeNote";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { Guarded } from "../components/Guarded";
 import { StartMigration } from "../components/StartMigration";
+import { MoveFeatures } from "../components/MoveFeatures";
 
 const FEATURES_AGENT = "domain_features";
 
@@ -138,7 +139,9 @@ export function FeatureForm({ domain, feature, onDone }: { domain: Domain; featu
   );
 }
 
-function FeatureRow({ domain, feature, names }: { domain: Domain; feature: Feature; names: Map<string, string> }) {
+const STARTED_NOTE = "Its migration has started, so it can't move. An admin can reset it first.";
+
+function FeatureRow({ domain, feature, names, selected, onSelect }: { domain: Domain; feature: Feature; names: Map<string, string>; selected: boolean; onSelect: (on: boolean) => void }) {
   const queryClient = useQueryClient();
   const remove = useMutation({
     mutationFn: () => api.deleteFeature(domain.key, feature.key),
@@ -153,13 +156,28 @@ function FeatureRow({ domain, feature, names }: { domain: Domain; feature: Featu
   return (
     <>
     <tr id={`feature-${feature.key}`} className="scroll-mt-24 border-t border-border align-top">
+      {canEdit && (
+        <td className="py-3 pl-4">
+          <input
+            type="checkbox"
+            aria-label={`Select ${feature.name} to move`}
+            checked={selected}
+            disabled={!!run}
+            title={run ? STARTED_NOTE : undefined}
+            onChange={(e) => onSelect(e.target.checked)}
+          />
+        </td>
+      )}
       <td className="px-4 py-3">
         <span className="font-medium">{feature.name}</span>
         <code className="ml-2 text-xs text-subtle">{feature.key}</code>
         {feature.missing_from_latest && (
-          <span className="ml-2 rounded-full bg-warn/15 px-2 py-0.5 text-xs font-medium text-warn" title="Kept because it is being migrated, but the latest approved feature list doesn't have it.">
+          <span className="ml-2 rounded-full bg-warn/15 px-2 py-0.5 text-xs font-medium text-warn" title="Kept because it is being migrated or was moved here, but the latest approved feature list doesn't have it.">
             Not in latest list
           </span>
+        )}
+        {!!feature.moved_from?.length && (
+          <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-xs text-subtle">Moved from {names.get(feature.moved_from[feature.moved_from.length - 1]) ?? feature.moved_from[feature.moved_from.length - 1]}</span>
         )}
         {feature.description && <p className="mt-0.5 max-w-md text-xs text-subtle">{feature.description}</p>}
       </td>
@@ -220,7 +238,7 @@ function FeatureRow({ domain, feature, names }: { domain: Domain; feature: Featu
     </tr>
     {starting && !run && (
       <tr>
-        <td colSpan={6} className="px-4 pb-3">
+        <td colSpan={canEdit ? 7 : 6} className="px-4 pb-3">
           <StartMigration domain={domain} feature={feature} onCancel={() => setStarting(false)} />
         </td>
       </tr>
@@ -256,6 +274,12 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
   }, [features, location.hash]);
   const [params, setParams] = useSearchParams();
   const [setup, setSetupOpen] = useState(params.get("setup") === "1"); // a new domain arrives here with it open
+  const canEdit = useCan("domains.manage");
+  const [selected, setSelected] = useState<string[]>([]); // the features to move
+  const [moving, setMoving] = useState(false);
+  const [moved, setMoved] = useState<{ target: string; count: number; isNew: boolean } | null>(null);
+  const movable = (shown ?? []).filter((f) => !f.migration).map((f) => f.key);
+  const allSelected = movable.length > 0 && movable.every((k) => selected.includes(k));
   const closeSetup = () => {
     setSetupOpen(false);
     if (params.has("setup")) setParams({ tab: "features" }, { replace: true });
@@ -296,6 +320,29 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
 
       {editing === "" && <FeatureForm domain={domain} onDone={() => setEditing(null)} />}
 
+      {moved && (
+        <p className="card p-3 text-sm" role="status">
+          Moved {moved.count} feature{moved.count === 1 ? "" : "s"} to{" "}
+          <Link to={`/domains/${moved.target}?tab=features`} className="text-accent hover:underline">
+            {names.get(moved.target) ?? moved.target}
+          </Link>
+          .{moved.isNew && " Set its repositories in its Agent inputs before migrating them."}
+        </p>
+      )}
+
+      {moving && features && (
+        <MoveFeatures
+          domain={domain}
+          domains={domains}
+          features={features.filter((f) => selected.includes(f.key))}
+          onCancel={() => setMoving(false)}
+          onMoved={(result) => {
+            setMoving(false);
+            setSelected([]);
+            setMoved({ target: result.target, count: result.moved.length, isNew: result.new_domain });
+          }}
+        />
+      )}
 
       {isLoading || !features ? (
         <p className="text-sm text-subtle">Loading…</p>
@@ -320,10 +367,26 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
                 {shown!.length} of {features.length}
               </span>
             )}
+            {canEdit && selected.length > 0 && !moving && (
+              <button onClick={() => { setMoved(null); setMoving(true); }} className="ml-auto rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white">
+                Move {selected.length} selected…
+              </button>
+            )}
           </div>
           <table className="w-full min-w-[52rem] text-left text-sm">
             <thead className="text-xs uppercase tracking-wide text-subtle">
               <tr>
+                {canEdit && (
+                  <th className="py-2 pl-4">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all features not started"
+                      checked={allSelected}
+                      disabled={movable.length === 0}
+                      onChange={(e) => setSelected(e.target.checked ? [...new Set([...selected, ...movable])] : selected.filter((k) => !movable.includes(k)))}
+                    />
+                  </th>
+                )}
                 <th className="px-4 py-2 font-medium">Feature</th>
                 <th className="px-4 py-2 font-medium">Entry points</th>
                 <th className="px-4 py-2 font-medium">Tables</th>
@@ -334,11 +397,18 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
             </thead>
             <tbody>
               {shown!.map((f) => (
-                <FeatureRow key={f.key} domain={domain} feature={f} names={names} />
+                <FeatureRow
+                  key={f.key}
+                  domain={domain}
+                  feature={f}
+                  names={names}
+                  selected={selected.includes(f.key)}
+                  onSelect={(on) => setSelected(on ? [...selected, f.key] : selected.filter((k) => k !== f.key))}
+                />
               ))}
               {shown!.length === 0 && (
                 <tr className="border-t border-border">
-                  <td colSpan={6} className="px-4 py-6 text-center text-sm text-subtle">
+                  <td colSpan={canEdit ? 7 : 6} className="px-4 py-6 text-center text-sm text-subtle">
                     No feature matches “{search.trim()}”.
                   </td>
                 </tr>

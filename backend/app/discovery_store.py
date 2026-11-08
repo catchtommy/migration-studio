@@ -194,7 +194,7 @@ def record_approved(run_id: str, reviews: list[str]) -> str | None:
 
 
 def _record_contexts(run_id: str, contexts: list[dict]) -> str:
-    added, updated = [], []
+    added, updated, left = [], [], []
     project = projects.current()
     with session_scope() as s:
         for c in contexts:
@@ -207,8 +207,12 @@ def _record_contexts(run_id: str, contexts: list[dict]) -> str:
             else:
                 if not domain.description:
                     domain.description = c["description"]
-                domain.owned_tables = _merge(domain.owned_tables, c["tables"])
-                domain.owned_packages = _merge(domain.owned_packages, c["packages"])
+                # What another domain owns stays there, or a re-run would undo a move of it (app/feature_move.py)
+                others = s.scalars(select(Domain).where(Domain.project == project, Domain.key != c["key"])).all()
+                for field, listed in (("owned_tables", c["tables"]), ("owned_packages", c["packages"])):
+                    taken = {v.upper() for d in others for v in getattr(d, field) or []}
+                    setattr(domain, field, _merge(getattr(domain, field), [v for v in listed if v.upper() not in taken]))
+                    left += [f"{v} (not {c['key']})" for v in listed if v.upper() in taken]
                 updated.append(c["key"])
             inputs = dict(domain.agent_inputs or {})
             current = inputs.get(FEATURES_AGENT) or {}
@@ -219,20 +223,40 @@ def _record_contexts(run_id: str, contexts: list[dict]) -> str:
         setting.value = {"run_id": run_id, "keys": [c["key"] for c in contexts]}
         s.merge(setting)
     return (f"Bounded contexts recorded: {len(added)} new domain(s){' (' + ', '.join(added) + ')' if added else ''}, "
-            f"{len(updated)} updated")
+            f"{len(updated)} updated" + (f"; left with their current owner: {', '.join(left)}" if left else ""))
+
+
+def _moved_out(s, project: str, domain: str) -> list[Feature]:
+    rows = s.scalars(select(Feature).where(Feature.project == project, Feature.domain != domain)
+                     .order_by(Feature.key)).all()
+    return [f for f in rows if domain in (f.moved_from or [])]
+
+
+def _refuse_moved_out(s, project: str, domain: str, features: list[dict]) -> None:
+    """A list written before a feature moved out of the domain, or by an agent that found its code again, would bring
+    it back beside the moved one. Compared by entry point too, for one listed under another key."""
+    for row in _moved_out(s, project, domain):
+        points = set(row.entry_points or [])
+        again = next((f for f in features if f["key"] == row.key or points & set(f["entry_points"])), None)
+        if again:
+            raise InvalidDocument(f"{FEATURES_FILE}: {again['key']} is {row.key}, which was moved to {row.domain}: "
+                                  "take it out of this list, or move it back from that domain's Features tab")
 
 
 def _record_features(run_id: str, domain: str, features: list[dict]) -> str:
     kept = []
     project = projects.current()
     with session_scope() as s:
+        s.get(Domain, (project, domain), with_for_update=True)  # a move of its features waits for this, and this for it
+        _refuse_moved_out(s, project, domain, features)
         migrated = set(s.scalars(select(Run.operation).where(Run.project == project, Run.domain == domain,
                                                              MIGRATION_RUN)))
         existing = {f.key: f for f in s.scalars(select(Feature).where(Feature.project == project,
                                                                       Feature.domain == domain))}
         listed = {f["key"] for f in features}
         for f in features:  # a feature kept from before (already migrating) keeps its package
-            clash = _package_clash(f["key"], [k for k in existing if k not in listed and k in migrated])
+            clash = _package_clash(f["key"], [k for k, row in existing.items() if k not in listed
+                                              and (k in migrated or row.moved_from)])
             if clash:
                 raise InvalidDocument(f"{FEATURES_FILE}: {clash}")
         for f in features:
@@ -245,12 +269,12 @@ def _record_features(run_id: str, domain: str, features: list[dict]) -> str:
             row.used_by = f.get("used_by") or None
             row.run_id, row.missing_from_latest = run_id, False
         for key, row in existing.items():
-            if key in migrated:
+            if key in migrated or row.moved_from:  # moved here on purpose: a list written before that doesn't have it
                 row.missing_from_latest = True
                 kept.append(key)
             else:
                 s.delete(row)
-    note = f"; kept {', '.join(kept)} (not in the new list, but already migrating)" if kept else ""
+    note = f"; kept {', '.join(kept)} (not in the new list, but already migrating or moved here)" if kept else ""
     return f"Feature list recorded for {domain}: {len(features)} feature(s){note}"
 
 
@@ -265,7 +289,7 @@ def _run_brief(run: Run | None) -> dict | None:
 def _feature_dict(f: Feature, run: Run | None) -> dict:
     return {"key": f.key, "domain": f.domain, "name": f.name, "description": f.description,
             "entry_points": f.entry_points or [], "tables": f.tables or [], "calls": f.calls or [],
-            "used_by": f.used_by or [],
+            "used_by": f.used_by or [], "moved_from": f.moved_from or [],
             "run_id": f.run_id, "missing_from_latest": bool(f.missing_from_latest),
             "migration": _run_brief(run), "created_at": f.created_at, "updated_at": f.updated_at}
 
@@ -379,4 +403,10 @@ def domains_brief(domain: str) -> str:
                 points = ", ".join(f"`{p}`" for p in (f.entry_points or [])[:6])
                 lines.append(f"- `{f.key}` {f.name}" + (" (being migrated)" if f.key in migrating else "")
                              + (f": {points}" if points else ""))
+        moved = _moved_out(s, projects.current(), domain)
+        if moved:  # a re-run of the feature listing must not bring them back
+            lines.append(f"\n## Features moved out of `{domain}` (they belong to other domains now: do not list them)")
+            for f in moved:
+                points = ", ".join(f"`{p}`" for p in (f.entry_points or [])[:6])
+                lines.append(f"- `{f.key}` {f.name}, now in `{f.domain}`" + (f": {points}" if points else ""))
         return "\n".join(lines)

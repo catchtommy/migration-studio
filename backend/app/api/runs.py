@@ -53,9 +53,12 @@ _starting = threading.Lock()
 
 def start_run(db: Session, domain: str, operation: str, scope: str, workflow_key: str | None,
               inputs: dict | None = None, base_branches: dict | None = None,
-              feature_branch: str | None = None) -> Run:
-    """Create a run of a workflow of the given scope and start it."""
+              feature_branch: str | None = None, listed: bool = False) -> Run:
+    """Create a run of a workflow of the given scope and start it. `listed`: only if the feature is still in the domain
+    now that no move can be in progress (app/feature_move.py)."""
     with _starting:
+        if listed and discovery_store.feature(domain, operation) is None:
+            raise HTTPException(409, f"{operation} isn't in this domain's feature list any more")
         run, name = _create_run(db, domain, operation, scope, workflow_key, inputs, base_branches, feature_branch)
     emit(run.id, "status", f"Run created for {discovery_store.subject(domain, operation)} ({name})")
     get_runner().start(run.id)
@@ -129,7 +132,7 @@ def create_run(body: RunCreate, db: Session = Depends(get_db)):
                      body.workflow or workflow_store.default_for(domain),
                      inputs if inputs["paths"] or inputs["notes"] else None,
                      {**body.base_branches, **({delivery.ROOT: body.base_branch} if body.base_branch else {})},
-                     body.feature_branch)
+                     body.feature_branch, listed=True)
 
 
 @router.post("/runs/{run_id}/start-over", response_model=RunOut, status_code=201)

@@ -334,6 +334,7 @@ class Feature(Base):
     run_id: Mapped[str | None] = mapped_column(String(36))  # discovery run that listed it; None = added by hand
     # Kept because it has migration runs, although the latest approved feature list no longer has it.
     missing_from_latest: Mapped[bool] = mapped_column(Boolean, default=False)
+    moved_from: Mapped[list | None] = mapped_column(JSONText)  # domains it was moved out of (app/feature_move.py)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

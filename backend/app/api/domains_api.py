@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import (agent_store, contracts_store, discovery_store, document_export, domain_store, run_cleanup,
-                 workflow_store)
+from app import (agent_store, contracts_store, discovery_store, document_export, domain_store, feature_move,
+                 run_cleanup, workflow_store)
 from app.api.discovery_api import start_features
+from app.api.runs import _starting
 from app.api.schemas import (
     DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, FeatureCreate, FeatureIn,
-    DiscoveryStart, FeatureOut, OperationDocs, RunOut,
+    DiscoveryStart, FeatureOut, MoveFeatures, MoveFeaturesIn, OperationDocs, RunOut,
 )
 from app import projects
 from app.auth import CurrentUser, require, require_admin
@@ -51,14 +52,8 @@ def dependency_map():
 
 @router.post("", response_model=DomainOut, status_code=201, dependencies=[Depends(require("domains.manage"))])
 def create_domain(body: DomainCreate, db: Session = Depends(get_db)):
-    if db.get(Domain, (projects.current(), body.key)):
-        raise HTTPException(409, f"Domain {body.key} already exists")
-    from app.domain_modules import domain_segment
-    other = next((d for d in db.scalars(select(Domain.key).where(Domain.project == projects.current()))
-                  if domain_segment(d) == domain_segment(body.key)), None)
-    if other is not None:  # a domain's package is <prefix>.<its key without dashes>
-        raise HTTPException(409, f"The domains {body.key} and {other} would share the package "
-                                 f"{domain_segment(body.key)}: give it a key that differs in more than dashes")
+    if problem := domain_store.new_domain_problem(db, projects.current(), body.key):
+        raise HTTPException(409, problem)
     domain = Domain(project=projects.current(), key=body.key, name=body.name, description=body.description, context="", agent_inputs={})
     db.add(domain)
     db.commit()
@@ -211,6 +206,35 @@ def add_feature(key: str, body: FeatureCreate, db: Session = Depends(get_db)):
     try:
         return discovery_store.save_feature(key, body.key, body.model_dump(), create=True)
     except discovery_store.DiscoveryError as e:
+        raise HTTPException(409, str(e))
+
+
+def _move_args(body: MoveFeaturesIn) -> dict:
+    return {"features": body.features, "unticked": body.unticked, "target": body.target,
+            "new_domain": body.new_domain.model_dump() if body.new_domain else None, "tables": body.tables,
+            "packages": body.packages, "skipped_references": body.skipped_references}
+
+
+@router.post("/{key}/features/move/preview", dependencies=[Depends(require("domains.manage"))])
+def preview_move(key: str, body: MoveFeaturesIn) -> dict:
+    """What moving these features would change, for a person to review and adjust. Changes nothing."""
+    try:
+        return feature_move.preview(key, **_move_args(body))
+    except KeyError:
+        raise HTTPException(404, "Domain not found")
+
+
+@router.post("/{key}/features/move")
+def move_features(key: str, body: MoveFeatures, user: CurrentUser = Depends(require("domains.manage"))) -> dict:
+    """Move features to another domain, as reviewed. Started features can't move."""
+    if not body.acknowledged_calls:
+        raise HTTPException(422, "Confirm you have checked calls between the moved and remaining features")
+    try:
+        with _starting:  # no migration of them starts meanwhile
+            return feature_move.move(key, fingerprint=body.fingerprint, user=user.username, **_move_args(body))
+    except KeyError:
+        raise HTTPException(404, "Domain not found")
+    except feature_move.Refused as e:
         raise HTTPException(409, str(e))
 
 

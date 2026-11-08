@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from app.agents.defaults import CHECKS, EFFORTS, TOOLS
 from app.contracts_store import CONTRACT_STATUSES
@@ -470,6 +470,29 @@ class RunBrief(BaseModel):
     created_at: datetime
 
 
+class MoveFeaturesIn(BaseModel):
+    """A move as reviewed: to an existing domain (`target`) or a new one (`new_domain`). See app/feature_move.py."""
+
+    features: list[str] = Field(min_length=1)  # shown in the review; those in `unticked` stay
+    unticked: list[str] = []
+    target: str | None = None
+    new_domain: DomainCreate | None = None
+    tables: list[str] | None = None  # None: what the review suggests; []: none
+    packages: list[str] | None = None
+    skipped_references: list[str] = []
+
+    @model_validator(mode="after")
+    def _one_destination(self):
+        if bool(self.target) == bool(self.new_domain):
+            raise ValueError("Choose either an existing domain or a new one")
+        return self
+
+
+class MoveFeatures(MoveFeaturesIn):
+    fingerprint: str  # of the review this confirms
+    acknowledged_calls: bool = False
+
+
 class FeatureOut(BaseModel):
     key: str
     domain: str
@@ -479,6 +502,7 @@ class FeatureOut(BaseModel):
     tables: list[str]
     calls: list[str]
     used_by: list[dict] = []  # entry points outside the domain: [{"domain" (or "external"), "entry_point"}]
+    moved_from: list[str] = []  # domains it was moved out of (app/feature_move.py)
     run_id: str | None  # discovery run that listed it; None when added by hand
     missing_from_latest: bool
     migration: RunBrief | None  # latest migration run of this feature

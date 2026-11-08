@@ -35,6 +35,20 @@ def normalize_inputs(raw: dict | None) -> dict:
     return out
 
 
+def new_domain_problem(s, project: str, key: str) -> str | None:
+    """Why a domain can't be created with this key. A domain's package is <prefix>.<its key without dashes>."""
+    from app.domain_modules import domain_segment
+
+    if s.get(Domain, (project, key)) is not None:
+        return f"Domain {key} already exists"
+    other = next((d for d in s.scalars(select(Domain.key).where(Domain.project == project))
+                  if domain_segment(d) == domain_segment(key)), None)
+    if other is not None:
+        return (f"The domains {key} and {other} would share the package {domain_segment(key)}: give it a key that "
+                "differs in more than dashes")
+    return None
+
+
 class DomainBusy(RuntimeError):
     pass
 

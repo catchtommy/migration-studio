@@ -537,10 +537,57 @@ export interface Feature {
   calls: string[]; // other domains it reaches into
   used_by?: { domain: string; entry_point: string }[]; // entry points outside the domain that use it ("external" too)
   run_id: string | null; // discovery run that listed it; null when added by hand
-  missing_from_latest: boolean; // kept because it is being migrated, though the latest list dropped it
+  missing_from_latest: boolean; // kept because it is being migrated or was moved here, though the latest list dropped it
+  moved_from?: string[]; // domains it was moved out of
   migration: RunBrief | null; // latest migration run
   created_at: string;
   updated_at: string;
+}
+
+/** A move of features to another domain, as far as the user has adjusted it. `tables`/`packages` undefined: the suggestion. */
+export interface MoveRequest {
+  features: string[];
+  unticked: string[];
+  target?: string;
+  new_domain?: { key: string; name: string; description: string };
+  tables?: string[];
+  packages?: string[];
+  skipped_references: string[];
+}
+
+export interface MoveReview {
+  source: string;
+  target: string;
+  new_domain: boolean;
+  blockers: string[]; // nothing can move until these clear
+  features: (Pick<Feature, "key" | "name" | "description" | "entry_points" | "tables" | "calls" | "used_by"> & {
+    ticked: boolean;
+    blocked: string | null; // why it can't move
+    migration: { id: string; status: string } | null;
+  })[];
+  tables: {
+    table: string;
+    owners: string[];
+    moving_features: string[];
+    remaining_features: string[];
+    other_features: string[];
+    selected: boolean;
+    locked: boolean;
+    note: string;
+    group: "used" | "other"; // other: no moving feature uses it
+  }[];
+  packages: { package: string; selected: boolean }[];
+  references: { id: string; description: string; selected: boolean }[];
+  warnings: string[];
+  check_by_hand: {
+    calling_features: { domain: string; feature: string }[];
+    dependencies: { source: string; interaction: string; contract: string | null; status: string }[];
+    contracts: { key: string; status: string; consumers: string[]; matches_moved_feature: boolean }[];
+    listing_paths: string[];
+  };
+  copied: { context: string; default_workflow: string | null; agent_inputs: Record<string, { paths: string[]; notes: string }> } | null;
+  summary: { features: number; tables: string[]; staying_tables: string[] };
+  fingerprint: string;
 }
 
 export interface DiscoveryOverview {
@@ -921,6 +968,9 @@ export const api = {
     request<Feature>(`/domains/${domain}/features/${encodeURIComponent(key)}`, json("PUT", body)),
   deleteFeature: (domain: string, key: string) =>
     request<void>(`/domains/${domain}/features/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  previewMove: (domain: string, body: MoveRequest) => request<MoveReview>(`/domains/${domain}/features/move/preview`, json("POST", body)),
+  moveFeatures: (domain: string, body: MoveRequest & { fingerprint: string; acknowledged_calls: boolean }) =>
+    request<{ target: string; new_domain: boolean; moved: string[] }>(`/domains/${domain}/features/move`, json("POST", body)),
   discovery: () => request<DiscoveryOverview>("/discovery"),
   discoverBoundedContexts: (inputs?: AgentInputs) => request<Run>("/discovery/bounded-contexts", json("POST", { inputs })),
   discoverFeatures: (domain: string) => request<Run>(`/domains/${domain}/discover-features`, { method: "POST" }),

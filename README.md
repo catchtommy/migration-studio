@@ -469,6 +469,14 @@ from the **Discovery** panel on the Domains page.
    and `features.yaml`: each feature's key, name, entry points, tables and the domains it calls. Approving it
    replaces the domain's feature list; features that are already being migrated are kept and marked *Not in latest
    list*.
+   **Moving features to another domain** (a domain too large to migrate as one): select features on a domain's
+   **Features** tab, choose a new or existing domain, and review what changes. Features, tables, packages and `calls` /
+   `used_by` updates can each be unticked. A started feature can't move until an admin resets it, which leaves approved
+   contracts and pushed code in place. A new domain copies the context, default workflow, and agent paths and notes,
+   but not repositories. Later listings of the old domain refuse the feature, and later bounded contexts leave moved
+   tables with their new owner. Calls between features of one domain aren't recorded, so a split can turn some into
+   calls between domains that the review can't show: check these yourself. Moving back isn't an exact undo (added
+   `calls` stay, and a new domain stays until it is deleted).
 
 **Nothing starts until you've set it up.** *Find bounded contexts…*, *List features…* (a domain's Features tab, where
 a new domain opens) and *List features for all domains…* first show a setup step. It shows whether the agent is in
