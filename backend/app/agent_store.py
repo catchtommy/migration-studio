@@ -59,7 +59,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                               "d2fc147964a2e477c07072900e92b7356898e7613f3274d96dfab97576ec8476",
                             "6909abd6a1c273ef64d44d286532f0171c7c92c3d0cd78939ce8db8610c33d25",
                             "3d453659a94a2f241277ea0f3c3feb349d125fdd97057bb5bc1f1d39bd3dbcab"},
-    "domain_design": {"9caf82f7ff22962b079c8b1fefdffc17a476f6d246f6d70ffb798ef3feb081ca",
+    "domain_design": {"c26565ba9acfcbe35b352c3cf6565b8ff6e245b01a280bacf94cc7cc06f770c9",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "9caf82f7ff22962b079c8b1fefdffc17a476f6d246f6d70ffb798ef3feb081ca",
         "dd198f239be4b92d142930b6e651ac90dadd1dd31d7209a8b43d70ca384b162d",
                       "9c129233aca1bf0a00dd893f4f0c44ab545f0ac5346a75b7222432e398bc2e31",
         "183bbce289171e4d9b20d7d1506417c2aaf10d85c76f278ae91f80e1cadb6405",
@@ -73,7 +74,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                       "94017c67ed50785e4c739eb40fb064ce2305efc75fe06ea1cea7e7409b3f2e91"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
-    "orchestrator_design": {"681cfb1c03349c7f6edfd3852b9c303f464e4375525857e4edb71e0dd677ad49",
+    "orchestrator_design": {"b9c2783455dc39bc8904b8fd16af498334936d61aed89178b5ced9891c2f8b72", "612c42c0d2c3afb0c7f48fa964a9ca9bc81d542241bb2280ca5b61b55d06bb14",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "681cfb1c03349c7f6edfd3852b9c303f464e4375525857e4edb71e0dd677ad49",
         "fec9b1a759bfbb513210a58472431041d014335317139309281fd8546c42b34a",
                             "44b0788e38d118d0b1a4a7cf2de98d2dbcf3bee334a7885bc8ce8788bac6c365",
                             "35da265d3395dafb7b16aaa1477ff1c3fba106c2c0bc11ca340c8f05da063b62",
@@ -84,14 +86,17 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                             "95e1470cf6cff461d1caf1d4e94205c0229b696ee8c852c6bd3acdb7b257a79e",
                             "3e283b3f86a097de59173a64e5068d92ee6fc631799dfaac7c2617f903a91dc9",
         "d6dc2dbe5ee11320b29122983c1d5cf80aa47f47f9346c6430a0457792c30da5"},
-    "linked_domain_contracts": {"082994b819661585759f03856a7188552dd1aec9960aed6d63413ce956b4b5bc",
+    "linked_domain_contracts": {"44cbd09366c9f87a58eac93a64db844b015010fdee434e24573301ab600fe3be",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "b322ba1eb920617a7ca19d7565e2685c5e7695ccd997fddf9559396a1a4b0843",  # before the integration and event-handler modules
+        "082994b819661585759f03856a7188552dd1aec9960aed6d63413ce956b4b5bc",
                                 "2f1fde8befb5a2d452aea0a989261f084433a5465e64dced1eb3205a53654609",
         "5d19465bca4616a7f4a6e3581fbadcd30b9707efb9c43e993ddddd96ed8cc464",
         "5ef353e2455182ccc268bfd59999b18449c873a8bb41be559aee177df7c6d941",
                                 "7373d95b05eadcacff8638d41bc2da63c8627647d323f824a12159828a41f3d7",
                                 "f769606aba568416e0e3892f88a6fd147ab3eeb1ff082d9be446ec6ea3fc9dbf",
                                 "7a589e02ca2bb06072c304f2f0d99e47482f4eba4d3a7846a4986cfbaef45a8a"},
-    "integration_design": {"de5041e39759b2d42c8a5a01034f82a3f0ad7b6914ea4e30465f65d4525af132",
+    "integration_design": {"232d9b4f0e40dd9a43bd5d7d48bf9e8904a73227ec2f093750bd4d1ed7257cb4",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "de5041e39759b2d42c8a5a01034f82a3f0ad7b6914ea4e30465f65d4525af132",
         "0bc173e30220ab4a146c8d55d3c3e7eb228a16a6b1b75fabcaf6bbceb720576f",
         "e8dda7fd040ae6b01935f0b2228207308b0ee8d9cfb67e0800de29597f07425c",
         "17fb32be72076d00361fca9333d38ee203dc223b996db012f277e13b44c8b4e5",
@@ -107,7 +112,9 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                           "4b1b34967d2944c200b2b4bd8c0a81768cd6292da94cac47c000f9ba30d0de8e",
                           "d36bccc1f7537976e2b700ce1d597efa5283e7e435cd2aca25aaac50ef889a47",
                           "12aea52ce65e461164115980768436ac4e4a069abee71e9ff4a2f2bde6cfc548"},
-    "microservice_scaffold": {"7407fa4ef1bde3e716e5185935ee4da564f692144d68f54cff9edee0243772e6",
+    "microservice_scaffold": {"fb302d1bbd3f8aaee80eaff3c488e58a7ae9efe1f0a1dbf6dcde0e790e406073",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "ebc2bde4119fea34214581b5466d2fedd35b55f5044693a0a88d16eb94f629e1",  # before the integration and event-handler modules
+        "7407fa4ef1bde3e716e5185935ee4da564f692144d68f54cff9edee0243772e6",
         "184ef7ecf2a671727e17c0d65b19b82993b3d61026433fdea9360a5126291614",
         "d10bb3879c92380cc05bd23f1c91a377749a367067c79bb40d4ad7c4733530e9",
                               "433fa24641180e7ee1a61b9c122707e5088afd85fcfff8238ad9953a37aafe56",
@@ -130,7 +137,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "3fdbd40d27cf56a744c4dcc0cc874d058243279094fb3aabf3f9ca725a0c492a",
         "acf98d8971c8430231b71d5a41e44f92e9ffd9824bdd8500769936b7ae934cac",
         "b16faecb3264355335f347ecdff807fa3b96979e2f4f880e47a200e3a48982a5"},
-    "modular_monolith": {"dba97de3ae2d5f99c1f4de6d53112580f8fdbb699366d88a5f9561955bb47e9b",
+    "modular_monolith": {"c424e90a2f1a59c3fac732f1828670aadf362bc7eb20d6a561d150b1cc3eabbb",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "dba97de3ae2d5f99c1f4de6d53112580f8fdbb699366d88a5f9561955bb47e9b",
         "0b2f87692a0161118f228703f72775d4df27f3d904a0646e04db7d36b3ad0388",
         "db223089cf2602d7762ed350e887a5e62e581bb1565dada1fb2862f7c3c54ae2",
         "86499680a4b1d9ac6ca5cc3ff6b6c46b2ea084a85aed2ab0b21a16a7dcf88e07",
@@ -153,7 +161,9 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                          "20369f074da4f5870c38bdea7c129dc92217a37a182b7e3dba3c983e3a226a09",
                          "c3a678317498d3b0682c70f3a3b41727037b401f23c54713108a735babbd28fa",
                          "8d67e4fd44f4bce07fa5d8aa0d6658c52c4bb703100914bc538267e060258dac"},
-    "monolith_integration": {"00946d501dc1074cd5db3e24cc07d23fe060ca16b87610ca6c2661515dd60ab8",
+    "monolith_integration": {"cc1db63c28cf8496c03081e521cd0ea3102ec1e375f5265060a0940575d31ebb", "b5aac4030a9aee5307f4d8ac17866b2a25517962e09ae1be67c6b3baaf8f23ae",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "5bc76089ab268f53fff05ec6f0123a72908f3ecabfd8bfb91a7842166fbc1ac6",  # v37, before the entry-point and handler names were spelled out
+        "00946d501dc1074cd5db3e24cc07d23fe060ca16b87610ca6c2661515dd60ab8",
         "133635292b0946704b5ed7ea641316940df360df236815da635ae1ade410e408",
         "6a03b6553fc4062747ffdd63058c818020acb607946c9d1e0c1805465594e8b3",
         "2599df41784b8e9212b94ab2de016496db7308f2323635ed380de312556fa57a",
@@ -168,7 +178,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                              "673a0969f74f104d418d47b8e935f34ca65c6eeeca498425883cdda80006894b"},
     "as_is_doc": {"9fb0392d1747e6a478a3e0cd6d77ea8cd4564fd9e815959b5baf2f48ee52c892"},
     "bounded_contexts": {"0fe37358d0947d3a11a0fc7d5440eb9ebaa72ec9171caff82a4612112c073294"},
-    "monolith_orchestrator": {"9413d856b7092c5e63d5153534afe28bf8c26c63030d65e6fa380b7517087a3f",
+    "monolith_orchestrator": {"d27c00ce7a828ae72eeeb6d3eccb1a1505557676bd82c41b0d659f81336e449d", "9b9b02478b8cb78f14a09d7350b605a8cd3069e8e3bef8b0ed4e30f350fcbddc",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "9413d856b7092c5e63d5153534afe28bf8c26c63030d65e6fa380b7517087a3f",
         "aa5ab86edeb3922fd89adbd4218d41bcf5b07872686d447e7daa7ae0aa46644d",
         "d7c5287b7420e74a8fe380f2f3a171e4e3f9802deb70550bbcd7fd176a3b50fb",
         "b657db126d0c4c1e1c89547fb8a15d33b835cb1d6a0f672ef3349d37a50d2288",
@@ -180,13 +191,16 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "5b1954381befa4b650c27376281f54dcdd5e53b1b8b844eb308f315dd59e632a",
         "3179eeac8cf303ea388310a0c0c6c950c414a5aef1f1e9ed7101b39da4232903",
                               "17eb8df57a93ef73c26dc2eb09ff90403eb57b0c52f8cbfde79a2fba511fec64"},
-    "orchestrator_service": {"7319dc8a36c96a8cee660ebc44e92a8e3493d778666885d6363032b27c02a68b",
+    "orchestrator_service": {"2bae4f7b006c71220e8b929c8664dafb6439d81ad7bc73196ed5f4b98a7e9d7e",  # v37, before the entry-point and handler names were spelled out
+        "ec5d9fb2b9387f2daa0b048e935edde54c88234663a80d5f32706a823f1eceb2",  # before the integration and event-handler modules
+        "7319dc8a36c96a8cee660ebc44e92a8e3493d778666885d6363032b27c02a68b",
         "45b299890d3b03c87327a570a46a7a3aca76641318fbd2afc087693924f0acfd",
         "84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee",
         "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68",
         "e9a0a4f846d21ff3e0b360c6acd0d6017f453bfe9dc5c5ea937669b2c49c9be9",
                              "60e428368d945638916a3fd4a8fe75479eeca06e59a4cb3eed65fc861021c2ed"},
-    "modulith_design": {"ff034a9939629786a8035913a5955c679fc486e1a85a4d9025cb7cba9f4177c1",
+    "modulith_design": {"bb58a07466e678bcd0e6a943be48a4c4ddb27769e9771dba1c49f74b0adf4a1a", "10e717d44ed190c757435b1b3847d030e0680799b3c45f30e2fc89a6f296a926", "67eb1acd9d20b6e7f3beb577610d2daeb5f6d9980a782fcf8145b09dd5f23780",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "ff034a9939629786a8035913a5955c679fc486e1a85a4d9025cb7cba9f4177c1",
         "a8c53e3d530620c70745c1acaa65dccbb77258d932faf7707670ce728aefe67f",
         "0265edb02c4e0185a7079115bfbdb789cade24afe450f06778e2d8d251bdd597",
         "ca24f0f89fa6386a8562748c376199366381dab8c59adb1e7981b41851a779d7",
@@ -202,13 +216,14 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f",
         "a33d06bbba111d533ffd3973d9226f06ad3f072e13cf06e19ad366352edd7bdd",
                            "3017cc168fb1c98e83afe8bcf0f31cd82894893a7fd92d47d909d523e49f71d8"},
-    "dependency_analysis": {"9065f34f204858e38b0ab566908d0857ab743947350df51a1ceda6e67c5b5815",
+    "dependency_analysis": {"3ff84e984a5bdaebac0fa7074694e89f829372c906cda23df902864c66209184",  # defaults of commits 6ab0db8 / 1bddc72 and earlier
+        "9065f34f204858e38b0ab566908d0857ab743947350df51a1ceda6e67c5b5815",
         "ba664201046396f05dd167c9996bd3a331c1b3b6365db7f2af0d11c3d56e0254"},  # added in this release: no earlier default
     "orchestrator_tests": {"59931983dacdd34d87b17875f1882ba5ba60a68c477f0cec80386bcf4360bfe6"},  # added in this release: no earlier default
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v36"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v38"  # v37-38: the integration and event-handler modules
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
 GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails

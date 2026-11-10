@@ -713,3 +713,11 @@ def test_the_handling_domain_learns_of_the_temporary_handlers_calling_it(client)
     brief = cs.catalogue_brief(handler, {})
     assert "ChangedHandler for `" + event + "`" in brief and "switched by `changed.enabled`" in brief
     assert "ChangedHandler" not in cs.catalogue_brief(publisher, {})
+
+
+def test_a_standard_design_gives_its_event_handlers_the_same_rules(tmp_path):
+    """The Standard workflow's integration design isn't held to the Lean allocation check, but its event handlers are."""
+    out = _with_entry_points(_lean_design(tmp_path, NAMED, HANDLED))
+    assert cs.event_handler_decision_problems(out) == []
+    assert any("X2 needs an event_handler" in p
+               for p in cs.event_handler_decision_problems(_with_entry_points(_lean_design(tmp_path, NAMED))))

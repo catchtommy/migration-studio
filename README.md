@@ -624,14 +624,24 @@ web application
 - **Who builds what.** *Modulith design* designs both. *Module in monolith* builds the interfaces, entry points,
   gateways and adapters, and the handlers of the domain module's events. *Orchestrator in monolith* builds the handlers
   of its own events; its mode switches implement the entry-point interfaces. The domain and orchestrator modules call
-  the interfaces and never import the legacy classes.
+  the interfaces and never import the legacy classes. There is one bean per interface: step 4 registers the entry
+  point under the interface's bean id, and step 5 points that id at its mode switch, which calls the entry point in
+  `local` mode.
+- **In the services.** Nothing depends on the monolith. *Microservice* and *Orchestrator microservice* copy each
+  entry-point interface they use, with its DTOs, into the service's `shared` package (package and import lines only),
+  and their REST clients implement it. *Monolith integration*'s facade endpoints call the entry-point interface, never
+  the legacy code a second way, and it leaves both temporary modules unchanged (checked).
+- **Lifecycle.** A domain's packages stay after that domain is migrated: the adapters' legacy beans are routed to its
+  service. They are removed once its service provides the contracts and handles the events itself and nothing in the
+  monolith calls them (`remove_when`), never by a feature's run.
 - **Names are fixed by the key.** For example `customer.get-kyc-status` becomes `CustomerGetKycStatus…`, and
   customer's handler of `loan.loan-approved` becomes `CustomerLoanApprovedHandler`. So features on parallel branches
   build the same classes, and a later feature reuses them, only adding to them. The catalogue keeps each contract's
   binding and entry point. A design lists a contract with `reuse: true` when its entry point covers the need, and
   defines it again under the same key (every existing operation plus the new ones) when it needs more. When a
   domain's own migration starts, its packages in both modules list the APIs and events it must provide.
-- **Checks.** A guardrail checks the rules against git (app/legacy_modules.py). It refuses:
+- **Checks.** Both workflows' design steps must give every temporary binding an entry point and every reaction
+  still in the monolith an event handler. A guardrail checks the code against git (app/legacy_modules.py). It refuses:
   - legacy imports, database access or transactions in the integration module;
   - a handler that calls anything other than entry-point interfaces, or doesn't use `PROPAGATION_REQUIRES_NEW` and
     catch what fails;

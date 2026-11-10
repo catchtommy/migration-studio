@@ -483,26 +483,55 @@ def allocation_decision_problems(output_dir: Path) -> list[str]:
                     # The handling domain is still in the monolith exactly when the allocation names the methods
                     # that do the work today: then the event-handler module gets a handler, which reaches them through
                     # integration entry points (app/legacy_modules.py).
-                    want = sorted(item["event"].get("delegates_to") or [])
-                    handler = d.get("event_handler") if isinstance(d.get("event_handler"), dict) else None
-                    if d.get("temporary_handler") is not None:
-                        problems.append(f"{where}: {x} has a temporary_handler: the handler of a domain not migrated "
-                                        "yet is now an event_handler in the event-handler module, calling integration "
-                                        "entry points (calls); replace it")
-                    elif want and handler is None:
-                        problems.append(f"{where}: {x} needs an event_handler: {fid}'s event names delegates_to "
-                                        f"({', '.join(want)}), so its handling domain is still in the monolith")
-                    elif handler is not None and not want:
-                        problems.append(f"{where}: {x} has an event_handler, but {fid}'s event names no delegates_to "
-                                        "(its handling domain handles the event itself)")
-                    elif handler is not None:
-                        problems += _event_handler_problems(f"{where}: {x}'s event_handler", handler, item, want,
-                                                            by_key)
+                    problems += _handler_decision_problems(where, x, item, d, by_key)
     stray = sorted({str(d.get("interaction")) for d in decisions if d.get("pattern") == "event"
                     and d.get("direction", "outbound") == "outbound" and str(d.get("interaction")) not in from_handlers})
     if stray:
         problems.append(f"{where}: {', '.join(stray)} decided as events, but no event-handler functionality links them; "
                         "a side effect is an event only when the allocation places it on an event handler")
+    return problems
+
+
+def _handler_decision_problems(where: str, x: str, item: dict, d: dict, by_key: dict[str, dict] | None) -> list[str]:
+    """The event decision `d` of interaction `x`, linked by the event-handler functionality `item`: it has an
+    event_handler exactly when the allocation's event names what does the work today (delegates_to), and that handler
+    reaches it through integration entry points (app/legacy_modules.py)."""
+    want = sorted(item["event"].get("delegates_to") or [])
+    handler = d.get("event_handler") if isinstance(d.get("event_handler"), dict) else None
+    if d.get("temporary_handler") is not None:
+        return [f"{where}: {x} has a temporary_handler: the handler of a domain not migrated yet is now an "
+                "event_handler in the event-handler module, calling integration entry points (calls); replace it"]
+    if want and handler is None:
+        return [f"{where}: {x} needs an event_handler: {item['id']}'s event names delegates_to ({', '.join(want)}), "
+                "so the reaction still runs in the monolith"]
+    if handler is not None and not want:
+        return [f"{where}: {x} has an event_handler, but {item['id']}'s event names no delegates_to (its handling "
+                "domain handles the event itself)"]
+    if handler is not None:
+        return _event_handler_problems(f"{where}: {x}'s event_handler", handler, item, want, by_key)
+    return []
+
+
+def event_handler_decision_problems(output_dir: Path) -> list[str]:
+    """The event handlers of a design whose decisions don't otherwise follow an allocation check (the Standard
+    workflow's integration design): an event_handler exactly where the allocation's event names delegates_to,
+    reaching it through entry points. Empty when the allocation or the decisions are absent or invalid."""
+    allocation = load_functional_allocation(output_dir)
+    f = output_dir / DECISIONS_FILE
+    if allocation is None or not f.is_file():
+        return []
+    try:
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return []
+    decisions = [d for d in (data or {}).get("decisions") or [] if isinstance(d, dict)] if isinstance(data, dict) else []
+    by_key, where, problems = _linked_by_key(output_dir), f"{DECISIONS_FILE} against {FUNCTIONAL_ALLOCATION_FILE}", []
+    for item in allocation["functionalities"]:
+        if item["placement"] != "event-handler":
+            continue
+        for x in (str(i) for i in item.get("interactions") or []):
+            for d in (d for d in decisions if str(d.get("interaction")) == x and d.get("pattern") == "event"):
+                problems += _handler_decision_problems(where, x, item, d, by_key)
     return problems
 
 
@@ -1846,7 +1875,7 @@ def _entry_point_note(c: Contract) -> str:
     """The catalogue line's note on a contract's integration entry point (app/legacy_modules.py), when it has one."""
     binding = c.binding if isinstance(c.binding, dict) else None
     ep = (binding or {}).get("entry_point")
-    if not isinstance(ep, dict) or c.status == "provided-by-service":
+    if not isinstance(ep, dict):  # kept after its domain is migrated: its adapter's legacy bean routes to the service
         return ""
     from app.legacy_modules import entry_point_names
 

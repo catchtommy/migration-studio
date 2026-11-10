@@ -345,3 +345,34 @@ def test_a_reused_entry_point_must_be_there_but_need_not_be_declared(repo):
     (root / f"{API}/CustomerGetKycStatusApi.java").unlink()  # its feature isn't merged: built as the catalogue says
     assert any("CustomerGetKycStatusApi.java doesn't exist" in p for p in
                run(root, base, declared={**LEGACY_DECLARED, "entry_points": [RECORD]}, entry_points=reused))
+
+
+def test_monolith_integration_leaves_the_temporary_modules_as_they_are(repo):
+    from app import release_guardrails as rg
+
+    root, base = repo
+    put(root, f"{INTEGRATION}/CustomerGetKycStatusEntryPoint.java", "package com.acme.integration.customer;\nclass X {}\n")
+    assert any("is in the module legacy-integration, which this step does not change" in p
+               for p in rg.integration(root, base, [MOD, "legacy-integration", "legacy-event-handlers"]))
+
+
+def test_the_shared_text_is_instructions_and_the_guardrail_sections_keep_what_they_held():
+    """The temporary modules' text sits after each agent's guardrail sections, which keep their own paragraphs."""
+    from app.agents import defaults as d
+
+    for key in ("linked_domain_contracts", "domain_design", "orchestrator_design", "modular_monolith",
+                "monolith_orchestrator", "microservice_scaffold", "modulith_design", "integration_design"):
+        assert "{{legacy_modules}}" in d.TEMPLATES[key], key
+        assert "{{legacy_modules}}" not in d.GUARDRAIL_TEMPLATES.get(key, ""), key
+    assert "For this step the guardrails read as follows" in d.GUARDRAIL_TEMPLATES["microservice_scaffold"]
+    assert "Hard rules for this step." in d.GUARDRAIL_TEMPLATES["microservice_scaffold"]
+    assert "For contracts the guardrails mean" in d.GUARDRAIL_TEMPLATES["linked_domain_contracts"]
+    assert "Hard rules for this step." not in d.TEMPLATES["microservice_scaffold"]
+
+
+def test_the_later_steps_are_told_where_the_names_come_from():
+    from app.agents import defaults as d
+
+    assert "`legacy_modules.entry_points` of `module-extraction.yaml`" in d.TEMPLATES["monolith_integration"]
+    assert "`legacy_modules.handlers` of its extraction file" in d.TEMPLATES["monolith_integration"]
+    assert "the `ports` of `orchestrator-extraction.yaml`" in d.TEMPLATES["orchestrator_service"]

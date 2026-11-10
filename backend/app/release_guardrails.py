@@ -241,6 +241,15 @@ def for_context(ctx, checks: list[str]) -> list[str]:
                 modules += [str(m["path"]).strip("/") for m in data["modules"]]
             elif data and data.get("orchestrator") == "module":
                 modules.append(str(data["module"]["path"]).strip("/"))
+        # The temporary modules for the domains not migrated yet stay as the module steps built them: the switch to
+        # the services (facade endpoints, Service Bus subscribers) lives in the web application (app/legacy_modules.py)
+        if cs.expected_entry_points(ctx.output_dir) is not None:
+            from app import legacy_modules
+            from app.domain_modules import project_of
+
+            lay = legacy_modules.layout(project_of(ctx.run_id), code, ctx.base_sha)
+            if lay is not None:
+                modules += [lay.integration_dir, lay.event_handler_dir]
         f = ctx.output_dir / cs.INTEGRATION_ROUTING_FILE
         try:
             routing = cs.parse_integration_routing(f.read_text(encoding="utf-8")) if f.is_file() else None

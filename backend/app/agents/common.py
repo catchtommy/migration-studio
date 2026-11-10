@@ -472,10 +472,13 @@ def verify(ctx: AgentContext, written: set[str] | None = None) -> list[str]:
         problems += _design_module_problems(ctx)
     if "orchestrator-design.md" in (ctx.config.get("outputs") or []):  # the design steps that design the orchestrator
         problems += contracts_store.orchestrator_api_problems(ctx.output_dir)
+    outputs = set(ctx.config.get("outputs") or [])
     if ctx.stage == "modulith_design":  # Lean only: the decisions follow the approved functional allocation
         problems += contracts_store.allocation_decision_problems(ctx.output_dir)
-        # ... and a domain not migrated yet is reached through its entry point (app/legacy_modules.py)
-        problems += contracts_store.entry_point_problems(ctx.output_dir)
+    elif contracts_store.DECISIONS_FILE in outputs:  # another design step (Standard): at least its event handlers do
+        problems += contracts_store.event_handler_decision_problems(ctx.output_dir)
+    if contracts_store.LINKED_CONTRACTS_FILE in outputs:  # every workflow: a domain not migrated yet is reached
+        problems += contracts_store.entry_point_problems(ctx.output_dir)  # through its entry point (legacy_modules)
     problems += discovery_store.validate_outputs(ctx.output_dir)
     problems += _functional_spec_problems(ctx)
     problems += guardrail_problems(ctx, checks)
