@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { load } from "js-yaml";
 import { vi } from "vitest";
-import { FunctionalAllocationView, allocationProblems, parseAllocation, type Allocation } from "./FunctionalAllocationView";
+import { FunctionalAllocationView, allocationProblems, legacyModule, parseAllocation, type Allocation, type Functionality } from "./FunctionalAllocationView";
 
 // The bank-account example: the legacy code adds a note to every loan of the client inline; once migrated, the
 // client domain publishes an event and the loan domain's handler adds the notes.
@@ -34,6 +34,23 @@ test("functionalities are grouped by where they go", () => {
   expect(within(screen.getByRole("region", { name: "Domain microservice" })).getByText("Update the client's bank account")).toBeInTheDocument();
   expect(within(screen.getByRole("region", { name: "Orchestrator" })).getByText("Add a note to every loan of the client")).toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Event handlers" })).toBeNull();
+});
+
+test("a call to another domain shows the integration module it goes through until that domain is migrated", () => {
+  show();
+  const orchestrator = within(screen.getByRole("region", { name: "Orchestrator" }));
+  expect(orchestrator.getByText(/Until migrated: Integration module entry point/)).toBeInTheDocument();
+  expect(within(screen.getByRole("region", { name: "Domain microservice" })).queryByText(/Until migrated/)).toBeNull();
+});
+
+test("an event handler of a domain still in the monolith goes to the event-handler module", () => {
+  const handler = {
+    id: "F3", name: "n", placement: "event-handler", owner: "loan", reason: "r",
+    event: { name: "client.changed", triggered_from: "domain", publisher: "client", handler: "h", delegates_to: ["a.B#c"] },
+  } as Functionality;
+  expect(legacyModule(handler)).toBe("event-handler");
+  expect(legacyModule({ ...handler, event: { ...handler.event!, delegates_to: [] } })).toBeNull();
+  expect(legacyModule({ ...handler, placement: "domain", event: undefined })).toBeNull();
 });
 
 test("a reviewer moves a functionality to an event handler; the change and the agent's placement are recorded", () => {

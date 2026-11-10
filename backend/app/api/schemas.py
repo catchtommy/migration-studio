@@ -402,6 +402,8 @@ class ContractOut(BaseModel):
     spec: str | None
     spec_path: str | None
     consumers: list[str]
+    # The temporary binding and its integration entry point while the provider is not migrated
+    binding: dict | None = None
     status: str
     run_id: str | None
     created_at: datetime

@@ -449,6 +449,7 @@ def allocation_decision_problems(output_dir: Path) -> list[str]:
     by_interaction: dict[str, list[dict]] = {}
     for d in decisions:
         by_interaction.setdefault(str(d.get("interaction")), []).append(d)
+    by_key = _linked_by_key(output_dir)
     where, problems = f"{DECISIONS_FILE} against {FUNCTIONAL_ALLOCATION_FILE}", []
     from_handlers: set[str] = set()
     for item in allocation["functionalities"]:
@@ -480,24 +481,71 @@ def allocation_decision_problems(output_dir: Path) -> list[str]:
                                     f"{', '.join(sorted(targets))}")
                 if placement == "event-handler" and d.get("pattern") == "event":
                     # The handling domain is still in the monolith exactly when the allocation names the methods
-                    # that do the work today: then the monolith needs a temporary handler that calls them.
+                    # that do the work today: then the event-handler module gets a handler, which reaches them through
+                    # integration entry points (app/legacy_modules.py).
                     want = sorted(item["event"].get("delegates_to") or [])
-                    handler = d.get("temporary_handler") if isinstance(d.get("temporary_handler"), dict) else None
-                    have = sorted((handler or {}).get("delegates_to") or [])
-                    if want and handler is None:
-                        problems.append(f"{where}: {x} needs a temporary_handler: {fid}'s event names delegates_to "
+                    handler = d.get("event_handler") if isinstance(d.get("event_handler"), dict) else None
+                    if d.get("temporary_handler") is not None:
+                        problems.append(f"{where}: {x} has a temporary_handler: the handler of a domain not migrated "
+                                        "yet is now an event_handler in the event-handler module, calling integration "
+                                        "entry points (calls); replace it")
+                    elif want and handler is None:
+                        problems.append(f"{where}: {x} needs an event_handler: {fid}'s event names delegates_to "
                                         f"({', '.join(want)}), so its handling domain is still in the monolith")
                     elif handler is not None and not want:
-                        problems.append(f"{where}: {x} has a temporary_handler, but {fid}'s event names no "
-                                        "delegates_to (its handling domain handles the event itself)")
-                    elif handler is not None and have != want:
-                        problems.append(f"{where}: {x}'s temporary_handler delegates to {', '.join(have) or 'nothing'}, "
-                                        f"but {fid}'s event says {', '.join(want)}")
+                        problems.append(f"{where}: {x} has an event_handler, but {fid}'s event names no delegates_to "
+                                        "(its handling domain handles the event itself)")
+                    elif handler is not None:
+                        problems += _event_handler_problems(f"{where}: {x}'s event_handler", handler, item, want,
+                                                            by_key)
     stray = sorted({str(d.get("interaction")) for d in decisions if d.get("pattern") == "event"
                     and d.get("direction", "outbound") == "outbound" and str(d.get("interaction")) not in from_handlers})
     if stray:
         problems.append(f"{where}: {', '.join(stray)} decided as events, but no event-handler functionality links them; "
                         "a side effect is an event only when the allocation places it on an event handler")
+    return problems
+
+
+def _linked_by_key(output_dir: Path) -> dict[str, dict] | None:
+    """The run's linked-domain contracts by key; None when the file is absent or invalid (reported for that file)."""
+    f = output_dir / LINKED_CONTRACTS_FILE
+    if not f.is_file():
+        return None
+    try:
+        return {c["key"]: c for c in parse_linked_domain_contracts(f.read_text(encoding="utf-8"))}
+    except InvalidDocument:
+        return None
+
+
+def _event_handler_problems(where: str, handler: dict, item: dict, want: list[str],
+                            linked: dict[str, dict] | None) -> list[str]:
+    """An event handler of a domain still in the monolith: in that domain's package, calling only integration entry
+    points of linked-domain contracts, which together reach every method the allocation says does the work today."""
+    problems = []
+    if str(handler.get("domain")) != str(item.get("owner")):
+        problems.append(f"{where} is in {handler.get('domain')}'s package, but {item['id']} is done by "
+                        f"{item.get('owner')}")
+    if linked is None:
+        return problems
+    reached: set[str] = set()
+    for key in handler.get("calls") or []:
+        c = linked.get(key)
+        if c is None:
+            problems.append(f"{where} calls {key}, which is not a contract in {LINKED_CONTRACTS_FILE}: define it there "
+                            "with its binding and entry point (or list it with reuse: true when the catalogue has it)")
+            continue
+        binding = _catalogue_binding(key) if c.get("reuse") else c.get("binding")
+        if not isinstance(binding, dict) or binding.get("entry_point") is None:
+            problems.append(f"{where} calls {key}, which has no entry point"
+                            + (" in the catalogue: define the contract here with its binding and entry_point"
+                               if c.get("reuse") else ": give its binding an entry_point")
+                            + ", so the handler reaches it through the integration module")
+            continue
+        reached |= set(binding.get("delegates_to") or [])
+    missing = [m for m in want if m not in reached]
+    if missing:
+        problems.append(f"{where}: no entry point it calls reaches {', '.join(missing)}, which {item['id']}'s event "
+                        "says does the work: add the contract (with its entry point) of each domain it works in")
     return problems
 
 
@@ -594,7 +642,51 @@ def parse_linked_domain_contracts(text: str) -> list[dict]:
             raise InvalidDocument(f"{where}: describe the temporary binding: binding.delegates_to lists the existing "
                                   "Class#method the monolith delegates to")
         _require(binding, ("remove_when",), f"{where} binding")
+        if not all(isinstance(m, str) and DELEGATE.match(m) for m in binding["delegates_to"]):
+            raise InvalidDocument(f"{where} binding: delegates_to lists the existing package.Class#method(s)")
+        if binding.get("entry_point") is not None:
+            _entry_point(binding, c, f"{where} binding entry_point")
     return items
+
+
+DELEGATE = re.compile(r"^[\w.$]+#\w+$")
+
+
+def _entry_point(binding: dict, contract: dict, where: str) -> None:
+    """The integration module's entry point of a contract (app/legacy_modules.py): the operations of the contract's
+    interface, each with the delegates_to it reaches through the gateway (a subset of the binding's)."""
+    from app.legacy_modules import entry_point_names
+
+    ep = binding["entry_point"]
+    if contract["kind"] == "event":
+        raise InvalidDocument(f"{where}: only an api or command contract has an entry point; an event reaches its "
+                              "handlers through the event-handler module (event_handler in integration-decisions.yaml)")
+    if not isinstance(ep, dict) or not isinstance(ep.get("operations"), list) or not ep["operations"]:
+        raise InvalidDocument(f"{where}: list the operations of the entry point's interface (operations)")
+    names = entry_point_names(contract["key"])
+    if ep.get("api") is not None and str(ep["api"]) != names["api"]:
+        raise InvalidDocument(f"{where}: the interface of {contract['key']} is {names['api']} (named from the key, so "
+                              f"every feature builds the same one), not {ep['api']}")
+    allowed = set(binding["delegates_to"])
+    seen = set()
+    for i, op in enumerate(ep["operations"], 1):
+        at = f"{where} operation {i}"
+        if not isinstance(op, dict):
+            raise InvalidDocument(f"{at} must be a mapping")
+        _require(op, ("method", "delegates_to"), at)
+        if not re.match(r"^[a-z_]\w*$", str(op["method"])):
+            raise InvalidDocument(f"{at}: method is the Java method name of the operation (e.g. getKycStatus)")
+        if op["method"] in seen:
+            raise InvalidDocument(f"{at}: duplicate method {op['method']}")
+        seen.add(op["method"])
+        if not isinstance(op["delegates_to"], list) or not op["delegates_to"]:
+            raise InvalidDocument(f"{at}: delegates_to lists the binding's Class#method(s) this operation reaches")
+        extra = [m for m in op["delegates_to"] if m not in allowed]
+        if extra:
+            raise InvalidDocument(f"{at}: {', '.join(map(str, extra))} is not in the binding's delegates_to")
+    unused = sorted(allowed - {m for op in ep["operations"] for m in op["delegates_to"]})
+    if unused:
+        raise InvalidDocument(f"{where}: no operation reaches {', '.join(unused)} of the binding's delegates_to")
 
 
 def _linked_contracts_problems(output_dir: Path, contracts: list[dict]) -> list[str]:
@@ -686,6 +778,7 @@ def parse_module_extraction(text: str) -> dict:
             raise InvalidDocument(f"{where}: {field} must be a list")
     _feature_packages(data, where)
     data["temporary_handlers"] = _temporary_handlers(data.get("temporary_handlers"), where)
+    data["legacy_modules"] = _legacy_modules(data.get("legacy_modules"), where, "domain")
     data["toggle_branches"] = _toggle_branches(data.get("toggle_branches"), where)
     data["routing"] = _routing_section(data.get("routing"), where, bool(data["toggle_branches"]))
     bridge = str(data["bridge_dir"]).strip("/")
@@ -828,6 +921,7 @@ def parse_orchestrator_extraction(text: str) -> dict:
     if data.get("outside_changes") is not None and not isinstance(data["outside_changes"], list):
         raise InvalidDocument(f"{where}: outside_changes must be a list")
     data["temporary_handlers"] = _temporary_handlers(data.get("temporary_handlers"), where)
+    data["legacy_modules"] = _legacy_modules(data.get("legacy_modules"), where, "orchestrator")
     data["toggle_branches"] = _toggle_branches(data.get("toggle_branches"), where)
     return data
 
@@ -884,6 +978,131 @@ def expected_temporary_handlers(output_dir: Path, side: str) -> list[dict] | Non
             out.append({"listener": str(h["listener"]), "delegates_to": [str(m) for m in h.get("delegates_to") or []],
                         "interaction": str(d.get("interaction"))})
     return out
+
+
+def _legacy_modules(value, where: str, side: str) -> dict | None:
+    """What a build step declares it built in the temporary modules (app/legacy_modules.py): the contract keys of the
+    integration entry points (the Module in monolith step), the handlers of the events its side publishes, and where
+    the legacy adapters are (adapter_dir, a new package of the monolith's web application)."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise InvalidDocument(f"{where}: legacy_modules must be a mapping (adapter_dir, entry_points, handlers)")
+    for field in ("entry_points", "handlers"):
+        if value.get(field) is not None and not isinstance(value[field], list):
+            raise InvalidDocument(f"{where}: legacy_modules.{field} must be a list")
+    if side == "orchestrator" and value.get("entry_points"):
+        raise InvalidDocument(f"{where}: the entry points are built by the Module in monolith step; list only the "
+                              "handlers of the events the orchestrator publishes")
+    if not all(isinstance(k, str) for k in value.get("entry_points") or []):
+        raise InvalidDocument(f"{where}: legacy_modules.entry_points lists contract keys")
+    for i, h in enumerate(value.get("handlers") or [], 1):
+        if not isinstance(h, dict):
+            raise InvalidDocument(f"{where} legacy_modules handler {i} must be a mapping")
+        _require(h, ("event", "domain"), f"{where} legacy_modules handler {i}")
+    adapter = value.get("adapter_dir")
+    if adapter is not None and (str(adapter).startswith("/") or ".." in Path(str(adapter)).parts):
+        raise InvalidDocument(f"{where}: legacy_modules.adapter_dir must be inside the repository")
+    return value
+
+
+def expected_entry_points(output_dir: Path) -> list[dict] | None:
+    """The integration entry points of the run's design: one per linked-domain contract whose binding has an
+    entry_point, [{key, provider, operations, delegates_to}]. All are built by the Module in monolith step (the
+    orchestrator's ports and the handlers use them too). None when the design has neither entry points nor event
+    handlers (an older design: the bridge's local adapters and temporary handlers instead)."""
+    linked = _linked_by_key(output_dir)
+    handlers = _decision_handlers(output_dir)
+    out = []
+    for c in (linked or {}).values():
+        binding = c.get("binding")
+        reused = bool(c.get("reuse"))
+        if reused:  # an entry point an earlier feature designed: its binding is in the catalogue
+            binding = _catalogue_binding(c["key"])
+        if isinstance(binding, dict) and binding.get("entry_point"):
+            out.append({"key": c["key"], "provider": c["provider"], "operations": binding["entry_point"]["operations"],
+                        "delegates_to": list(binding.get("delegates_to") or []), "reused": reused})
+    if not any(not e["reused"] for e in out) and not handlers:
+        return None
+    return out
+
+
+def _catalogue_binding(key: str) -> dict | None:
+    """The temporary binding the catalogue keeps for a contract (with its entry point), if any."""
+    try:
+        with session_scope() as s:
+            row = s.get(Contract, (projects.current(), key))
+            return dict(row.binding) if row is not None and isinstance(row.binding, dict) else None
+    except Exception:  # noqa: BLE001 - without the database there is no catalogue to read
+        return None
+
+
+def _decision_handlers(output_dir: Path) -> list[dict]:
+    f = output_dir / DECISIONS_FILE
+    if not f.is_file():
+        return []
+    try:
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return []
+    decisions = (data.get("decisions") or []) if isinstance(data, dict) else []
+    return [d for d in decisions if isinstance(d, dict) and d.get("pattern") == "event"
+            and isinstance(d.get("event_handler"), dict)]
+
+
+def expected_event_handlers(output_dir: Path, side: str) -> list[dict] | None:
+    """The event handlers of integration-decisions.yaml that the step building `side` builds (domain: Module in
+    monolith; orchestrator: Orchestrator in monolith): those on events the functional allocation publishes from that
+    side. [{event, domain, calls, delegates_to, interaction}]; None when the design has neither handlers nor entry
+    points."""
+    handlers = _decision_handlers(output_dir)
+    linked = _linked_by_key(output_dir) or {}
+    if not handlers and not any(isinstance(c.get("binding"), dict) and c["binding"].get("entry_point")
+                                for c in linked.values()):
+        return None
+    sides: dict[str, str] = {}
+    for item in (load_functional_allocation(output_dir) or {}).get("functionalities") or []:
+        if item["placement"] == "event-handler":
+            for x in item.get("interactions") or []:
+                sides[str(x)] = item["event"]["triggered_from"]
+    out = []
+    for d in handlers:
+        if sides.get(str(d.get("interaction")), "domain") != side:
+            continue
+        h = d["event_handler"]
+        calls = [str(k) for k in h.get("calls") or []]
+        out.append({"event": str(d.get("contract")), "domain": str(h.get("domain")), "calls": calls,
+                    "delegates_to": [m for k in calls for m in ((linked.get(k) or {}).get("binding") or {})
+                                     .get("delegates_to") or []],
+                    "interaction": str(d.get("interaction"))})
+    return out
+
+
+def entry_point_problems(output_dir: Path) -> list[str]:
+    """The Lean design gives every linked-domain contract it defines with a temporary binding (an api or command of a
+    domain not migrated yet) an integration entry point; its operations, when the contract's spec is OpenAPI, are
+    operations of that spec."""
+    from app.service_guardrails import openapi_operation_ids
+
+    linked = _linked_by_key(output_dir)
+    problems = []
+    for c in (linked or {}).values():
+        binding = c.get("binding") if isinstance(c.get("binding"), dict) else None
+        if c.get("reuse") or binding is None or c["kind"] == "event":
+            continue
+        ep = binding.get("entry_point")
+        if ep is None:
+            problems.append(f"{LINKED_CONTRACTS_FILE}: {c['key']} has a temporary binding but no entry_point: the "
+                            "domain and the orchestrator reach a domain not migrated yet through its entry point in "
+                            "the integration module")
+            continue
+        spec = output_dir / str(c.get("spec") or "")
+        if c.get("spec") and spec.is_file() and "openapi" in spec.read_text(encoding="utf-8")[:400]:
+            ids, _missing = openapi_operation_ids(spec.read_text(encoding="utf-8"))
+            problems += [f"{LINKED_CONTRACTS_FILE}: {c['key']} entry point operation_id {op['operation_id']} is not "
+                         f"an operation of {c['spec']}" for op in ep["operations"]
+                         if op.get("operation_id") and str(op["operation_id"]) not in ids]
+    return problems
 
 
 def _orchestrator_extraction_problems(output_dir: Path, declaration: dict) -> list[str]:
@@ -1032,6 +1251,8 @@ def parse_integration_routing(text: str) -> dict:
         for i, sub in enumerate(subs, 1):
             if not isinstance(sub, dict):
                 raise InvalidDocument(f"{where} temporary subscriber {i} must be a mapping")
+            if sub.get("listener") is None and sub.get("handler") is not None:
+                sub["listener"] = sub["handler"]  # the event-handler module's handler interface it calls
             _require(sub, ("listener", "event", "enabled_property"), f"{where} temporary subscriber {i}")
     return data
 
@@ -1112,6 +1333,13 @@ def expected_temporary_subscribers(output_dir: Path) -> list[dict] | None:
         if isinstance(h, dict) and d.get("pattern") == "event" and h.get("listener"):
             out.append({"listener": str(h["listener"]), "event": str(d.get("contract") or ""),
                         "owner": str(d.get("target"))})
+        h = d.get("event_handler") if isinstance(d, dict) else None
+        if isinstance(h, dict) and d.get("pattern") == "event" and d.get("contract"):
+            from app.legacy_modules import handler_names
+
+            out.append({"listener": handler_names(str(d["contract"]), str(h.get("domain")))["interface"],
+                        "event": str(d["contract"]),
+                        "owner": str(h.get("domain"))})
     return out
 
 
@@ -1127,7 +1355,7 @@ def _temporary_subscriber_problems(output_dir: Path, declaration: dict) -> list[
                 f"event {e['event']} no longer reaches it in-process, so only a monolith subscriber does {e['owner']}'s "
                 "work until its own subscription is live" for e in expected if e["listener"] not in declared]
     known = {e["listener"] for e in expected}
-    problems += [f"{where}: temporary subscriber {n} is no temporary_handler of {DECISIONS_FILE}"
+    problems += [f"{where}: temporary subscriber {n} is no event handler (or temporary_handler) of {DECISIONS_FILE}"
                  for n in sorted(declared - known)]
     return problems
 
@@ -1228,6 +1456,22 @@ def parse_decisions(text: str, known: frozenset[str] | set[str] = frozenset()) -
                     isinstance(m, str) and "#" in m for m in handler["delegates_to"]):
                 raise InvalidDocument(f"{where} temporary_handler: delegates_to lists the handling domain's existing "
                                       "Class#method(s)")
+        handler = d.get("event_handler")
+        if handler is not None:
+            if d["pattern"] != "event":
+                raise InvalidDocument(f"{where}: only an event decision has an event_handler")
+            if d.get("temporary_handler") is not None:
+                raise InvalidDocument(f"{where}: an event_handler replaces the temporary_handler; keep one")
+            if not isinstance(handler, dict):
+                raise InvalidDocument(f"{where}: event_handler must be a mapping")
+            _require(handler, ("domain", "calls", "remove_when"), f"{where} event_handler")
+            if not isinstance(handler["calls"], list) or not handler["calls"] or not all(
+                    isinstance(k, str) for k in handler["calls"]):
+                raise InvalidDocument(f"{where} event_handler: calls lists the contract keys of the integration entry "
+                                      "points the handler calls (one per domain it does work in)")
+            if not d.get("contract"):
+                raise InvalidDocument(f"{where} event_handler: the decision names the event's contract, which names "
+                                      "the handler")
     return {"decisions": decisions, "contracts": contracts}
 
 
@@ -1360,6 +1604,8 @@ def _upsert_contract(s, project: str, run_id: str, c: dict, base: PurePosixPath,
     row.version = str(c.get("version") or row.version or "1")
     row.description = c.get("description") or row.description or ""
     row.spec, row.spec_path, row.run_id = spec or row.spec, spec_path or row.spec_path, run_id
+    if isinstance(c.get("binding"), dict):  # a later feature reuses its entry point (app/legacy_modules.py)
+        row.binding = c["binding"]
 
 
 def _retrying(record):
@@ -1520,7 +1766,8 @@ def export_specs(workspace: Path) -> int:
 def as_dict(c: Contract) -> dict[str, Any]:
     return {"key": c.key, "provider": c.provider, "kind": c.kind, "name": c.name, "version": c.version,
             "description": c.description, "spec": c.spec, "spec_path": c.spec_path, "consumers": c.consumers or [],
-            "status": c.status, "run_id": c.run_id, "created_at": c.created_at, "updated_at": c.updated_at}
+            "binding": c.binding, "status": c.status, "run_id": c.run_id, "created_at": c.created_at,
+            "updated_at": c.updated_at}
 
 
 def list_contracts(domain: str | None = None) -> list[dict[str, Any]]:
@@ -1565,7 +1812,14 @@ def catalogue_brief(domain: str, settings: dict) -> str:
             lines.append("Contracts catalogue (reuse these keys; provider → consumers, status):")
             lines += [f"- `{c.key}` {c.kind} \"{c.name}\" v{c.version}: {c.provider} → "
                       f"{', '.join(c.consumers or []) or 'no consumers yet'} ({c.status})"
-                      + (f", spec `{CATALOGUE_DIR}/{c.key}.yaml`" if c.spec else "") for c in contracts]
+                      + (f", spec `{CATALOGUE_DIR}/{c.key}.yaml`" if c.spec else "")
+                      + _entry_point_note(c) for c in contracts]
+            mine = [c for c in contracts if c.provider == domain and _entry_point_note(c)]
+            if mine:
+                lines.append(f"Entry points other features built for {domain} in the integration module while it is "
+                             "not migrated: the APIs other domains rely on. A design of this domain provides each "
+                             "under the same contract, and its package goes once its service does: "
+                             + ", ".join(f"`{c.key}`" for c in mine) + ".")
         else:
             lines.append("The contracts catalogue is empty: this is the first domain to define cross-domain contracts.")
         handlers = temporary_handlers_calling(s, project, domain)
@@ -1581,7 +1835,25 @@ def catalogue_brief(domain: str, settings: dict) -> str:
                      "property, in that feature's integration-routing.yaml) when that subscription goes live, or the "
                      "work is done twice; the in-process handler stays until the publishing feature runs only in its "
                      "own service.")
+        if any(h.get("event_handler") for h in handlers):
+            lines.append(f"Those built as event handlers sit in the event-handler module's {domain} package: they are "
+                         f"the events {domain} must handle itself once migrated (its service subscribes to each), "
+                         "after which that package is deleted.")
     return "\n".join(lines)
+
+
+def _entry_point_note(c: Contract) -> str:
+    """The catalogue line's note on a contract's integration entry point (app/legacy_modules.py), when it has one."""
+    binding = c.binding if isinstance(c.binding, dict) else None
+    ep = (binding or {}).get("entry_point")
+    if not isinstance(ep, dict) or c.status == "provided-by-service":
+        return ""
+    from app.legacy_modules import entry_point_names
+
+    names = entry_point_names(c.key)
+    methods = ", ".join(str(op.get("method")) for op in ep.get("operations") or [] if isinstance(op, dict))
+    return (f"; integration entry point {names['api']} ({methods}) while {c.provider} is not migrated: reuse: true "
+            "when it covers the need, else define the contract again with every operation above plus the new ones")
 
 
 def temporary_handlers_calling(s, project: str, domain: str) -> list[dict]:
@@ -1620,6 +1892,16 @@ def temporary_handlers_calling(s, project: str, domain: str) -> list[dict]:
                             "delegates_to": [str(m) for m in h.get("delegates_to") or []],
                             "subscribed": str(h["listener"]) in subscribed,
                             "enabled_property": subscribed.get(str(h["listener"])) or None})
+            h = d.get("event_handler") if isinstance(d, dict) else None
+            if isinstance(h, dict) and str(h.get("domain")) == domain and d.get("contract"):
+                from app.legacy_modules import handler_names
+
+                name = handler_names(str(d["contract"]), domain)["interface"]
+                out.append({"domain": runs[run_id].domain, "feature": runs[run_id].operation, "listener": name,
+                            "event": str(d["contract"]),
+                            "delegates_to": [f"entry point of {k}" for k in h.get("calls") or []],
+                            "subscribed": name in subscribed, "enabled_property": subscribed.get(name) or None,
+                            "event_handler": True})
     return out
 
 

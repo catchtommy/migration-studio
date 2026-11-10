@@ -289,6 +289,9 @@ class Contract(Base):
     spec: Mapped[str | None] = mapped_column(LongText)  # OpenAPI / AsyncAPI document (YAML)
     spec_path: Mapped[str | None] = mapped_column(LongText)
     consumers: Mapped[list] = mapped_column(JSONText, default=list)
+    # While its provider is not migrated: the temporary binding (delegates_to, remove_when) and its integration entry
+    # point (entry_point), which later features reuse (app/legacy_modules.py)
+    binding: Mapped[dict | None] = mapped_column(JSONText, nullable=True)
     # proposed | approved | provided-by-monolith | provided-by-service | deprecated
     status: Mapped[str] = mapped_column(String(32), default="approved")
     run_id: Mapped[str | None] = mapped_column(String(36))  # run whose design last recorded it

@@ -510,7 +510,7 @@ def test_approving_the_design_records_the_linked_domain_contracts_as_proposed(cl
     assert contract["status"] == "proposed" and contract["provider"] == other
     assert contract["consumers"] == ["broker"] and contract["spec"].startswith("openapi")
     log = " ".join(e.message for e in _events(run["id"]))
-    assert "Recorded 1 linked-domain contract(s)" in log
+    assert "Recorded 2 linked-domain contract(s)" in log  # the query, and the command its event handler calls
 
 
 def _events(run_id):

@@ -58,6 +58,20 @@ export interface Functionality {
   review?: { amended?: boolean; original?: Placed; comment?: string };
   [key: string]: unknown;
 }
+/** Where a functionality goes in the monolith while the other domains it involves are not migrated (the backend's
+ * app/legacy_modules.py): calls to another domain through the integration module's entry points; a reaction of a domain
+ * still in the monolith (an event handler naming what does the work today) through the event-handler module. */
+export function legacyModule(f: Functionality): "integration" | "event-handler" | null {
+  if (f.placement === "event-handler") return f.event?.delegates_to?.length ? "event-handler" : null;
+  if (f.placement === "other-domain") return "integration";
+  if (CALLING.includes(f.placement) && (f.calls ?? []).length) return "integration";
+  return null;
+}
+const LEGACY_LABELS = {
+  integration: "Integration module entry point",
+  "event-handler": "Event-handler module (calls integration entry points)",
+} as const;
+
 export interface Allocation {
   feature: string;
   domain: string;
@@ -263,6 +277,16 @@ function Group({ placement, items }: { placement: Placement; items: Functionalit
                     (f.calls ?? []).join(", ") || "—"
                   ) : (
                     "—"
+                  )}
+                  {legacyModule(f) && (
+                    <div className="mt-1">
+                      <span
+                        className="inline-block rounded-full bg-muted px-2 py-0.5 text-subtle"
+                        title="Until the other domains are migrated, the feature reaches them through this temporary module of the monolith"
+                      >
+                        Until migrated: {LEGACY_LABELS[legacyModule(f)!]}
+                      </span>
+                    </div>
                   )}
                 </td>
                 <td className="py-1.5 pr-3 text-xs">{(f.requirements ?? []).join(", ") || "—"}</td>

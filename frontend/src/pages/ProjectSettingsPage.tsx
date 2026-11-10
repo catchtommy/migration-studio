@@ -361,6 +361,26 @@ function General({ project }: { project: string }) {
               <input className={input} value={form.orchestrator_module_dir_pattern as string} onChange={(e) => set("orchestrator_module_dir_pattern", e.target.value)} />
             </Field>
           </div>
+          <Field
+            label="Interfaces module"
+            hint="The monolith's existing module for interfaces. The entry-point and event-handler interfaces of the domains not migrated yet go there; the domain and orchestrator modules call them. Needed before a feature reaches another domain."
+          >
+            <input
+              aria-label="Interfaces module"
+              className={`${input} max-w-xs font-mono`}
+              placeholder="interfaces"
+              value={(form.interfaces_module as string) ?? ""}
+              onChange={(e) => set("interfaces_module", e.target.value.trim())}
+            />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Integration module folder" hint="Temporary, in the monolith: entry points to the domains not migrated yet, one package per domain.">
+              <input className={input} value={(form.integration_module_dir as string) ?? ""} onChange={(e) => set("integration_module_dir", e.target.value)} />
+            </Field>
+            <Field label="Event-handler module folder" hint="Temporary, in the monolith: handlers of the domains not migrated yet, one package per domain.">
+              <input className={input} value={(form.event_handler_module_dir as string) ?? ""} onChange={(e) => set("event_handler_module_dir", e.target.value)} />
+            </Field>
+          </div>
         </section>
 
         <section className="space-y-2">

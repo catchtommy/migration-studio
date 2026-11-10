@@ -65,6 +65,8 @@ contracts:
 # --- catalogue -----------------------------------------------------------------------------------------------------
 
 def test_approved_design_fills_the_catalogue_and_is_reused_by_later_domains(client):
+    from app.db.session import session_scope
+
     loan_run = _start(client, "loan")
     _to_design_gate(client, loan_run)
     other = _other(client, "loan")
@@ -75,6 +77,13 @@ def test_approved_design_fills_the_catalogue_and_is_reused_by_later_domains(clie
     contracts = {c["key"]: c for c in client.get("/api/contracts").json()}
     assert contracts[query]["provider"] == other and contracts[query]["consumers"] == ["loan"]
     assert contracts[query]["spec"].startswith("openapi") and contracts[event]["kind"] == "event"
+    # The binding and its integration entry point are kept, so a later feature reuses the entry point (and is told so)
+    assert contracts[query]["binding"]["entry_point"]["operations"][0]["method"] == f"get{other.capitalize()}Summary"
+    assert contracts[event]["binding"] is None
+    from app.legacy_modules import entry_point_names
+    with session_scope() as db:
+        brief = contracts_store.catalogue_brief("payments", {})
+    assert f"integration entry point {entry_point_names(query)['api']}" in brief
 
     deps = client.get("/api/domains/loan/dependencies").json()
     mine = [d for d in deps if d["run_id"] == loan_run]

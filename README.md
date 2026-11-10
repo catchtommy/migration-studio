@@ -57,13 +57,15 @@ the bank account update is `domain`, and the loan notes are an `event-handler`: 
 `client.bank-account-changed` and the loan domain's handler fetches the loans and adds the notes. No orchestrator
 fetches the loans.
 
-**Who builds an event handler.** A decision gets a `temporary_handler` in `integration-decisions.yaml` exactly when the
-allocation's event names `delegates_to`, meaning the handling domain is still in the monolith. It has the same
-`delegates_to`; this is checked.
-- *Module in monolith* builds it for the domain module's events. The event port's adapter in the bridge package calls a
-  helper after commit, and the helper calls only the handling domain's existing method(s).
+**Who builds an event handler.** A decision gets an `event_handler` in `integration-decisions.yaml` exactly when the
+allocation's event names `delegates_to`, meaning the handling domain is still in the monolith. The handler goes in the
+event-handler module (see [Domains not migrated yet](#domains-not-migrated-yet)), in the handling domain's package. It
+calls (`calls`) the integration entry points of the domains it works in, and those together reach every `delegates_to`;
+this is checked.
+- *Module in monolith* builds it for the domain module's events. The event port's adapter in the bridge package calls
+  the handler interface after commit.
 - *Orchestrator in monolith* does the same for events the orchestrator publishes.
-- *Monolith integration* adds a Service Bus subscriber that calls the same helper once the feature runs in its own
+- *Monolith integration* adds a Service Bus subscriber that calls the same handler once the feature runs in its own
   service.
 - With the toggle at `legacy`, the old code still does the work inline and publishes nothing, so the work is never
   done twice.
@@ -223,9 +225,10 @@ feature runs on the new flow.
    router. Each step is compiled, tested, checked and committed locally; a failed step is reverted, not "fixed".
 3. **Events** are only those the approved designs name, published with Spring's own event publishing after commit.
    There is no outbox (that would need a table), so delivery is not guaranteed; the pull request description says so.
-4. **Cross-domain**: every call the copy makes to another domain goes through a port of the domain module; its `local`
-   adapter sits in the bridge package (`bridge_dir`, beside the router), one class per contract binding, resolving the
-   legacy bean lazily.
+4. **Cross-domain**: every call the copy makes to another domain goes through that contract's entry point in the
+   integration module (see [Domains not migrated yet](#domains-not-migrated-yet)). The domain module calls the entry
+   point's interface, and its legacy adapter resolves the legacy bean lazily. A design from before entry points uses a
+   `local` adapter in the bridge package instead, one class per contract binding.
 
 The step writes `module-extraction.yaml` (the domain module, `bridge_dir`, `routing`: the toggle, its `legacy`
 default, the router and the beans it takes over; `toggle_branches`; every file changed outside the module and the
@@ -590,6 +593,54 @@ hand on the Features tab, for example to correct the list.
 Both YAML files are validated before the agent may finish, and again when the gate is approved, after any manual
 edits. The two discovery agents are ordinary agents: paste your own agent.md into them, or build other discovery
 workflows (*New workflow → Each run covers*). The output stays in the domain's *Documentation* tab.
+
+## Domains not migrated yet
+
+While a feature migrates, every domain it needs that is still in the monolith is reached through two **temporary
+modules of the monolith**. Each has one package per domain, so the owner is plain, and a domain's packages are deleted
+once that domain is migrated. Neither module holds business logic.
+
+```
+interfaces module (existing; Project settings → Interfaces module)        long-lived: what a REST client implements later
+  com.acme.integration.customer.api   CustomerGetKycStatusApi + DTOs
+  com.acme.eventhandler.customer.api  CustomerLoanApprovedHandler
+legacy-integration (temporary)                                          depends on the interfaces module only
+  com.acme.integration.customer       CustomerGetKycStatusEntryPoint: maps the contract's types and errors, calls…
+  com.acme.integration.customer.spi   CustomerGetKycStatusGateway (its own interface to the legacy code)
+legacy-event-handlers (temporary)                                       depends on the interfaces module only
+  com.acme.eventhandler.customer      CustomerLoanApprovedHandlerImpl: calls entry-point interfaces only,
+                                      in a new transaction, catching what fails
+web application
+  com.acme.integration.legacy.customer CustomerGetKycStatusGatewayLegacy: calls only the binding's delegates_to
+```
+
+- **Integration module.** It holds one entry point per linked-domain contract with a temporary binding. The design
+  writes each one as `binding.entry_point`: its operations, and the `delegates_to` each reaches. The entry point is an
+  anti-corruption layer. It reaches legacy code only through its gateway interface, and one thin legacy adapter in the
+  web application implements that gateway. The adapters are the only new code that touches legacy classes.
+- **Event-handler module.** It holds one handler per event that a domain still in the monolith reacts to
+  (`event_handler` in the decisions). A handler never calls monolith code, only integration entry points. Moving it to
+  a service later therefore only swaps those calls for API calls.
+- **Who builds what.** *Modulith design* designs both. *Module in monolith* builds the interfaces, entry points,
+  gateways and adapters, and the handlers of the domain module's events. *Orchestrator in monolith* builds the handlers
+  of its own events; its mode switches implement the entry-point interfaces. The domain and orchestrator modules call
+  the interfaces and never import the legacy classes.
+- **Names are fixed by the key.** For example `customer.get-kyc-status` becomes `CustomerGetKycStatus…`, and
+  customer's handler of `loan.loan-approved` becomes `CustomerLoanApprovedHandler`. So features on parallel branches
+  build the same classes, and a later feature reuses them, only adding to them. The catalogue keeps each contract's
+  binding and entry point. A design lists a contract with `reuse: true` when its entry point covers the need, and
+  defines it again under the same key (every existing operation plus the new ones) when it needs more. When a
+  domain's own migration starts, its packages in both modules list the APIs and events it must provide.
+- **Checks.** A guardrail checks the rules against git (app/legacy_modules.py). It refuses:
+  - legacy imports, database access or transactions in the integration module;
+  - a handler that calls anything other than entry-point interfaces, or doesn't use `PROPAGATION_REQUIRES_NEW` and
+    catch what fails;
+  - an adapter that calls outside its `delegates_to`;
+  - a domain module that imports a legacy class of another domain;
+  - a reused class that loses lines.
+- **Setting required.** A feature that reaches another domain needs the interfaces module set in Project settings.
+  The two module folders default to `legacy-integration` and `legacy-event-handlers`. REST wrappers over the entry
+  points are a later step.
 
 ## Cross-domain calls
 

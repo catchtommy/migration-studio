@@ -265,7 +265,7 @@ def base_pom_info(root: Path, base: str) -> tuple[set[tuple[str, str]], dict[tup
 def check(root: Path, base: str, declaration: dict | None, design: dict | None, ownership: dict[str, dict],
           domain: str, god_modules: list[str] | None = None, extra_artifacts: list[str] | None = None,
           earlier: dict | None = None, wiring: set[str] | None = None,
-          expected_handlers: list[dict] | None = None) -> list[str]:
+          expected_handlers: list[dict] | None = None, legacy: dict | None = None) -> list[str]:
     """Violations of the step's limits since `base`. `declaration` is module-extraction.yaml (parsed) and `design` is
     domain-design.yaml (parsed); either may be None while the agent has not written it yet. `extra_artifacts` are
     modules built by an earlier step (groupId:artifactId) that the new modules may depend on. `earlier` holds the
@@ -274,7 +274,9 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
     wiring may name (the domain module's, for the Orchestrator in monolith step). A declaration without `routing` may
     name the feature's `router` and its legacy `routes` (the Orchestrator in monolith step's view of the bridge).
     `expected_handlers` are the temporary handlers integration-decisions.yaml gives this step
-    (contracts_store.expected_temporary_handlers); None: nothing to compare the declared ones with."""
+    (contracts_store.expected_temporary_handlers); None: nothing to compare the declared ones with. `legacy` is the
+    temporary modules' part of the step (app/legacy_modules.py): {"layout", "declared", "entry_points", "handlers",
+    "side"}; their folders follow their own rules instead of the as-is code's."""
     try:
         diff = changes(root, base)
     except (RuntimeError, OSError) as e:
@@ -283,18 +285,23 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
         return []
     problems: list[str] = []
     decl_modules = (declaration or {}).get("modules") or []
+    lay = (legacy or {}).get("layout")
+    legacy_folders = lay.folders() if lay is not None else []
     modules = [m["path"].strip("/") for m in decl_modules]
     if declaration is None:  # not written yet: the new modules are the folders that gained a pom.xml
         modules = [Path(c.path).parent.as_posix() for c in diff
-                   if c.status == "A" and Path(c.path).name == "pom.xml" and Path(c.path).parent.as_posix() != "."]
+                   if c.status == "A" and Path(c.path).name == "pom.xml" and Path(c.path).parent.as_posix() != "."
+                   and not _under(c.path, legacy_folders)]
     bridge = [(declaration or {}).get("bridge_dir", "").strip("/")] if (declaration or {}).get("bridge_dir") else []
     inside = [c for c in diff if _under(c.path, modules)]
     in_bridge = [c for c in diff if _under(c.path, bridge)]
-    outside = [c for c in diff if c not in inside and c not in in_bridge]
+    in_legacy = [c for c in diff if c not in inside and c not in in_bridge and _under(c.path, legacy_folders)]
+    outside = [c for c in diff if c not in inside and c not in in_bridge and c not in in_legacy]
 
     # What Spring wiring outside may name: this step's classes, and the beans the router takes over.
     routing = (declaration or {}).get("routing") or {}
-    names = {_simple(c.path) for c in [*inside, *in_bridge] if c.path.endswith(".java") and c.status in "AMR"}
+    names = {_simple(c.path) for c in [*inside, *in_bridge, *in_legacy]
+             if c.path.endswith(".java") and c.status in "AMR"}
     names |= {str(r.get(k)) for r in routing.get("routes") or [] for k in ("bean", "legacy_bean") if r.get(k)}
     names |= set(wiring or ())
     names.discard("package-info")
@@ -317,6 +324,8 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
 
     # 2. Build files outside the new modules: only <module> entries and dependencies on the new modules.
     new_artifacts = {m["artifact"].split(":")[-1] for m in decl_modules if m.get("artifact")}
+    legacy_artifacts = set(lay.artifacts) if lay is not None else set()
+    new_artifacts |= {a.split(":")[-1] for a in legacy_artifacts}
     for c in outside:
         name = Path(c.path).name
         if name not in BUILD_FILES:
@@ -339,8 +348,9 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
     used, versions, monolith_group = base_pom_info(root, base)
     utility = {str(u) for u in (design or {}).get("utility_modules", [])}
     own = {tuple(m["artifact"].split(":", 1)) for m in decl_modules if ":" in (m.get("artifact") or "")}
-    own |= {tuple(a.split(":", 1)) for a in extra_artifacts or [] if ":" in a}
-    for c in inside:
+    own |= {tuple(a.split(":", 1)) for a in [*(extra_artifacts or []), *legacy_artifacts] if ":" in a}
+    legacy_poms = [c for c in in_legacy if lay is not None and _under(c.path, [lay.integration_dir, lay.event_handler_dir])]
+    for c in [*inside, *legacy_poms]:
         if Path(c.path).name != "pom.xml" or c.status == "D":
             continue
         text = _read(root, c.path)
@@ -436,6 +446,14 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
     # in a new transaction (it runs after the feature's commit).
     if declaration is not None and bridge:
         problems += _temporary_handler_problems(root, bridge[0], handlers, expected_handlers)
+    # 5d. The temporary modules for domains not migrated yet: integration entry points, event handlers, the published
+    # interfaces and the legacy adapters (app/legacy_modules.py).
+    if lay is not None:
+        from app import legacy_modules
+
+        problems += legacy_modules.check(root, lay, diff, inside, in_bridge, bridge[0] if bridge else "",
+                                         legacy.get("declared"), legacy.get("entry_points"), legacy.get("handlers"),
+                                         legacy.get("side", "domain"))
     if routing:
         problems += _own_folders(root, base, diff, modules, bridge, earlier or {})
         if bridge and not _under(router, bridge):
@@ -727,9 +745,11 @@ def for_context(ctx) -> list[str]:
         return [f"Write {cs.MODULE_EXTRACTION_FILE} (in {ctx.rel(out)}/) first: it declares the new modules, which the "
                 "check needs"]
     root = (ctx.workspace / ctx.code_dir).resolve()
+    from app import legacy_modules
+
     return check(root, ctx.base_sha, declaration, design, ctx.ownership, ctx.domain, (finder or {}).get("god_modules"),
-                 earlier=domain_folders(ctx, root),
-                 expected_handlers=cs.expected_temporary_handlers(out, "domain")) + one_per_domain(ctx, root, "domain", next(
+                 earlier=domain_folders(ctx, root), expected_handlers=cs.expected_temporary_handlers(out, "domain"),
+                 legacy=legacy_modules.for_step(ctx, root, declaration, "domain")) + one_per_domain(ctx, root, "domain", next(
                      (str(m["path"]) for m in declaration["modules"] if m["kind"] == "domain"), ""), declaration)
 
 

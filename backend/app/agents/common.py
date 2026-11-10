@@ -474,6 +474,8 @@ def verify(ctx: AgentContext, written: set[str] | None = None) -> list[str]:
         problems += contracts_store.orchestrator_api_problems(ctx.output_dir)
     if ctx.stage == "modulith_design":  # Lean only: the decisions follow the approved functional allocation
         problems += contracts_store.allocation_decision_problems(ctx.output_dir)
+        # ... and a domain not migrated yet is reached through its entry point (app/legacy_modules.py)
+        problems += contracts_store.entry_point_problems(ctx.output_dir)
     problems += discovery_store.validate_outputs(ctx.output_dir)
     problems += _functional_spec_problems(ctx)
     problems += guardrail_problems(ctx, checks)

@@ -151,7 +151,7 @@ contracts: []
     assert cs._temporary_subscriber_problems(tmp_path, subscribed) == []
     stray = {"temporary_subscribers": [*subscribed["temporary_subscribers"],
                                        {"listener": "Other", "event": "x", "enabled_property": "o"}]}
-    assert any("temporary subscriber Other is no temporary_handler" in p
+    assert any("temporary subscriber Other is no event handler (or temporary_handler)" in p
                for p in cs._temporary_subscriber_problems(tmp_path, stray))
     (tmp_path / cs.DECISIONS_FILE).unlink()
     assert cs._temporary_subscriber_problems(tmp_path, stray) == []  # nothing to compare with
@@ -504,18 +504,111 @@ def test_an_invalid_allocation_never_skips_the_orchestrator_steps(tmp_path):
 
 # --- Group 2: the code steps build what the allocation decides ------------------------------------------------------
 
-def test_a_temporary_handler_exactly_when_the_allocation_names_what_does_the_work_today(tmp_path):
-    named = LINKED.replace("handler: Adds the notes}", "handler: Adds the notes, delegates_to: ['L#addNotes']}")
-    handled = DECIDED.replace("contract: client.bank-account-changed}",
-                              "contract: client.bank-account-changed, temporary_handler: "
-                              "{listener: NotesHandler, delegates_to: ['L#addNotes'], remove_when: loan subscribes}}")
-    assert cs.allocation_decision_problems(_lean_design(tmp_path, named, handled)) == []
-    assert any("X2 needs a temporary_handler" in p for p in cs.allocation_decision_problems(_lean_design(tmp_path, named)))
-    assert any("X2 has a temporary_handler, but F3's event names no delegates_to" in p
-               for p in cs.allocation_decision_problems(_lean_design(tmp_path, decisions=handled)))
-    other = handled.replace("delegates_to: ['L#addNotes']", "delegates_to: ['L#somethingElse']")
-    assert any("X2's temporary_handler delegates to L#somethingElse, but F3's event says L#addNotes" in p
-               for p in cs.allocation_decision_problems(_lean_design(tmp_path, named, other)))
+ENTRY_CONTRACTS = """feature: update-bank-account
+domain: client
+contracts:
+  - key: loan.add-notes
+    provider: loan
+    kind: command
+    name: Add notes to the client's loans
+    spec: contracts/loan.add-notes.yaml
+    binding:
+      delegates_to: ['com.acme.loan.L#addNotes']
+      remove_when: loan provides it
+      entry_point:
+        operations:
+          - {method: addNotes, delegates_to: ['com.acme.loan.L#addNotes']}
+"""
+NAMED = LINKED.replace("handler: Adds the notes}", "handler: Adds the notes, delegates_to: ['com.acme.loan.L#addNotes']}")
+HANDLED = DECIDED.replace("contract: client.bank-account-changed}",
+                          "contract: client.bank-account-changed, event_handler: "
+                          "{domain: loan, calls: [loan.add-notes], remove_when: loan subscribes}}")
+
+
+def _with_entry_points(out, contracts=ENTRY_CONTRACTS):
+    (out / cs.LINKED_CONTRACTS_FILE).write_text(contracts, encoding="utf-8")
+    return out
+
+
+def test_an_event_handler_exactly_when_the_allocation_names_what_does_the_work_today(tmp_path):
+    assert cs.allocation_decision_problems(_with_entry_points(_lean_design(tmp_path, NAMED, HANDLED))) == []
+    assert any("X2 needs an event_handler" in p
+               for p in cs.allocation_decision_problems(_with_entry_points(_lean_design(tmp_path, NAMED))))
+    assert any("X2 has an event_handler, but F3's event names no delegates_to" in p
+               for p in cs.allocation_decision_problems(_with_entry_points(_lean_design(tmp_path, decisions=HANDLED))))
+    elsewhere = HANDLED.replace("{domain: loan,", "{domain: client,")
+    assert any("is in client's package, but F3 is done by loan" in p for p in cs.allocation_decision_problems(
+        _with_entry_points(_lean_design(tmp_path, NAMED, elsewhere))))
+
+
+def test_an_event_handler_reaches_the_work_only_through_entry_points(tmp_path):
+    bare = ENTRY_CONTRACTS.split("      entry_point:")[0]
+    assert any("calls loan.add-notes, which has no entry point" in p for p in cs.allocation_decision_problems(
+        _with_entry_points(_lean_design(tmp_path, NAMED, HANDLED), bare)))
+    more = NAMED.replace("delegates_to: ['com.acme.loan.L#addNotes']",
+                         "delegates_to: ['com.acme.loan.L#addNotes', 'com.acme.loan.L#flag']")
+    assert any("no entry point it calls reaches com.acme.loan.L#flag" in p for p in cs.allocation_decision_problems(
+        _with_entry_points(_lean_design(tmp_path, more, HANDLED))))
+    unknown = HANDLED.replace("calls: [loan.add-notes]", "calls: [loan.other]")
+    assert any("calls loan.other, which is not a contract in" in p for p in cs.allocation_decision_problems(
+        _with_entry_points(_lean_design(tmp_path, NAMED, unknown))))
+
+
+def test_a_lean_design_replaces_the_temporary_handler(tmp_path):
+    old = DECIDED.replace("contract: client.bank-account-changed}",
+                          "contract: client.bank-account-changed, temporary_handler: "
+                          "{listener: NotesHandler, delegates_to: ['com.acme.loan.L#addNotes'], remove_when: x}}")
+    assert any("X2 has a temporary_handler" in p and "replace it" in p for p in cs.allocation_decision_problems(
+        _with_entry_points(_lean_design(tmp_path, NAMED, old))))
+
+
+def test_each_build_step_is_expected_to_build_its_entry_points_and_handlers(tmp_path):
+    out = _with_entry_points(_lean_design(tmp_path, NAMED, HANDLED))
+    assert cs.expected_entry_points(out) == [{"key": "loan.add-notes", "provider": "loan", "operations": [
+        {"method": "addNotes", "delegates_to": ["com.acme.loan.L#addNotes"]}],
+        "delegates_to": ["com.acme.loan.L#addNotes"], "reused": False}]
+    assert cs.expected_event_handlers(out, "domain") == [
+        {"event": "client.bank-account-changed", "domain": "loan", "calls": ["loan.add-notes"],
+         "delegates_to": ["com.acme.loan.L#addNotes"], "interaction": "X2"}]
+    assert cs.expected_event_handlers(out, "orchestrator") == []
+    from_orchestrator = NAMED.replace("triggered_from: domain", "triggered_from: orchestrator")
+    out = _with_entry_points(_lean_design(tmp_path, from_orchestrator, HANDLED))
+    assert [h["event"] for h in cs.expected_event_handlers(out, "orchestrator")] == ["client.bank-account-changed"]
+    # An older design (no entry point, no event handler): nothing to compare with
+    (out / cs.LINKED_CONTRACTS_FILE).unlink()
+    (out / cs.DECISIONS_FILE).write_text(DECIDED, encoding="utf-8")
+    assert cs.expected_entry_points(out) is None and cs.expected_event_handlers(out, "domain") is None
+
+
+def test_the_monolith_subscribes_every_event_handler(tmp_path):
+    out = _with_entry_points(_lean_design(tmp_path, NAMED, HANDLED))
+    assert any("add LoanClientBankAccountChangedHandler to temporary_subscribers" in p
+               for p in cs._temporary_subscriber_problems(out, {"temporary_subscribers": []}))
+    routing = cs.parse_integration_routing(
+        "feature: f\ndomain: client\ntarget: domain-service\napi: openapi.yaml\nrouter: R.java\n"
+        "toggle: {property: p, default: legacy}\noperations: [{operation_id: a, monolith: M#a, client: C#a}]\n"
+        "temporary_subscribers: [{handler: LoanClientBankAccountChangedHandler, event: client.bank-account-changed, "
+        "enabled_property: e}]\n")
+    assert cs._temporary_subscriber_problems(out, routing) == []
+
+
+def test_a_design_gives_every_binding_an_entry_point(tmp_path):
+    out = _with_entry_points(_lean_design(tmp_path, NAMED, HANDLED))
+    assert cs.entry_point_problems(out) == []
+    _with_entry_points(out, ENTRY_CONTRACTS.split("      entry_point:")[0])
+    assert any("loan.add-notes has a temporary binding but no entry_point" in p for p in cs.entry_point_problems(out))
+
+
+@pytest.mark.parametrize("entry_point,message", [
+    ("{operations: []}", "list the operations"),
+    ("{operations: [{method: addNotes, delegates_to: ['com.acme.loan.L#other']}]}", "is not in the binding"),
+    ("{api: Wrong, operations: [{method: addNotes, delegates_to: ['com.acme.loan.L#addNotes']}]}",
+     "is LoanAddNotesApi"),
+])
+def test_an_entry_point_is_checked_when_parsed(entry_point, message):
+    text = ENTRY_CONTRACTS.split("      entry_point:")[0] + f"      entry_point: {entry_point}\n"
+    with pytest.raises(cs.InvalidDocument, match=message):
+        cs.parse_linked_domain_contracts(text)
 
 
 def test_each_build_step_is_expected_to_build_the_handlers_of_the_events_it_publishes(tmp_path):
@@ -573,14 +666,16 @@ def test_the_code_steps_are_told_what_the_allocation_means_for_them():
     assert "`functional-allocation.yaml` (where each functionality goes)" in module
     assert "split the copy exactly there" in module  # the one exception to copying with the package line changed
     assert "keeps the legacy bean for `monolith` too, until the Orchestrator in monolith step" in module
-    assert "the same adapter, after the commit, also calls that handler" in module
-    assert "without one, the domain module's ports keep their `local` adapters" in module
+    assert "the same adapter, after the commit, calls the handler interface" in module
+    assert "the Orchestrator in monolith step builds them next, on the same entry points" in module
+    assert "The domains not migrated yet." in module  # the integration and event-handler modules
     orchestrator = flat("monolith_orchestrator")
     assert "each port to another domain that the orchestrator calls" in orchestrator
     assert "Events the design publishes from the orchestrator" in orchestrator
+    assert "implements the entry point interface" in orchestrator
     integration = flat("monolith_integration")
     assert "Each facade endpoint implements its contract's spec" in integration
-    assert "calls the same handler helper" in integration
+    assert "calls the same handler interface (in the event-handler module)" in integration
     assert "except splitting a method at the steps the approved design gives to the orchestrator" in \
         defaults._MODULITH_GUARDRAILS
 

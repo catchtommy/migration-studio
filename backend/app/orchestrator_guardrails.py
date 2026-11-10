@@ -28,10 +28,12 @@ DB_ACCESS, TRANSACTION, COMMENTS = mg.DB_ACCESS, mg.TRANSACTION, mg.COMMENTS
 
 def check(root: Path, base: str, declaration: dict, module_decl: dict | None, design: dict | None,
           ownership: dict[str, dict], domain: str, god_modules: list[str] | None = None,
-          earlier: set[str] | None = None, expected_handlers: list[dict] | None = None) -> list[str]:
+          earlier: set[str] | None = None, expected_handlers: list[dict] | None = None,
+          legacy: dict | None = None) -> list[str]:
     """Violations of the step's limits since `base`. `declaration` is orchestrator-extraction.yaml (parsed),
     `module_decl` module-extraction.yaml of the Module in monolith step and `design` domain-design.yaml.
-    `expected_handlers`: the temporary handlers of the events the orchestrator publishes (integration-decisions.yaml)."""
+    `expected_handlers`: the temporary handlers of the events the orchestrator publishes (integration-decisions.yaml).
+    `legacy`: the handlers of those events in the event-handler module (app/legacy_modules.py, side orchestrator)."""
     try:
         diff = mg.changes(root, base)
     except (RuntimeError, OSError) as e:
@@ -53,12 +55,13 @@ def check(root: Path, base: str, declaration: dict, module_decl: dict | None, de
                  "router": routing.get("router") or declaration.get("router") or "", "routes": routing.get("routes") or [],
                  "toggle_branches": declaration.get("toggle_branches") or [],
                  "outside_changes": declaration.get("outside_changes") or [],
-                 "temporary_handlers": declaration.get("temporary_handlers") or []}
+                 "temporary_handlers": declaration.get("temporary_handlers") or [],
+                 "legacy_modules": declaration.get("legacy_modules")}
     problems = [(blocker if isinstance(p, Blocker) else str)(p.replace("module-extraction.yaml", "orchestrator-extraction.yaml"))
                 for p in mg.check(root, base, as_module, design, ownership, domain, god_modules,
                                   extra_artifacts=[m["artifact"] for m in domain_modules],
                                   wiring=_classes(root, domain_paths) | _route_beans(module_decl),
-                                  expected_handlers=expected_handlers)]
+                                  expected_handlers=expected_handlers, legacy=legacy)]
     problems += mg._own_folders(root, base, diff, [orchestrator], [], {"modules": set(earlier or ())})
 
     # The domain module stays as the Module in monolith step left it.
@@ -130,9 +133,12 @@ def for_context(ctx) -> list[str]:
         return [blocker(f"{cs.MODULE_EXTRACTION_FILE} of the Module in monolith step is missing: it says where the domain "
                 "module is")]
     root = (ctx.workspace / ctx.code_dir).resolve()
+    from app import legacy_modules
+
     problems = check(root, ctx.base_sha, declaration, module_decl, design, ctx.ownership, ctx.domain,
                      (finder or {}).get("god_modules"), earlier=_earlier(ctx.run_id, ctx.domain),
-                     expected_handlers=cs.expected_temporary_handlers(out, "orchestrator"))
+                     expected_handlers=cs.expected_temporary_handlers(out, "orchestrator"),
+                     legacy=legacy_modules.for_step(ctx, root, declaration, "orchestrator"))
     if declaration.get("orchestrator") == "module":  # the domain's one orchestrator module (app/domain_modules.py)
         problems += mg.one_per_domain(ctx, root, "orchestrator", str(declaration["module"]["path"]), declaration)
     return problems

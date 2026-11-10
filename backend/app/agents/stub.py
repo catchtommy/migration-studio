@@ -77,6 +77,10 @@ def _sample_cross_domain_files(ctx: AgentContext) -> list[ArtifactOut]:
     other = next((d for d in sorted(ctx.ownership) if d != ctx.domain), "shared")
     op = ctx.operation.lower()
     query, event = f"{other}.get-{other}-summary", f"{ctx.domain}.{op}-completed"
+    # The work {other} does when the event arrives, while it is in the monolith: a command of {other}, reached through
+    # its integration entry point by the event's handler (app/legacy_modules.py)
+    command = f"{other}.record-{op}-completed"
+    reaction = f"com.acme.{other}.{other.capitalize()}Service#on{_ident(ctx.operation)}Completed"
     files: dict[str, str] = {}
     # Links to the functional specification, when the run has one (sample ids, see _sample_functional_files)
     trace = ("    requirements: [FR-002]\n    scenarios: [TS-002]\n"
@@ -257,6 +261,10 @@ exceptions: []
                  f"router: src/main/java/com/example/{ctx.domain}/legacybridge/{name}ServiceRouter.java", "operations:"]
         for i in ids or [f"create{name}"]:
             lines += [f"  - operation_id: {i}", f"    monolith: '{old}#{i}'", f"    client: '{old}Client#{i}'"]
+        subscribers = contracts_store.expected_temporary_subscribers(ctx.output_dir) or []
+        lines += ["temporary_subscribers:" if subscribers else "temporary_subscribers: []",
+                  *(f"  - {{handler: {x['listener']}, event: {x['event']}, enabled_property: "
+                    f"migration.{ctx.domain}.{x['event'].split('.')[-1]}.{x['owner']}.enabled}}" for x in subscribers)]
         files["integration-routing.yaml"] = "\n".join(lines) + "\n"
     if "linked-domain-contracts.yaml" in outputs:
         files["linked-domain-contracts.yaml"] = f"""# [stub] sample linked-domain contracts
@@ -275,10 +283,33 @@ contracts:
     binding:
       delegates_to: ["com.acme.{other}.{other.capitalize()}Service#get{other.capitalize()}Summary"]
       remove_when: The {other} service provides this contract
+      entry_point:
+        operations:
+          - method: get{other.capitalize()}Summary
+            delegates_to: ["com.acme.{other}.{other.capitalize()}Service#get{other.capitalize()}Summary"]
+  - key: {command}
+    provider: {other}
+    kind: command
+    name: Record that {ctx.operation} completed
+    version: "1"
+    description: What {other} does when {event} arrives, while it is in the monolith
+    interactions: [X2]
+    relies_on: "[stub] Idempotent on the event's id"
+    spec: contracts/{command}.yaml
+    binding:
+      delegates_to: ["{reaction}"]
+      remove_when: The {other} service subscribes to {event}
+      entry_point:
+        operations:
+          - method: record{_ident(ctx.operation)}Completed
+            delegates_to: ["{reaction}"]
 """
         files[f"contracts/{query}.yaml"] = sample_openapi(
             f"{other} summary (stub)", f"/internal/api/v1/{other}", f"{other}Summary",
             f"What {ctx.domain} needs to know about a {other} record, served by {other}.")
+        files[f"contracts/{command}.yaml"] = sample_openapi(
+            f"Record {ctx.operation} completed (stub)", f"/internal/api/v1/{other}", f"{other}Reaction",
+            f"What {other} does when {event} arrives.")
     if "integration-decisions.yaml" in outputs:
         files["integration-decisions.yaml"] = f"""# [stub] sample integration decisions
 decisions:
@@ -300,9 +331,9 @@ decisions:
     contract: {event}
     status: planned
     summary: Published to the {ctx.domain} topic after the transaction commits
-    temporary_handler:
-      listener: {_ident(ctx.operation)}Completed{_ident(other)}Handler
-      delegates_to: ["com.acme.{other}.{other.capitalize()}Service#on{_ident(ctx.operation)}Completed"]
+    event_handler:
+      domain: {other}
+      calls: [{command}]
       remove_when: The {other} service subscribes to {event}
 contracts:
   - key: {query}
@@ -362,13 +393,24 @@ components:
 
 
 def _handler_lines(ctx: AgentContext, side: str) -> list[str]:
-    """`temporary_handlers` of an extraction declaration: those integration-decisions.yaml gives the step building
-    `side` (domain or orchestrator)."""
+    """What an extraction declaration lists for the domains not migrated yet: `legacy_modules` (the entry points and
+    event handlers the design gives the step building `side`, domain or orchestrator; app/legacy_modules.py), and the
+    `temporary_handlers` of an older design."""
     handlers = contracts_store.expected_temporary_handlers(ctx.output_dir, side) or []
-    if not handlers:
-        return ["temporary_handlers: []"]
-    return ["temporary_handlers:", *(f"  - {{listener: {h['listener']}, delegates_to: [{', '.join(h['delegates_to'])}]}}"
-                                     for h in handlers)]
+    lines = ["temporary_handlers: []"] if not handlers else [
+        "temporary_handlers:", *(f"  - {{listener: {h['listener']}, delegates_to: [{', '.join(h['delegates_to'])}]}}"
+                                 for h in handlers)]
+    entry_points = contracts_store.expected_entry_points(ctx.output_dir)
+    events = contracts_store.expected_event_handlers(ctx.output_dir, side)
+    if entry_points is None and events is None:
+        return lines
+    lines.append("legacy_modules:")
+    if side == "domain":
+        lines += [f"  adapter_dir: src/main/java/com/example/integration/legacy",
+                  f"  entry_points: [{', '.join(e['key'] for e in entry_points or [])}]"]
+    lines.append("  handlers: [" + ", ".join(f"{{event: {h['event']}, domain: {h['domain']}}}" for h in events or [])
+                 + "]")
+    return lines
 
 
 def sample_allocation(domain: str, operation: str, other: str = "", event: str = "", cross: bool = False,

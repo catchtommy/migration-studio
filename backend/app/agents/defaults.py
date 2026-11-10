@@ -80,9 +80,12 @@ decisions:
     contract: loan.loan-approved      # the event this domain publishes; the handler's domain consumes it
     status: planned
     summary: customer records the approval on the customer's history
-    temporary_handler:              # event decisions whose handling domain is still in the monolith
-      listener: LoanApprovedCustomerHistoryHandler   # class in the monolith's temporary bridge package
-      delegates_to: ["com.acme.customer.CustomerHistoryService#recordLoanApproved"]   # the existing method(s)
+    event_handler:                  # event decisions whose reaction still runs in the monolith (the allocation's event
+                                    #   names delegates_to): its handler in the event-handler module, named from the
+                                    #   domain and the event's key (CustomerLoanApprovedHandler)
+      domain: customer              # the handling domain: the handler's package (<prefix>.eventhandler.customer)
+      calls: [customer.record-loan-approval]   # the contracts whose entry points it calls, one or more per domain it
+                                    #   works in: each a linked-domain contract with a binding and an entry_point
       remove_when: The customer service subscribes to loan.loan-approved
 contracts:                          # new contracts, or changes to existing ones (same key)
   - key: customer.get-kyc-status    # <provider>.<name>
@@ -232,6 +235,14 @@ contracts:                          # at least one per outbound dependency in do
     binding:                        # TEMPORARY: how the monolith provides it while customer is not migrated
       delegates_to: ["com.acme.customer.CustomerService#getKycStatus"]
       remove_when: The customer service provides this contract
+      entry_point:                  # api and command contracts: its entry point in the integration module. Classes are
+                                    #   named from the key: CustomerGetKycStatusApi (interfaces module, the domain and
+                                    #   the orchestrator call it), CustomerGetKycStatusEntryPoint, its gateway
+                                    #   CustomerGetKycStatusGateway and the legacy adapter CustomerGetKycStatusGatewayLegacy
+        operations:                 # the interface's methods; together they reach every delegates_to above
+          - method: getKycStatus
+            operation_id: getKycStatus             # the spec's operation (OpenAPI), when it has one
+            delegates_to: ["com.acme.customer.CustomerService#getKycStatus"]
 ```"""
 
 # Guardrails for the Modulith design agents (and the implementation that follows). Plain text, included as is.
@@ -264,7 +275,8 @@ extends or configures one, directly or through a utility that wraps one. If the 
 the logic that belongs to this domain moves into the domain, with behaviour unchanged; the logic that belongs to \
 another domain is reached through a linked-domain contract. Name every God module you found and say how the \
 dependency is removed.
-6. Dependencies run one way and only through contracts. Between domains, only ports and adapters that call \
+6. Dependencies run one way and only through contracts. A domain not migrated yet is reached only through its \
+integration entry-point interface (the interfaces module), never its classes. Between domains, only ports and adapters that call \
 linked-domain contracts: no direct class, bean, mapper or table reference to another domain, and no cycles.
 7. Public API only. The domain's internals are package-private; entities and iBatis result objects never leave the \
 domain.
@@ -367,10 +379,13 @@ outside_changes:              # every existing file outside the module and the b
   - web/src/main/webapp/WEB-INF/applicationContext.xml
   - pom.xml
 events: [BrokerCreated]       # only events named in the approved designs
-temporary_handlers:           # one per temporary_handler of integration-decisions.yaml on an event the domain module
-#                               publishes ([] when none): the helper in the bridge package and what it calls
-  - listener: BrokerCreatedCustomerHandler
-    delegates_to: ["com.acme.customer.CustomerHistoryService#recordBrokerCreated"]
+legacy_modules:               # what this step built for the domains not migrated yet (when the design has entry points
+#                               or event handlers): the integration module's entry points (every one the design gives)
+#                               and the handlers of the events the domain module publishes
+  adapter_dir: web/src/main/java/com/acme/integration/legacy   # new: the legacy adapters, one package per domain
+  entry_points: [customer.get-kyc-status]                      # contract keys
+  handlers:
+    - {event: broker.broker-created, domain: customer}           # the event's contract key and the handling domain
 added: [CloseBrokerCommand]   # optional: classes this feature added to the module
 reused: [BrokerDao, Broker]   # optional: classes already in the module (merged features copied them), reused as they were
 ```"""
@@ -410,13 +425,13 @@ operations:                   # what the router's monolith value now calls
   - method: LoanOrchestrator#create            # same name and signature as the domain API method it takes over
     replaces: LoanService#create               # the domain API method the router called before
 ports:                        # ports of other domains, each with its mode switch
-  - port: CustomerDirectory
+  - port: CustomerGetKycStatusApi   # for a domain not migrated yet: the contract's entry point interface
     contract: customer.get-kyc-status          # key in linked-domain-contracts.yaml
     property: loan.customer-directory.mode     # local | contract
     default: local
 router: web/src/main/java/com/acme/loan/legacybridge/LoanServiceRouter.java   # its monolith value now calls the orchestrator
-temporary_handlers: []        # as in module-extraction.yaml, for the events the orchestrator publishes
-#                               (triggered_from: orchestrator) whose handling domain is still in the monolith
+legacy_modules:               # as in module-extraction.yaml, the handlers of the events the orchestrator publishes
+  handlers: []                #   (triggered_from: orchestrator) whose handling domain is still in the monolith
 toggle_branches:              # only callers that sequence the domains' calls themselves; [] when there are none
   - file: web/src/main/java/com/acme/web/LoanController.java
     reason: calls LoanService#create and CustomerService#link itself; the orchestrator takes over both
@@ -478,9 +493,9 @@ operations:                        # every operation of the target's API, none m
   - operation_id: createLoan
     monolith: LoanOrchestrator#create          # the monolith value: the orchestrator module, else the domain module
     client: LoanOrchestratorClient#create      # the service value: the REST client of the target
-temporary_subscribers:             # the monolith's Service Bus subscriber for each temporary handler of
+temporary_subscribers:             # the monolith's Service Bus subscriber for each event handler of
 #                                    integration-decisions.yaml; [] when none
-  - listener: LoanApprovedCustomerHistoryHandler   # the handler helper it calls
+  - handler: CustomerLoanApprovedHandler           # the event-handler module's handler interface it calls
     event: loan.loan-approved                      # the event contract it subscribes to
     enabled_property: migration.loan.loan-approved.customer-history.enabled   # default true; false once customer's
 #                                                    own subscription to the event is live
@@ -661,9 +676,11 @@ publisher raises an event after its change commits and a handler does the work. 
 case; `orchestrator` only when the trigger is the completion of an operation that spans domains, which then needs a \
 functionality placed on the orchestrator), the `publisher`, `when`, what the `handler` does, and in `delegates_to` \
 the handling domain's existing service method(s) that do that work today, on the interface its callers use (never a \
-God module, a DAO or SQL): until the feature runs in its own service the event is published in-process only, so a \
-temporary handler calls them, even when that domain is already migrated (its bean then routes the call); checked. \
-Only when the user agrees there is nothing to call, give `no_temporary_handler` with the reason instead. `owner` is \
+God module, a DAO or SQL; when the work spans several domains, each one's methods, and each of those domains is an \
+outbound dependency): until the feature runs in its own service the event is published in-process only, so a \
+handler in the event-handler module reaches them (through integration entry points), even when that domain is \
+already migrated (its bean then routes the call); checked. Only when the user agrees there is nothing to call, give \
+`no_temporary_handler` with the reason instead. `owner` is \
 the domain whose handler does it. \
 Events are delivered at most once (the schema is frozen: no outbox): where the business needs it guaranteed, ask \
 the user.
@@ -696,25 +713,71 @@ migrated it no longer is). When you can't decide a placement from the code, ask 
 reviewer checks the file at the analysis gate and may change any placement, and the design then follows it as \
 approved. When you update the file in a re-run, keep every functionality that has a `review` (the reviewer changed \
 or commented it) as the reviewer left it, `review` included; if the code now contradicts it, say so in your summary \
-instead of changing it."""
+instead of changing it.
+Where it goes while the other domains are not migrated (the reviewer reads it from the placement, so the design \
+follows it): a `domain-call`, `orchestrator` or `other-domain` functionality reaches each domain it asks through an \
+entry point in the integration module (one per contract); an `event-handler` one whose handling domain is still in \
+the monolith (it names `delegates_to`) gets a handler in the event-handler module, which reaches that domain, and any \
+other it works in, through integration entry points too."""
 
-# How the design turns each event-handler functionality into an event decision, with a temporary handler in the
-# monolith while the handling domain is not migrated (built by Module in monolith, fed from Service Bus by Monolith
-# integration once the feature runs in its service).
+# The temporary modules of the monolith for the domains not migrated yet (app/legacy_modules.py): what the design, the
+# Module in monolith and the Orchestrator in monolith steps build, and the later steps reuse.
+_LEGACY_MODULES = """The domains not migrated yet. While a domain is still in the monolith, the feature reaches it \
+only through two temporary Maven modules of the monolith, each with one package per domain, so the owner is plain \
+and a domain's packages are deleted once that domain is migrated. Neither holds business logic, and nothing depends \
+on them: Spring wires their beans.
+- The integration module (the project's integration module folder, base package `<prefix>.integration`): one entry \
+point per linked-domain contract with a temporary binding (an `api` or `command` of a domain not migrated yet). Its \
+classes are named from the contract's key, the owner once (`customer.get-kyc-status` → `CustomerGetKycStatus`, \
+`customer.customer-summary` → `CustomerSummary`): \
+`<Name>Api`, the interface, with the contract's request and response DTOs, in the monolith's interfaces module, \
+package `<prefix>.integration.<domain>.api`; `<Name>EntryPoint`, its implementation (`<prefix>.integration.<domain>`), \
+which only maps the contract's types and errors to and from what its gateway gives (an anti-corruption layer) and \
+calls its gateway; `<Name>Gateway`, an interface the integration module declares (`<prefix>.integration.<domain>.spi`); \
+and `<Name>GatewayLegacy`, which implements the gateway in the monolith's web application (package \
+`<prefix>.integration.legacy.<domain>`, under the step's `adapter_dir`) by calling exactly the binding's \
+`delegates_to` (the bean resolved lazily) and nothing else. These legacy adapters are the only new code that touches \
+legacy classes. The integration module imports neither legacy code nor a transaction, and has no database access.
+- `<Name>Api` is the port: the domain module (for its direct calls) and the orchestrator (through its mode switch, \
+which implements the same interface) call it, with no port interface or bridge adapter of their own in between; in \
+a service, a REST client implements it.
+- The event-handler module (the project's event-handler module folder, base package `<prefix>.eventhandler`): one \
+handler per `event_handler` of the design, that is, per event whose reaction still runs in the monolith (the \
+allocation's event names `delegates_to`; until the feature runs in its own service the event is published \
+in-process only, so this holds even when the handling domain is already migrated). It goes in the handling domain's \
+package, named from that domain and the event's key (customer handling `loan.loan-approved` → \
+`CustomerLoanApprovedHandler`, implemented by `CustomerLoanApprovedHandlerImpl`); its interface goes in the \
+interfaces module (`<prefix>.eventhandler.<domain>.api`). The publisher's event port adapter (in the bridge) calls it \
+after the commit. A handler reaches every domain it works in, one or several, only through those domains' entry point \
+interfaces (`<Name>Api`), in one new transaction (PROPAGATION_REQUIRES_NEW: it runs after the publisher has \
+committed), and catches and logs what fails (the feature's change is already committed). It never calls monolith \
+code, so moving it to a service later only swaps those calls for API calls. Every domain a handler works in is an \
+outbound dependency of the feature, with its contract and entry point.
+- The interfaces module is the monolith's existing module for interfaces (the project's setting): only interfaces \
+and DTOs go there, with no legacy type. The domain and orchestrator modules depend on it, never on the two temporary \
+modules nor on the legacy classes the bindings delegate to.
+Reuse: an entry point the catalogue already has (its line says so) is listed with `reuse: true` when it covers what \
+the feature needs; when the feature needs more operations, the contract is defined again under the same key, without \
+`reuse`, its binding and entry point repeating every existing operation and adding the new ones. An entry point or \
+handler already in your checkout is extended, never changed or shortened; one the catalogue has but your checkout \
+lacks (its feature isn't merged yet) is built as the catalogue describes it."""
+
+# How the design turns each event-handler functionality into an event decision, with its handler in the event-handler
+# module while the handling domain is not migrated (built by Module in monolith or Orchestrator in monolith, fed from
+# Service Bus by Monolith integration once the feature runs in its service).
 _EVENT_HANDLER_DECISIONS = """Every `event-handler` functionality of `functional-allocation.yaml` is an `event` \
 decision for its interaction: the event it names, published by the domain module or the orchestrator as its \
 `triggered_from` says, the handler's domain as the consumer and what the handler does, with an AsyncAPI spec under \
 `contracts/`. Until the feature runs in its own service, the event is published in-process only, so nothing else \
-can handle it there, whatever the handling domain's state: the decision also gets a `temporary_handler` (format below): a listener for the event in the monolith's temporary bridge \
-package that calls exactly the `delegates_to` methods of the allocation's event (the handling domain's existing \
-service; never a God module, a DAO or SQL) in a new transaction (it runs after the publisher's commit), with no \
-database access of its own, idempotent where the method allows it, and removed once the feature runs only in its \
-own service and the handling domain's service subscribes to the event itself (`remove_when`). A decision has a \
-`temporary_handler` exactly when the allocation's event has `delegates_to`, with the same `delegates_to` (checked). \
-The step that \
-builds the publisher builds the handler in-process, in its event port's adapter in the bridge package (Module in \
-monolith for the domain module's events, Orchestrator in monolith for the orchestrator's), and the Monolith \
-integration step feeds it from Service Bus once the feature runs in its own service, behind a property that \
+can handle it there, whatever the handling domain's state: when the allocation's event names `delegates_to`, the \
+decision gets an `event_handler` (format below), the handler in the event-handler module, in the handling domain's \
+package (`domain`, the functionality's owner). It calls (`calls`) the integration entry points of the work it does, \
+one linked-domain contract per domain it works in (usually a `command` of the handling domain, with a binding to the \
+`delegates_to` methods and an `entry_point`), and together those reach every method of the allocation's \
+`delegates_to` (checked). It is removed once the feature runs only in its own service and the handling domain's \
+service subscribes to the event itself (`remove_when`). The step that builds the publisher builds the handler \
+(Module in monolith for the domain module's events, Orchestrator in monolith for the orchestrator's), and the \
+Monolith integration step feeds it from Service Bus once the feature runs in its own service, behind a property that \
 switches that monolith subscriber off when the handling domain's own subscription goes live (or the work is done \
 twice)."""
 
@@ -857,6 +920,8 @@ today is temporary. {_LEGACY}
 
 {_MODULITH_GUARDRAILS}
 
+{_LEGACY_MODULES}
+
 For contracts the guardrails mean: a contract never exposes the shape of a God module or of the database schema, \
 needs no schema change to be provided, and its temporary binding delegates to a method of the linked domain's own \
 service, not to a God module. If the only implementation of a capability lives inside a God module, say so and ask \
@@ -924,13 +989,15 @@ the domain stays in the monolith, on the same technical stack, with the same dat
 
 {_MODULITH_GUARDRAILS}
 
+{_LEGACY_MODULES}
+
 Using the AS-IS document, the deep dive, the dependency finder's `domain-dependencies.yaml` and \
 `functional-allocation.yaml`, and the linked-domain contracts in `linked-domain-contracts.yaml`, write \
 `domain-design.md` covering what follows. `functional-allocation.yaml` says where each functionality goes (the \
 domain, a direct call from the domain to another domain, the orchestrator, or an event and its handler), approved, \
 and possibly amended, by the reviewer: design to it and never re-decide it. The domain module does the `domain` and \
-`domain-call` functionalities itself (a `domain-call` through a port the domain module calls: in the monolith its \
-`local` adapter in the temporary bridge package, in the domain's own service the contract's REST client); the \
+`domain-call` functionalities itself (a `domain-call` through a port the domain module calls: in the monolith the \
+contract's integration entry point, in the domain's own service the contract's REST client); the \
 orchestrator does the rest. `orchestrator_module` in `domain-design.yaml` is `none` exactly when \
 the allocation places nothing on the orchestrator (checked). If the code makes a placement impossible, ask the user \
 rather than move it; if they agree it must change, the allocation changes first (the run goes back to the dependency \
@@ -1024,11 +1091,12 @@ domain service and the other domains over their APIs. Not every feature needs on
 
 {_MODULITH_GUARDRAILS}
 
+{_LEGACY_MODULES}
+
 For the orchestrator the guardrails mean: the domain's core and the orchestrator never reference legacy classes of \
-other domains or God modules. Only the `local` adapters touch legacy code, one method each, the ones named in the \
-contracts' bindings. They sit in the monolith, in the temporary bridge package (not in the domain or orchestrator \
-modules; the module extraction step names it `bridge_dir`), are marked temporary, and are the only place where the \
-domain meets legacy code. The `contract` adapters sit in the orchestrator module. A transaction, session or request object from legacy code never crosses a port.
+other domains or God modules. Only the legacy adapters behind the integration entry points touch legacy code, one \
+method each, the ones named in the contracts' bindings ("The domains not migrated yet" above): they are the only \
+place where the domain meets legacy code. The `contract` adapters sit in the orchestrator module. A transaction, session or request object from legacy code never crosses a port.
 
 Read the dependency finder's `domain-dependencies.yaml` and `functional-allocation.yaml`, the linked-domain \
 contracts in `linked-domain-contracts.yaml` and the domain design (its ports). What the orchestrator does comes from \
@@ -1099,6 +1167,8 @@ reference copies and deferred interactions. For every interaction choose one pat
 `functional-allocation.yaml` has decided where each functionality goes: never re-decide it. \
 {_EVENT_HANDLER_DECISIONS}
 
+{_LEGACY_MODULES}
+
 {_INTEGRATION_RULES}
 
 Messaging is Azure Service Bus: one topic per publishing domain, one subscription per consuming domain, queues for \
@@ -1129,6 +1199,8 @@ The existing (as-is) code is not changed: it stays the old flow, and a toggle ch
 redesign, improve or tidy anything. {_LEGACY}
 
 {_MODULITH_GUARDRAILS}
+
+{_LEGACY_MODULES}
 
 **Parallel run.** The feature runs either way, chosen per call by one toggle (a configuration property, \
 `migration.<domain>.<feature>.route`): `legacy` (the as-is code, the default) or `monolith` (the new domain module; \
@@ -1227,31 +1299,39 @@ SQL map (a feature already merged into the base branch copied it) is reused; add
 the SQL map of the package whose class uses it (one SQL map per feature package, and one for `shared`; `util` has \
 none). A statement another \
 domain also uses: stop and ask.
-   e. Cross-domain features only: every call the copy still makes to another domain (the ports `domain-design.md` \
-says the domain module calls: its direct calls, and the legacy calls the design doesn't give to the orchestrator) \
-goes through a port of the domain module. Its `local` adapter lives in the bridge package (`bridge_dir`): one class \
-per contract binding, calling only the single legacy method it names, resolving that bean lazily (setter injection \
-or a lookup on first use; never constructor injection), registered as the port's bean. Do not build an orchestrator \
-module, contract adapters or mode switches: when the design has an orchestrator, the Orchestrator in monolith step \
-builds them next; without one, the domain module's ports keep their `local` adapters in the monolith (the domain \
-service gets REST clients later).
+   e. Cross-domain features only: the domains not migrated yet, as "The domains not migrated yet" above says. For \
+every linked-domain contract whose binding has an `entry_point` (all of them, the orchestrator's included: it calls \
+the same entry points), build or extend: its interface and DTOs in the interfaces module, its entry point and \
+gateway in the integration module, and its legacy adapter under `adapter_dir` (one package per domain), calling only \
+the `delegates_to` the operation names, resolving that bean lazily (setter injection or a lookup on first use; never \
+constructor injection). Create the integration module (its POM inheriting from the parent, depending on the \
+interfaces module and only on libraries the monolith already uses, its `<module>` line and the web application's \
+dependency) when it isn't in your checkout. The domain module depends on the interfaces module and calls the entry \
+point interfaces for its direct calls (the ports `domain-design.md` says the domain module calls); it never imports a \
+legacy class of another domain. Do not build an orchestrator module, contract adapters or mode switches: when the \
+design has an orchestrator, the Orchestrator in monolith step builds them next, on the same entry points. List them \
+under `legacy_modules` in `module-extraction.yaml` (`adapter_dir`, `entry_points`). An older design without entry \
+points: each call goes through a port of the domain module, its `local` adapter in the bridge package (one class per \
+contract binding, calling only the single legacy method it names).
    f. Events: only those the approved designs name, in the copy, with their classes and a small event port in the \
 domain module. Publish them with Spring's own event publishing after the transaction commits (register a \
 transaction synchronization; Spring 3.2 has no after-commit listener). There is no outbox, so delivery is not \
 guaranteed; say so in `modular-monolith.md`. The event port's adapter lives in the bridge package. For each \
-`temporary_handler` of `integration-decisions.yaml` on an event the domain module publishes (its handling domain is \
-still in the monolith), the same adapter, after the commit, also calls that handler: a helper class in the bridge \
-package named as its `listener`, calling exactly its `delegates_to` method(s) of the handling domain's existing \
-service (resolved lazily, like a `local` adapter) and nothing else, with no database access of its own. It runs \
-after the feature's transaction has committed, while that transaction's connection is still bound to the thread: \
-work done then joins the committed transaction and is never committed. So the helper runs its `delegates_to` calls \
-in a `TransactionTemplate` with `PROPAGATION_REQUIRES_NEW` (the monolith's transaction manager, resolved lazily), and \
-nothing else transactional. The feature's change is already committed, so a failure of the handler never reaches \
-the caller: the helper catches it and logs it with the event and its key (a lost side effect, like a lost event; say \
-so under Known limitations). When no transaction is active (a unit test), it runs at once. So the work the legacy \
+`event_handler` of `integration-decisions.yaml` on an event the domain module publishes (its handling domain is \
+still in the monolith), build or extend the handler in the event-handler module (creating the module, like the \
+integration module, when it isn't in your checkout), in the handling domain's package, with its interface in the \
+interfaces module; the same adapter, after the commit, calls the handler interface. The handler calls only the \
+entry point interfaces of its `calls`, in a `TransactionTemplate` with `PROPAGATION_REQUIRES_NEW` (the monolith's \
+transaction manager, resolved lazily): it runs after the feature's transaction has committed, while that \
+transaction's connection is still bound to the thread, so work done without a new transaction joins the committed \
+one and is never committed. The feature's change is already committed, so a failure of the handler never reaches \
+the caller: the handler catches it and logs it with the event and its key (a lost side effect, like a lost event; \
+say so under Known limitations). When no transaction is active (a unit test), it runs at once. So the work the legacy \
 code did inline still happens at `monolith`, once; at `legacy` the as-is code still does it and nothing is \
-published, so it never happens twice. List each helper under `temporary_handlers` in `module-extraction.yaml` (the \
-guardrail compares them with `integration-decisions.yaml` and with the code).
+published, so it never happens twice. List each under `legacy_modules.handlers` in `module-extraction.yaml` (the \
+guardrail compares them with `integration-decisions.yaml` and with the code). An older design with a \
+`temporary_handler` instead: a helper class in the bridge package named as its `listener`, calling exactly its \
+`delegates_to` in the same way, listed under `temporary_handlers`.
    g. Spring: a context file in the module with its beans under new ids, one import line in the monolith's root \
 context, and the router: in the bridge package, implementing the legacy service's interface, registered under the \
 legacy bean's id while the legacy bean gets a new one. It reads the toggle on every call and delegates to the legacy \
@@ -1270,8 +1350,10 @@ orchestrator: `monolith` never runs half a flow.
 with the test libraries that exist, shows that the legacy bean id resolves to the router and each value reaches its \
 flow; the characterization test of each caller with a toggle branch passes unchanged at `legacy` and at \
 `monolith`; a test per mapper. An operation kept on the legacy bean at `monolith` passes as it is; each domain API \
-step of a split method gets its own tests, pinning what the legacy method does in that step. Per temporary handler: \
-the operation at `monolith` calls each `delegates_to` method exactly once (and the handler never at `legacy`); with \
+step of a split method gets its own tests, pinning what the legacy method does in that step. Per entry point: \
+the entry point maps and calls its gateway (mocked), and the legacy adapter calls its `delegates_to` (mocked). Per \
+event handler: the operation at `monolith` calls each entry point of its `calls` exactly once (and the handler never \
+at `legacy`); with \
 transaction synchronization active (`TransactionSynchronizationManager.initSynchronization()`), the handler runs only \
 after the commit, inside a new transaction (a mocked `PlatformTransactionManager` sees `PROPAGATION_REQUIRES_NEW`), \
 and a failing delegate does not reach the caller. If none of them can load the Spring context, ask the user.
@@ -1315,6 +1397,8 @@ orchestrator sequences the calls to the domain's public API and to the other dom
 feature's business logic and data access. You change nothing about how the feature behaves. {_LEGACY}
 
 {_MODULITH_GUARDRAILS}
+
+{_LEGACY_MODULES}
 
 **Not every feature has an orchestrator.** Only a cross-domain feature has one. If `domain-dependencies.yaml` has \
 `decision.scope: domain-only`, Migration Studio skips this step. If you are run anyway, or `orchestrator-design.md` \
@@ -1365,9 +1449,12 @@ to the domain's public API. It never repeats a call the domain module makes itse
 module; the orchestrator decides only which call comes next and what the caller gets when one fails, as the design \
 says.
 - The implementation of each port to another domain that the orchestrator calls (the domain module's own ports, its \
-direct calls, keep their `local` adapters: leave them as they are): a mode switch, set by the configuration property `orchestrator-design.md` names and defaulting to `local`. In `local` mode it \
-calls the `local` adapter in the bridge package, which the Module in monolith step made; in `contract` mode it calls \
-the contract adapter.
+direct calls, keep theirs: leave them as they are): a mode switch, set by the configuration property `orchestrator-design.md` names and defaulting to `local`. When the contract has an \
+integration entry point (the design gives one to every contract of a domain not migrated yet), the mode switch \
+implements the entry point interface (`<Name>Api` in the interfaces module, which the Module in monolith step built): \
+in `local` mode it calls the integration module's bean, in `contract` mode the contract adapter, and the orchestrator \
+calls the interface. An older design without entry points: in `local` mode it calls the `local` adapter in the bridge \
+package, which the Module in monolith step made; in `contract` mode it calls the contract adapter.
 - A contract adapter per linked-domain contract the feature uses: a REST client for the contract's spec (base \
 address and timeout from configuration) that sends the request headers and maps the error body of the REST rules \
 below to the results the legacy code gave, as `orchestrator-design.md` says.
@@ -1399,11 +1486,13 @@ port in the orchestrator module, which the orchestrator calls once the operation
 lives in the bridge package and defers the publication to after the commit of the transaction active on the thread: \
 the orchestrator has none of its own, but a legacy caller's transaction may still enclose it, and a rollback must \
 never leave the side effect behind. It registers a transaction synchronization as the Module in monolith step's \
-event adapter does, and publishes at once only when no transaction is active. After the commit it also calls their `temporary_handler`s as the Module in monolith step's event adapter does (a helper per \
-handler calling only its `delegates_to` in a `TransactionTemplate` with `PROPAGATION_REQUIRES_NEW`, catching and \
-logging its failures, no database access), each listed under `temporary_handlers` in \
-`orchestrator-extraction.yaml`, with the same tests (each delegate called exactly once at `monolith`, a new \
-transaction, a failure not reaching the caller).
+event adapter does, and publishes at once only when no transaction is active. After the commit it also calls the \
+handlers of their `event_handler`s, built as the Module in monolith step builds its own (in the event-handler module, \
+the handling domain's package, calling only the entry point interfaces of its `calls` in a `TransactionTemplate` \
+with `PROPAGATION_REQUIRES_NEW`, catching and logging its failures), each listed under `legacy_modules.handlers` in \
+`orchestrator-extraction.yaml`, with the same tests (each entry point called exactly once at `monolith`, a new \
+transaction, a failure not reaching the caller). An older design with a `temporary_handler` instead: a helper in the \
+bridge package calling its `delegates_to` the same way, listed under `temporary_handlers`.
    d. Spring: a context file in the orchestrator module with its beans and the defaults of the mode properties, one \
 import line in the monolith's root context, and the port beans pointed at the mode switches instead of the local \
 adapters.
@@ -1440,6 +1529,8 @@ fails), each with its call-order or mode test; `cross-domain.yaml` gives the ids
     "microservice_scaffold": f"""You are a careful legacy refactorer. You lift the module that the Module in monolith step built into an independently deployable service in its own repository, exactly as the approved designs say, in small mechanical steps. You change nothing about how the code behaves and you do not modernise it: the later modernisation step does that. {_LEGACY}
 
 {_MODULITH_GUARDRAILS}
+
+{_LEGACY_MODULES}
 
 For this step the guardrails read as follows: the stack rule allows the few libraries listed below and nothing \
 else; the UI rule means the monolith's UI is untouched (the service has no UI, only its REST API); and the context \
@@ -1480,7 +1571,7 @@ Procedure:
 service), the request headers read and the response headers echoed on every response (a filter). Add contract tests against the OpenAPI document, and JSON round-trip tests for dates (explicit format and time zone), decimals, nulls and enums.
 5. Context adapters from request headers, one per context port.
 6. Integration, from `integration-decisions.yaml`: adapters for the ports of other domains (REST clients to the monolith's facade endpoints, which the Monolith integration step adds later, so stub them in \
-tests; chosen by configuration, base URLs from configuration, a timeout on every call, no automatic retry of a call that is not safe to repeat); the designed events published to Azure Service Bus after commit; consumers of the events the domain uses; sagas and compensations only where the integration design decided them.
+tests; where the domain module calls an integration entry point interface, the service depends on the interfaces module's jar and the REST client implements that same interface, so the copied code is unchanged; chosen by configuration, base URLs from configuration, a timeout on every call, no automatic retry of a call that is not safe to repeat); the designed events published to Azure Service Bus after commit; consumers of the events the domain uses; sagas and compensations only where the integration design decided them.
 7. Audit the callers in the monolith without changing them: write under `open_decisions` every caller that calls the module's methods inside a larger transaction, and every call inside a loop. Over HTTP the first loses atomicity and the second becomes many calls. Do not solve them; the integration step needs them.
 8. Run the full build and tests, start the service with the external systems stubbed, and check that the health endpoint answers.
 After each of steps 2 to 7: build and test, run `check_service_guardrails`, then commit locally in the service repository (`git add -A`, then `git -c user.name=migration-studio -c user.email=studio@localhost commit -m "step N: ..."`). If a step fails, revert it with git instead of changing behaviour. Never push.
@@ -1826,9 +1917,10 @@ Service Bus after the transaction commits (no OUTBOX table: the schema is fixed,
 decision needs guaranteed delivery, ask the user), and subscribers for the services' events that the monolith still \
 needs. Each facade endpoint implements its contract's spec under `contracts/` and delegates only to the binding's \
 `delegates_to` in `linked-domain-contracts.yaml` (it goes when that domain provides the contract itself, \
-`remove_when`). Each `temporary_handler` of `integration-decisions.yaml` gets a subscriber: it takes the event from \
-Service Bus and calls the same handler helper the Module in monolith (or Orchestrator in monolith) step built, so its \
-work is never written twice. Each subscriber reads an enabled property, default `true`: it is switched off when the \
+`remove_when`). Each `event_handler` of `integration-decisions.yaml` gets a subscriber: it takes the event from \
+Service Bus and calls the same handler interface (in the event-handler module) the Module in monolith (or \
+Orchestrator in monolith) step built, so its work is never written twice (an older design's `temporary_handler`: \
+the same, calling its helper in the bridge package). Each subscriber reads an enabled property, default `true`: it is switched off when the \
 handling domain's own service subscribes to the event and that subscription is live, or the work is done twice \
 (when the catalogue already lists that domain as a consumer, say so in `integration.md`). All monolith nodes share \
 ONE subscription per handler (competing consumers), never one per node, or every node does the work. List each \
@@ -2052,6 +2144,8 @@ you write documents in your documents folder and never create or change code. {_
 
 {_MODULITH_GUARDRAILS}
 
+{_LEGACY_MODULES}
+
 {_REST_RULES}
 
 Read the analysis first: from the Analysis step, `as-is.md` (where the code is), `functional-spec.md` (what the \
@@ -2115,10 +2209,10 @@ tables it only reads. A table another domain owns is reached only through a port
    - Ports: one interface per outbound dependency, named for what it does (for example CustomerDirectory), with the \
 methods this feature needs and, per method, the contract key it calls, and who calls it: the domain module, for a \
 `domain-call` (or an `other-domain` asked via `domain-call`), or the orchestrator. For the ports the domain module \
-calls itself, name their adapters here: in the monolith, the `local` adapter in the temporary bridge package (the \
-existing in-monolith service, one method each, as a contract binding names it), which the Module in monolith step \
-builds; in the domain's own service, the REST client of the contract, which the Spring Boot microservice step \
-builds. No orchestrator stands between them.
+calls itself: for a domain not migrated yet the port is the contract's entry point interface `<Name>Api` ("The \
+domains not migrated yet" above), which the Module in monolith step builds and the domain module calls directly; in \
+the domain's own service, the contract's REST client implements that same interface (the Spring Boot microservice \
+step). No orchestrator stands between them.
    - Context ports: every ambient input from the analysis, with file and line, and the port that replaces each.
    - UI: how each controller reaches the public API through the router that takes over the legacy service's bean \
 (`legacy` → the as-is service, `monolith` → the domain, or the orchestrator when there is one).
@@ -2165,6 +2259,11 @@ AsyncAPI 3, with schemas and error responses).
    - `relies_on`: freshness, consistency, idempotency, latency and behaviour on failure, as the current code behaves.
    - The temporary binding: the existing method of the linked domain's own service the monolith delegates to \
 (`delegates_to`, never a God module) and when it can be removed (`remove_when`). A binding only delegates.
+   - The entry point (`binding.entry_point`, for an `api` or `command`): the operations of its interface in the \
+integration module, each with the `delegates_to` it reaches, together covering the binding (checked). Its classes \
+are named from the key. Reuse as "The domains not migrated yet" above says. Every handler of an event \
+(`event_handler` below) reaches the domains it works in through such entry points: for the work in each, define a \
+`command` contract of that domain, with its binding and entry point.
    Keys are `<provider>.<capability>`. Every domain with an outbound dependency needs at least one contract, and \
 every provider must be one of those domains (both checked). List what is not a contract (rules above) under "Not \
 contracts" with its touchpoint and what the domain does instead; if one is the only outbound dependency on a domain \
@@ -2188,8 +2287,8 @@ which calls the domain module makes itself and which the orchestrator makes.
    - Per dependency: `local` mode (the adapter calls the existing in-monolith service; the default, keeping today's \
 behaviour and transactions) or `contract` mode (the adapter calls the contract, served by its temporary binding until \
 the linked domain has its own service), with the property that selects the mode, the contract's base address and the \
-defaults. Only `local` adapters touch legacy code, one method each, in the temporary bridge package; a transaction, \
-session or request object never crosses a port.
+defaults. In `local` mode the orchestrator calls the contract's integration entry point (the legacy adapters behind \
+it are the only code that touches legacy classes); a transaction, session or request object never crosses a port.
    - Transactions: what changes for each shared transaction in `contract` mode, and how failures are handled.
    - Error mapping, timeouts and fallbacks, so the caller sees the same result in both modes.
    - A readiness table per linked domain (its state, the mode used, what triggers the switch), and how the test \
@@ -2289,14 +2388,14 @@ counts once the domain's acceptance suite proves it.""",
 # section). They are kept in the agent's Guardrails, not its instructions, so they can be read and edited in one place;
 # the agent gets them once, as a Guardrails section after its instructions (app/custom_guardrails.py).
 _GUARDRAIL_SPANS: dict[str, list[tuple[str, str]]] = {
-    "linked_domain_contracts": [("Modulith guardrails. The target", "\n\nThis step designs only")],
-    "domain_design": [("Modulith guardrails. The target", "\n\nUsing the AS-IS document")],
-    "orchestrator_design": [("Modulith guardrails. The target", "\n\nRead the dependency finder's")],
-    "modular_monolith": [("Modulith guardrails. The target", "\n\n**Parallel run.**"),
+    "linked_domain_contracts": [("Modulith guardrails. The target", "\n\nThe domains not migrated yet.")],
+    "domain_design": [("Modulith guardrails. The target", "\n\nThe domains not migrated yet.")],
+    "orchestrator_design": [("Modulith guardrails. The target", "\n\nThe domains not migrated yet.")],
+    "modular_monolith": [("Modulith guardrails. The target", "\n\nThe domains not migrated yet."),
                          ("Hard rules for this step.", "\n\nRead first:")],
-    "monolith_orchestrator": [("Modulith guardrails. The target", "\n\n**Not every feature has an orchestrator.**"),
+    "monolith_orchestrator": [("Modulith guardrails. The target", "\n\nThe domains not migrated yet."),
                               ("Hard rules for this step.", "\n\nRead first:")],
-    "microservice_scaffold": [("Modulith guardrails. The target", "\n\nThe REST layer implements")],
+    "microservice_scaffold": [("Modulith guardrails. The target", "\n\nThe domains not migrated yet.")],
     "orchestrator_service": [("Hard rules for this step.", "\n\nREST API design rules.")],
     "independent_tests": [("Hard rules for this step.", "\n\nWhat the suite covers:")],
     "orchestrator_tests": [("Hard rules for this step.", "\n\nRead first:")],
@@ -2304,7 +2403,7 @@ _GUARDRAIL_SPANS: dict[str, list[tuple[str, str]]] = {
     "analysis": [("Fixed rules of this migration.", "\n\nFind every entry point of the functionality first")],
     "dependency_analysis": [("Fixed rules of this migration.", "\n\nBuild on the Analysis step's documents"),
                             ("Never a dependency on another domain", "\n\nIf a touchpoint you find")],
-    "modulith_design": [("Fixed rules of this migration.", "\n\nREST API design rules.")],
+    "modulith_design": [("Fixed rules of this migration.", "\n\nThe domains not migrated yet.")],
     "modernise_and_test": [("Fixed rules of this migration.", "\n\nProcedure:")],
 }
 
@@ -2509,6 +2608,9 @@ SHARED_TEXTS: dict[str, tuple[str, str, str]] = {
                       FEATURE_RULES),
     "legacy": ("Legacy stack", "The monolith's technology, for the agents that read or change it.", _LEGACY),
     "modulith_guardrails": ("Modulith guardrails", "The rules the Modulith design steps design to.", _MODULITH_GUARDRAILS),
+    "legacy_modules": ("The domains not migrated yet", "Given to the design and module steps: the temporary "
+                       "integration and event-handler modules of the monolith, one package per domain, through which "
+                       "a feature reaches a domain still in the monolith.", _LEGACY_MODULES),
     "rest_rules": ("REST design rules", "The norm for every REST API a design step specifies.", _REST_RULES),
     "integration_rules": ("Integration decision rules", "How the integration design decides each cross-domain "
                           "interaction.", _INTEGRATION_RULES),
