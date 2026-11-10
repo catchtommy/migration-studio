@@ -42,6 +42,10 @@ class StageDef:
                    publish_docs=bool(d.get("publish_docs")), checklist=tuple(d.get("checklist") or ()))
 
 
+# The approver's sign-off on functional-allocation.yaml, at the gate that reviews the dependency step.
+ALLOCATION_CHECK = "Architect: functional allocation reviewed (domain, orchestrator or event handler per functionality)"
+
+
 class Workflow:
     def __init__(self, stages: Iterable[StageDef]):
         self.stages = tuple(stages)
@@ -78,13 +82,16 @@ STANDARD = Workflow((
              "Trace JSP → Controller → Service → DAO → iBatis SQL and document the current behaviour."),
     StageDef("deep_dive", "Deep dive", "agent",
              "Business rules, edge cases, exception paths, cross-domain calls and a test scenario catalogue."),
-    StageDef("gate_analysis", "Approve analysis", "gate",
-             "Review the AS-IS documentation and deep dive.", ("as_is_doc", "deep_dive")),
-    # Modulith design: find what this feature depends on, define the contracts with those domains, then design the
-    # domain and the orchestrator on top of them.
+    # Find what this feature depends on and where each of its functionalities goes, approved (and amended) with the
+    # analysis, before the Modulith design defines the contracts and designs the domain and the orchestrator on it.
     StageDef("domain_dependencies", "Cross-domain dependency finder", "agent",
              "For this feature, find exactly which other domains it calls, reads, writes or is called by, down to "
-             "the service, DAO and table.", uses=("as_is_doc", "deep_dive")),
+             "the service, DAO and table, and where each of its functionalities goes (domain, orchestrator or "
+             "event handler).", uses=("as_is_doc", "deep_dive")),
+    StageDef("gate_analysis", "Approve analysis", "gate",
+             "Review the AS-IS documentation, the deep dive and the dependencies, with the scope decision and the "
+             "functional allocation (change a placement in its table before approving: the design follows it).",
+             ("as_is_doc", "deep_dive", "domain_dependencies")),
     StageDef("linked_domain_contracts", "Modulith design: Linked-domain contracts", "agent",
              "Define the contracts this feature needs from each linked domain (API, event or command), with the "
              "temporary monolith binding that provides each until the domain is migrated.",
@@ -99,10 +106,9 @@ STANDARD = Workflow((
     StageDef("integration_design", "Cross-domain integration design", "agent",
              "Decide how each cross-domain interaction is handled: API, event, saga, read model or deferred."),
     StageDef("gate_design", "Approve design", "gate",
-             "Review the dependencies, the linked-domain contracts, the domain and orchestrator designs and the "
-             "cross-domain integration decisions.",
-             ("domain_dependencies", "linked_domain_contracts", "domain_design", "orchestrator_design",
-              "integration_design")),
+             "Review the linked-domain contracts, the domain and orchestrator designs (each with its own OpenAPI) "
+             "and the cross-domain integration decisions.",
+             ("linked_domain_contracts", "domain_design", "orchestrator_design", "integration_design")),
     StageDef("modular_monolith", "Module in monolith", "agent",
              "Extract a Java 8 / Spring 3 / iBatis module shaped like the future microservice."),
     StageDef("monolith_orchestrator", "Orchestrator in monolith", "agent",
@@ -157,11 +163,12 @@ DOMAIN_FEATURES = Workflow((
 # they read and write are the standard workflow's. A domain switches to it by making it its default workflow.
 # Documents steps built from another step's documents: when a reviewer amends that step ("only the requested change"),
 # they follow it, if the change touched what they read (orchestrator/graph.py). Other steps stay as they are.
-FOLLOWS_DOCUMENTS = {"dependency_analysis": ("analysis",)}
+FOLLOWS_DOCUMENTS = {"dependency_analysis": ("analysis",), "domain_dependencies": ("as_is_doc", "deep_dive")}
 # The Lean workflow's analysis gate: one sign-off per audience of the analysis's documents.
-LEAN_ANALYSIS_CHECKLIST = ("Architect: as-is.md and the domain dependencies reviewed",
-                           "Test lead: test-scenarios.md reviewed",
-                           "Business owner or BA: functional-spec.md reviewed")
+LEAN_ANALYSIS_CHECKLIST_V1 = ("Architect: as-is.md and the domain dependencies reviewed",
+                              "Test lead: test-scenarios.md reviewed",
+                              "Business owner or BA: functional-spec.md reviewed")
+LEAN_ANALYSIS_CHECKLIST = (*LEAN_ANALYSIS_CHECKLIST_V1[:1], ALLOCATION_CHECK, *LEAN_ANALYSIS_CHECKLIST_V1[1:])
 
 LEAN = Workflow((
     StageDef("analysis", "Analysis", "agent",
@@ -174,20 +181,22 @@ LEAN = Workflow((
              uses=("analysis",)),
     StageDef("gate_analysis", "Approve analysis", "gate",
              "Review the AS-IS documentation, the functional specification, the test scenarios and the domain "
-             "dependencies, including the scope decision (domain-only or cross-domain).",
+             "dependencies, including the scope decision (domain-only or cross-domain) and the functional allocation "
+             "(change a placement in its table before approving: the design follows it).",
              ("analysis", "dependency_analysis"), checklist=LEAN_ANALYSIS_CHECKLIST),
     StageDef("modulith_design", "Modulith design", "agent",
              "Design the feature's domain inside the monolith, the contracts with the domains it depends on, the "
              "orchestrator and each cross-domain interaction, in one design, without changing the database or the UI.",
              uses=("analysis", "dependency_analysis")),
     StageDef("gate_design", "Approve design", "gate",
-             "Review the domain design, the linked-domain contracts, the orchestrator design and the cross-domain "
-             "integration decisions.", ("modulith_design",)),
+             "Review the domain design with its API (openapi.yaml), the linked-domain contracts, the orchestrator "
+             "design with its own API (orchestrator-openapi.yaml, when it has one) and the cross-domain integration "
+             "decisions, all following the approved functional allocation.", ("modulith_design",)),
     *(STANDARD.by_key[k] for k in ("modular_monolith", "monolith_orchestrator", "microservice_scaffold",
                                    "independent_tests")),
     # The domain service is approved with its acceptance suite before the orchestrator service is built on it.
     StageDef("gate_tests", "Approve domain service", "gate",
-             "Review the domain module (and the orchestrator module, for a cross-domain feature), the lifted domain "
+             "Review the domain module (and the orchestrator module, when the feature has one), the lifted domain "
              "service and its acceptance suite, with the domain's functional coverage.",
              ("modular_monolith", "monolith_orchestrator", "microservice_scaffold", "independent_tests")),
     STANDARD.by_key["orchestrator_service"],

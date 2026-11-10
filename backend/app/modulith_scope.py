@@ -89,8 +89,16 @@ def _designed_without_orchestrator(output_dir: Path) -> str | None:
     reason = str(data.get("no_orchestrator_reason") or "").strip()
     if not reason:
         return None
-    # Only for a feature that just publishes: one needing an answer from another domain keeps its orchestrator, even
-    # when the design was edited by hand at its gate (the design step's own check refuses it).
+    # With an approved functional allocation, it decides: no orchestrator when it places nothing on one (the domain
+    # calls the domains it may call directly and publishes its events itself), even when the design was edited by
+    # hand at its gate.
+    allocation = contracts_store.load_functional_allocation(output_dir)
+    if allocation is not None:
+        return None if contracts_store.has_orchestrator(allocation) else reason
+    if (output_dir / contracts_store.FUNCTIONAL_ALLOCATION_FILE).is_file():
+        return None  # present but invalid: never skip on a guess (the steps run, and their checks report it)
+    # Runs from before the allocation: only for a feature that just publishes; one needing an answer from another
+    # domain keeps its orchestrator.
     deps = output_dir / contracts_store.DOMAIN_DEPENDENCIES_FILE
     try:
         found = contracts_store.load_domain_dependencies(deps.read_text(encoding="utf-8"))["dependencies"] \
@@ -105,8 +113,9 @@ def _designed_without_orchestrator(output_dir: Path) -> str | None:
 def skip_note(stage: str, title: str, reason: str, decided_by: str = "the dependency step") -> str:
     if reason.startswith(NO_ORCHESTRATOR_DESIGNED):
         return (f"# {title}: skipped\n\nThe design has no orchestrator for this feature, so there is "
-                f"{NOTHING_TO[stage]}.\n\n**{reason}**\n\nIt only publishes to the other domains, which the domain "
-                "does itself. To build one, change the design (Modulith design) and re-run from there.\n")
+                f"{NOTHING_TO[stage]}.\n\n**{reason}**\n\nNothing is placed on an orchestrator: the domain publishes "
+                "its events, and calls any domain it may call directly, itself. To build one, change the functional "
+                "allocation (re-run from the dependency step) and the design.\n")
     if reason.startswith(NO_ORCHESTRATOR):
         return (f"# {title}: skipped\n\nThis feature has no orchestrator, so there is {NOTHING_TO[stage]}.\n\n"
                 f"**{reason}**\n\nTo build one, re-run the Orchestrator in monolith step once the orchestrator "

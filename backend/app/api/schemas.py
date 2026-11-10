@@ -262,6 +262,8 @@ class AgentOut(AgentIn):
     builtin: bool
     scope: str = "shared"  # shared (the library every project uses) | project (this project's own or copy)
     customised: bool = False  # a project copy of a shared agent
+    # Built-in agents against this release's default: current | older-default | edited; None for a custom agent
+    release_status: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -290,6 +292,7 @@ class DomainUpdate(BaseModel):
     description: str | None = None
     owned_tables: list[str] | None = None
     owned_packages: list[str] | None = None
+    direct_calls: list[str] | None = None  # other domains' keys this domain may call without an orchestrator
     context: str | None = None
     agent_inputs: dict[str, AgentInputsIn] | None = None  # keyed by agent
     default_workflow: str | None = None  # "" clears it
@@ -304,6 +307,7 @@ class DomainOut(ORM):
     default_workflow: str | None
     owned_tables: list[str] | None
     owned_packages: list[str] | None
+    direct_calls: list[str] | None = None
     # The migration workflows this domain uses (its new runs', then its earlier runs'): which agents to configure
     workflows: list[dict] = []
     created_at: datetime

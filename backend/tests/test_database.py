@@ -83,16 +83,17 @@ def test_lost_workspace_is_rebuilt_for_a_rejection(client, monkeypatch, code_ste
     ws = Path(run["workspace"])
     shutil.rmtree(ws)
 
-    decide(client, run_id, decision="reject", comments="Rebuild me", target_stage="domain_dependencies")
+    decide(client, run_id, decision="reject", comments="Rebuild me", target_stage="linked_domain_contracts")
     run = wait_for(client, run_id, {"awaiting_approval"})
     assert run["pending_gate"]["gate"] == "gate_design"
     log = git_ops.git(ws, "log", "--format=%s")
     assert "[restore]" in log
     # Code from the stages before the target was replayed; the re-run stages wrote theirs again.
     assert (ws / "src" / "as_is_doc.java").read_text() == "class as_is_doc { int attempt = 1; }\n"
-    assert (ws / "src" / "domain_dependencies.java").read_text() == "class domain_dependencies { int attempt = 2; }\n"
+    assert (ws / "src" / "domain_dependencies.java").read_text() == "class domain_dependencies { int attempt = 1; }\n"
+    assert (ws / "src" / "linked_domain_contracts.java").read_text() == "class linked_domain_contracts { int attempt = 2; }\n"
     from app.workspace import effective_documents
-    assert "Rebuild me" in effective_documents(run_id)[f".migration/loan/{run['operation']}/domain-dependencies.md"]
+    assert "Rebuild me" in effective_documents(run_id)[f".migration/loan/{run['operation']}/linked-domain-contracts.md"]
     assert not (ws / ".migration").exists()
 
 

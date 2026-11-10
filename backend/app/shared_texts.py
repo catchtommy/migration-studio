@@ -28,14 +28,21 @@ _TEMPLATED_MARKER = "_agents_use_shared_texts"  # existing agents' instructions 
 # safe to bring it up to the current default.
 PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "domain_architecture": {"55ff46a6b067591ace014c742a3a90e1da82930518191db577ae0158c9284802"},
-    "modulith_guardrails": {"cd47ed977ecce9c1a15de5b4984f282c89332c4f04a203af06941579dbf4bea5",
+    "fixed_rules": {"fd916663673f0074b1ba3b78907860fffece81057346bda10a0e355ad508b230"},
+    "modulith_guardrails": {"98533eba535742c1d413a3f5e0b6cbed0bd5d019ce44cace94da235656867e0b",
+        "9c589330f73628d3cee5c2a08cf187802fda8d6d96cc70de4d3c2278a9cfca4d",
+        "cd47ed977ecce9c1a15de5b4984f282c89332c4f04a203af06941579dbf4bea5",
         "4dac012e5480a51b232adb345911da8b44362a2253ceb6110722cefcf2c0d8db"},
     "rest_rules": {"b54eabfb50dbc3fa6638c9e39678892b4304ff9da150d634520049bb3444ba98"},
+    "allocation_rules": {"8ac449538e482f391e42546d5078290acbf4af943f3f8eb5dc407992d90081ef"},
     "integration_rules": {"4b3eb1458b581abd4d48dbc3c1c691ffce3bcba4268a97f844490928070abbd7"},
-    "module_extraction_format": {"d13a3bd1c9a23f1d750dcbe2d06559ee7358edf7e185752934bc9ef41b6b0373",
+    "module_extraction_format": {"302734b9df1f6ed370746e9dc648dcea6c4fae7020b2dfc2e2d58425a600a892",
+        "d13a3bd1c9a23f1d750dcbe2d06559ee7358edf7e185752934bc9ef41b6b0373",
         "96f46e906618b6ede29b8905653b0c6e33310d3c7e81e0a801c24101d4494e53"},
-    "orchestrator_extraction_format": {"ca56b228ce6695a9c1f552788aaea064cee99cc2d457722f887e18fbf2e9f9ea"},
-    "integration_routing_format": {"2b149e1029b57ace3b1ed643fb9094d21f34192aa65539015931b27c9342e7d5"},
+    "orchestrator_extraction_format": {"57bfa5746c7c6c22ee0617fec70c44f01c5668a5a6b114ca33db392a65962589",
+        "ca56b228ce6695a9c1f552788aaea064cee99cc2d457722f887e18fbf2e9f9ea"},
+    "integration_routing_format": {"4186750fe61523a03fcdd06ae6c19e5357c54d708a82d442ead18ef1f00e92d4",
+        "2b149e1029b57ace3b1ed643fb9094d21f34192aa65539015931b27c9342e7d5"},
 }
 
 

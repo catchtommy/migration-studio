@@ -433,8 +433,22 @@ export interface Agent extends AgentInput {
   builtin: boolean;
   scope: Library;
   customised: boolean; // this project's copy of a shared agent
+  release_status?: ReleaseStatus | null; // built-in agents against this release's default
   created_at: string;
   updated_at: string;
+}
+
+/** A built-in agent against this release's default (app/agent_store.py release_status). */
+export type ReleaseStatus = "current" | "older-default" | "edited";
+
+/** A built-in agent against this release's default, field by field (lists one item per line). */
+export interface AgentComparison {
+  key: string;
+  title: string;
+  status: ReleaseStatus;
+  scope: Library;
+  updated_at: string;
+  fields: { field: string; stored: string; default: string; same: boolean }[];
 }
 
 /** Fields read from agent.md text; only those the text sets are present. */
@@ -499,6 +513,7 @@ export interface Domain {
   default_workflow: string | null;
   owned_tables: string[] | null;
   owned_packages: string[] | null;
+  direct_calls?: string[] | null;
   workflows?: { key: string; name: string; agents: string[]; code_agents: string[]; when_needed?: string[]; monolith_agents?: string[]; repository_from?: Record<string, string>; hints?: Record<string, string> }[]; // the workflows this domain uses; when_needed: code agents skipped for domain-only features; hints: which repository an agent's is
   /** Names earlier features gave the domain's modules or services after themselves: renamed to the domain's on that
    * feature's branch (its step re-run) before it is merged. */
@@ -613,6 +628,7 @@ export interface DomainUpdate {
   default_workflow?: string;
   owned_tables?: string[];
   owned_packages?: string[];
+  direct_calls?: string[];
 }
 
 export type ContractStatus = "proposed" | "approved" | "provided-by-monolith" | "provided-by-service" | "deprecated";
@@ -936,6 +952,7 @@ export const api = {
     request<Agent>(`/agents?scope=${scope}`, json("POST", body)),
   updateAgent: (key: string, config: AgentInput, scope: Library = "shared") => request<Agent>(`/agents/${key}?scope=${scope}`, json("PUT", config)),
   resetAgent: (key: string) => request<Agent>(`/agents/${key}/reset`, { method: "POST" }),
+  compareAgent: (key: string) => request<AgentComparison>(`/agents/${key}/compare`),
   revertAgent: (key: string) => request<Agent>(`/agents/${key}/revert`, { method: "POST" }),
   agentUsage: (key: string, scope: Library = "shared") => request<AgentUsage>(`/agents/${key}/usage?scope=${scope}`),
   deleteAgent: (key: string, scope: Library = "shared") => request<void>(`/agents/${key}?scope=${scope}`, { method: "DELETE" }),

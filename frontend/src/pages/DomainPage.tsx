@@ -32,9 +32,15 @@ function Boundary({ domain }: { domain: Domain }) {
   const queryClient = useQueryClient();
   const [tables, setTables] = useState((domain.owned_tables ?? []).join("\n"));
   const [packages, setPackages] = useState((domain.owned_packages ?? []).join("\n"));
-  const dirty = lines(tables).join() !== (domain.owned_tables ?? []).join() || lines(packages).join() !== (domain.owned_packages ?? []).join();
+  const [direct, setDirect] = useState<string[]>(domain.direct_calls ?? []);
+  const { data: domains } = useDomains();
+  const others = (domains ?? []).filter((d) => d.key !== domain.key);
+  const dirty =
+    lines(tables).join() !== (domain.owned_tables ?? []).join() ||
+    lines(packages).join() !== (domain.owned_packages ?? []).join() ||
+    [...direct].sort().join() !== [...(domain.direct_calls ?? [])].sort().join();
   const save = useMutation({
-    mutationFn: () => api.updateDomain(domain.key, { owned_tables: lines(tables), owned_packages: lines(packages) }),
+    mutationFn: () => api.updateDomain(domain.key, { owned_tables: lines(tables), owned_packages: lines(packages), direct_calls: direct }),
     onSuccess: (d) => {
       queryClient.setQueryData(["domain", domain.key], d);
       queryClient.invalidateQueries({ queryKey: ["domains"] });
@@ -61,6 +67,30 @@ function Boundary({ domain }: { domain: Domain }) {
             <textarea rows={8} className={`${inputClass} font-mono text-xs`} value={packages} onChange={(e) => setPackages(e.target.value)} />
           </Field>
         </div>
+        <fieldset className="card space-y-2 p-4">
+          <legend className="px-1 text-sm font-medium">Direct calls</legend>
+          <p className="text-xs text-subtle">
+            Domains {domain.name} may call directly through their API, without an orchestrator, such as a subdomain or a utility API domain. Every other
+            domain is reached through the orchestrator. The dependency step allocates functionalities as direct calls only to these, and the studio checks
+            it.
+          </p>
+          {others.length === 0 ? (
+            <p className="text-xs italic text-subtle">No other domains yet.</p>
+          ) : (
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {others.map((d) => (
+                <label key={d.key} className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={direct.includes(d.key)}
+                    onChange={(e) => setDirect((v) => (e.target.checked ? [...v, d.key] : v.filter((k) => k !== d.key)))}
+                  />
+                  {d.name}
+                </label>
+              ))}
+            </div>
+          )}
+        </fieldset>
         <div className="flex items-center gap-3">
           <button type="submit" disabled={!dirty || save.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
             Save boundary

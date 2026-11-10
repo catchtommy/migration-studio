@@ -288,9 +288,11 @@ def _owner(text: str) -> str | None:
     return next((o for o in OWNERS if text.startswith(o) or text.replace("-", " ").startswith(o)), None)
 
 
-def allocation_problems(spec: str | None, design: str | None, scope: str | None = None) -> list[str]:
+def allocation_problems(spec: str | None, design: str | None, scope: str | None = None,
+                        approved: dict[str, set[str]] | None = None) -> list[str]:
     """Modulith design's allocation: every FR, BR and MSG of the specification listed exactly once, with an owner; no
-    orchestrator for a domain-only feature (its orchestrator steps are skipped: nothing would cover those ids)."""
+    orchestrator for a domain-only feature (its orchestrator steps are skipped: nothing would cover those ids); and
+    each id with the owner the approved functional allocation (`approved`: id -> allowed owners) gives it."""
     if spec is None or design is None:
         return []
     if _section(design, "functional allocation") is None:
@@ -319,6 +321,12 @@ def allocation_problems(spec: str | None, design: str | None, scope: str | None 
         problems.append(f"{DESIGN_FILE}: Functional allocation gives {', '.join(orchestrated[:20])} to the "
                         "orchestrator, but the feature is domain-only (no orchestrator is built): give them to the "
                         "domain")
+    moved = sorted(f"{i} ({_owner(e['owner'])}, approved: {' or '.join(sorted(approved[i]))})"
+                   for i, e in given.items() if approved and i in approved and _owner(e["owner"]) is not None
+                   and _owner(e["owner"]) not in approved[i])
+    if moved:
+        problems.append(f"{DESIGN_FILE}: Functional allocation differs from the approved functional-allocation.yaml "
+                        f"for {', '.join(moved[:20])}: follow the approved placement, or ask the user to change it")
     return problems
 
 

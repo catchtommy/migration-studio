@@ -88,6 +88,13 @@ def update_domain(key: str, body: DomainUpdate, db: Session = Depends(get_db)):
         values = getattr(body, field)
         if values is not None:
             setattr(domain, field, list(dict.fromkeys(v.strip() for v in values if v.strip())))
+    if body.direct_calls is not None:
+        wanted = list(dict.fromkeys(v.strip() for v in body.direct_calls if v.strip()))
+        known = set(db.scalars(select(Domain.key).where(Domain.project == domain.project)))
+        unknown = [d for d in wanted if d not in known or d == domain.key]
+        if unknown:
+            raise HTTPException(422, f"Direct calls: {', '.join(unknown)} is not another domain of this project")
+        domain.direct_calls = wanted
     if body.agent_inputs is not None:
         unknown = set(body.agent_inputs) - set(agent_store.titles())
         if unknown:

@@ -155,3 +155,25 @@ def test_a_stub_run_routes_a_feature_with_an_orchestrator_to_the_orchestrator_se
     declared = cs.parse_integration_routing(text)
     assert declared["target"] == "orchestrator-service" and declared["api"] == "orchestrator-openapi.yaml"
     assert declared["toggle"]["default"] == "legacy"
+
+
+def test_each_declared_temporary_subscriber_calls_its_handler_helper(tmp_path):
+    root, base = _monolith(tmp_path)
+    text = routing() + ("temporary_subscribers:\n  - {listener: NotesHandler, event: loan.loan-approved, "
+                        "enabled_property: migration.loan.notes.enabled}\n")
+    declared = cs.parse_integration_routing(text)
+    _switch(root, "/internal/api/v1/loan/orchestrator/loans")
+    assert any("No subscriber in this step's change calls the temporary handler NotesHandler" in p
+               for p in rg.integration(root, base, [], declared, "loan"))
+    subscriber = root / "web/src/main/java/com/acme/loan/legacybridge/LoanApprovedSubscriber.java"
+    subscriber.write_text("class LoanApprovedSubscriber { NotesHandler handler; void on(String id) { handler.handle(id); } }\n")
+    assert any("property migration.loan.notes.enabled is not read" in p
+               for p in rg.integration(root, base, [], declared, "loan"))
+    subscriber.write_text('class LoanApprovedSubscriber { @Value("${migration.loan.notes.enabled:true}") boolean on;\n'
+                          "  NotesHandler handler; void on(String id) { handler.handle(id); } }\n")
+    assert rg.integration(root, base, [], declared, "loan") == []
+    props = root / "web/src/main/resources/application.properties"
+    props.write_text(props.read_text() + "migration.loan.notes.enabled=false\n")
+    assert any("sets migration.loan.notes.enabled to false" in p for p in rg.integration(root, base, [], declared, "loan"))
+    with pytest.raises(cs.InvalidDocument, match="temporary subscriber 1"):
+        cs.parse_integration_routing(routing() + "temporary_subscribers:\n  - {listener: NotesHandler, event: e}\n")

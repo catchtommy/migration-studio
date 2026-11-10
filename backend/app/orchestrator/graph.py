@@ -420,7 +420,8 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             return {"amend": {**amend, "skip": [k for k in amend["skip"] if k != stage.key]},
                     "refresh": [k for k in state.get("refresh") or [] if k != stage.key]}
         if stage.key in (amend.get("check") or []):  # following an amendment: only if what it reads changed
-            source = next((k for k in FOLLOWS_DOCUMENTS.get(stage.key, ()) if k in workflow.by_key), None)
+            sources = [k for k in FOLLOWS_DOCUMENTS.get(stage.key, ()) if k in workflow.by_key]
+            source = amend.get("stage") if amend.get("stage") in sources else next(iter(sources), None)
             if source and not workspace.amendment_changed_inputs(run_id, source, stage.key):
                 emit(run_id, "log", f"{stage.title} kept as it is: the change to {workflow.by_key[source].title} "
                                     "didn't touch what it builds on", stage.key)

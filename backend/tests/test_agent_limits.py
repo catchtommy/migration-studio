@@ -257,7 +257,7 @@ def test_rerunning_an_approved_step_with_an_updated_agent_updates_its_documents(
         if self.stage == "deep_dive":
             seen["locked"] = sorted(ctx.locked_documents)
             seen["read"] = (ctx.output_dir / "as-is.md").read_text()
-        if self.stage == "domain_dependencies":  # after the analysis gate
+        if self.stage == "linked_domain_contracts":  # after the analysis gate
             seen["after_gate"] = sorted(ctx.locked_documents)
             (ctx.output_dir / "as-is.md").write_text("# AS-IS\nquietly rewritten\n")  # through a command, say
         return out
@@ -266,7 +266,7 @@ def test_rerunning_an_approved_step_with_an_updated_agent_updates_its_documents(
     r = start_run(client, {"domain": "customer", "operation": "rerun-approved"})  # its own feature: no clash
     assert r.status_code == 201, r.text
     run_id = r.json()["id"]
-    wait_for(client, run_id, {"awaiting_approval"})  # AS-IS and deep dive done, the analysis gate waits
+    wait_for(client, run_id, {"awaiting_approval"})  # AS-IS, deep dive and dependencies done, the analysis gate waits
     decide(client, run_id, decision="approve")
     wait_for(client, run_id, {"awaiting_approval"})
 

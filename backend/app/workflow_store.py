@@ -14,7 +14,8 @@ from sqlalchemy import func, select
 from app import agent_store, projects
 from app.db.models import GLOBAL, SHARED, Domain, Run, Setting, WorkflowDef
 from app.db.session import session_scope
-from app.orchestrator.stages import (BOUNDED_CONTEXTS, DOMAIN_FEATURES, LEAN, LEAN_ANALYSIS_CHECKLIST, STANDARD,
+from app.orchestrator.stages import (BOUNDED_CONTEXTS, DOMAIN_FEATURES, LEAN, LEAN_ANALYSIS_CHECKLIST,
+                                     LEAN_ANALYSIS_CHECKLIST_V1, STANDARD,
                                      StageDef, Workflow)
 
 STANDARD_KEY = "standard"
@@ -40,6 +41,10 @@ _LEAN_DESCRIPTION_V1 = ("The standard migration with fewer agents: analysis → 
                         "microservice → orchestrator service (when there is an orchestrator) → acceptance tests → "
                         "modernisation with service tests → integration, with four approval gates. Make it a "
                         "domain's default workflow to use it.")
+# The lean analysis gate's description before it reviewed the functional allocation: a gate still showing it gets the
+# current one, which tells the reviewer to change a placement before approving.
+_LEAN_GATE_ANALYSIS_V1 = ("Review the AS-IS documentation, the functional specification, the test scenarios and the "
+                          "domain dependencies, including the scope decision (domain-only or cross-domain).")
 # A lean step that does a standard step's work in the same repository gets that step's code settings when seeded.
 _LEAN_CODE_FROM = {"modernise_and_test": "modernise", "orchestrator_tests": "orchestrator_service"}
 # Built-in discovery workflows: (key, name, description, workflow), by scope.
@@ -68,10 +73,10 @@ def steps_of(workflow: Workflow) -> list[dict]:
              "reviews": list(s.reviews), "checklist": list(s.checklist)} for s in workflow.stages]
 
 
-STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → Modulith design (linked-domain contracts, domain, "
+STANDARD_DESCRIPTION = ("AS-IS → deep dive → dependency finder → approval → Modulith design (linked-domain contracts, domain, "
                         "orchestrator) → cross-domain integration → module → orchestrator (cross-domain features) → "
                         "microservice → orchestrator service (when there is an orchestrator) → acceptance tests → "
-                        "modernisation → service tests → integration, with four approval gates.")
+                        "modernisation → service tests → integration, with four approval gates; the dependencies and the functional allocation are approved with the analysis.")
 
 
 def _shape(steps: list[dict]) -> list[tuple]:
@@ -117,13 +122,18 @@ _STANDARD_V6 = [*_STANDARD_V5[:_STANDARD_V5.index(("agent", "microservice_scaffo
                 ("agent", "orchestrator_service", ()), ("agent", "independent_tests", ()),
                 ("gate", "gate_tests", ("modular_monolith", "monolith_orchestrator", "microservice_scaffold",
                                         "orchestrator_service", "independent_tests")), *_TAIL[4:]]
+# Seventh release: Service tests after Modernisation; the design gate reviewed the dependency finder too.
+_STANDARD_V7 = [*_STANDARD_V6[:_STANDARD_V6.index(("agent", "modernise", ())) + 1], ("agent", "service_tests", ()),
+                ("agent", "monolith_integration", ()),
+                ("gate", "gate_release", ("modernise", "service_tests", "monolith_integration"))]
 # The releases a stored standard workflow (shared, or a project's copy) is brought up from, by marker.
 _RELEASES = (("_standard_workflow_v2", _STANDARD_V1), ("_standard_workflow_v3", _STANDARD_V2),
              ("_standard_workflow_v4", _STANDARD_V3), ("_standard_workflow_v5", _STANDARD_V4),
-             ("_standard_workflow_v6", _STANDARD_V5), ("_standard_workflow_v7", _STANDARD_V6))
+             ("_standard_workflow_v6", _STANDARD_V5), ("_standard_workflow_v7", _STANDARD_V6),
+             ("_standard_workflow_v8", _STANDARD_V7))
 # Projects' copies are upgraded from these releases on (copies older than that were never upgraded, so stay as they are).
 _PROJECT_RELEASES = (("_standard_project_copies_v5", _STANDARD_V4), ("_standard_project_copies_v6", _STANDARD_V5),
-                     ("_standard_project_copies_v7", _STANDARD_V6))
+                     ("_standard_project_copies_v7", _STANDARD_V6), ("_standard_project_copies_v8", _STANDARD_V7))
 
 
 def _upgraded(steps: list[dict]) -> list[dict]:
@@ -254,6 +264,27 @@ def seed() -> None:
                              "microservice (its own order kept)",
                              "shared" if lean.project == SHARED else f"project {lean.project}'s")
             s.add(Setting(key="_lean_orchestrator_tests_custom", value=True))
+        if s.get(Setting, (GLOBAL, "_lean_allocation_checklist")) is None:
+            # The dependency step now writes the functional allocation, which the analysis gate approves: a gate still
+            # holding the built-in checklist gets its sign-off item. An edited checklist is left alone.
+            for lean in s.scalars(select(WorkflowDef).where(WorkflowDef.key == LEAN_KEY)):
+                steps = [{**st, "checklist": list(LEAN_ANALYSIS_CHECKLIST)}
+                         if st.get("kind") == "gate" and list(st.get("checklist") or []) == list(
+                             LEAN_ANALYSIS_CHECKLIST_V1) else st for st in lean.steps or []]
+                if steps != lean.steps:
+                    lean.steps = steps
+            s.add(Setting(key="_lean_allocation_checklist", value=True))
+        if s.get(Setting, (GLOBAL, "_lean_allocation_gate_description")) is None:
+            # The analysis gate's description now asks the reviewer to settle the functional allocation before
+            # approving: a gate still holding the built-in description gets it. An edited description is left alone.
+            current = LEAN.by_key["gate_analysis"].description
+            for lean in s.scalars(select(WorkflowDef).where(WorkflowDef.key == LEAN_KEY)):
+                steps = [{**st, "description": current}
+                         if st.get("kind") == "gate" and st.get("description") == _LEAN_GATE_ANALYSIS_V1 else st
+                         for st in lean.steps or []]
+                if steps != lean.steps:
+                    lean.steps = steps
+            s.add(Setting(key="_lean_allocation_gate_description", value=True))
 
 
 # The lean workflow's steps before the orchestrator got its own acceptance suite and gate.

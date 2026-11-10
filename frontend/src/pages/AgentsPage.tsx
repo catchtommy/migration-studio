@@ -15,6 +15,7 @@ import {
 } from "../lib/api";
 import { useAgents, useCanGlobally, useWorkflows } from "../lib/hooks";
 import { LibraryBadge, SaveTarget } from "../components/LibraryBadge";
+import { CompareWithRelease, ReleaseBadge } from "../components/AgentReleaseCompare";
 import { DangerDialog } from "../components/DangerDialog";
 import { slug } from "../lib/slug";
 import { Field, inputClass } from "../components/Field";
@@ -22,7 +23,7 @@ import { PageTitle } from "../components/PageTitle";
 import { ChipIcon } from "../components/icons";
 
 function toInput(agent: Agent): AgentInput {
-  const { key: _key, builtin: _builtin, created_at: _created, updated_at: _updated, scope: _scope, customised: _customised, ...rest } = agent;
+  const { key: _key, builtin: _builtin, created_at: _created, updated_at: _updated, scope: _scope, customised: _customised, release_status: _release, ...rest } = agent;
   return rest;
 }
 
@@ -134,7 +135,7 @@ function NewAgentForm({ onCancel }: { onCancel: () => void }) {
       const agent = await api.createAgent({ key, title: agentTitle, description: agentDescription }, library);
       if (!parsed) return agent;
       const { warnings: _w, ...fields } = parsed;
-      const { key: _k, builtin: _b, created_at: _c, updated_at: _u, scope: _s, customised: _cu, ...current } = agent;
+      const { key: _k, builtin: _b, created_at: _c, updated_at: _u, scope: _s, customised: _cu, release_status: _r, ...current } = agent;
       return api.updateAgent(agent.key, { ...current, ...fields, title: agentTitle, description: agentDescription }, library);
     },
     onSuccess: (agent) => {
@@ -321,6 +322,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
     queryClient.setQueryData<Agent[]>(["agents"], (prev) => prev?.map((a) => (a.key === saved.key ? saved : a)));
     queryClient.invalidateQueries({ queryKey: ["workflows"] }); // step titles come from agents
     queryClient.invalidateQueries({ queryKey: ["sharedTexts"] }); // which agents include each shared text
+    queryClient.invalidateQueries({ queryKey: ["agent-compare", saved.key] }); // its comparison with the release
   };
   const save = useMutation({
     mutationFn: () => api.updateAgent(config.key, { ...form, outputs: outputs.split("\n").map((o) => o.trim()).filter(Boolean) }, target),
@@ -329,6 +331,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
   const reset = useMutation({ mutationFn: () => api.resetAgent(config.key), onSuccess: onSaved });
   const revert = useMutation({ mutationFn: () => api.revertAgent(config.key), onSuccess: (a) => (onSaved(a), setTarget(null)) });
   const [deleting, setDeleting] = useState(false);
+  const [comparing, setComparing] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteAgent(config.key, config.scope),
     onSuccess: () => {
@@ -417,6 +420,12 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
           <code className="text-xs text-subtle">{config.key}</code>
           {!config.builtin && <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-subtle">Custom</span>}
           <LibraryBadge library={config.scope} customised={config.customised} />
+          <ReleaseBadge status={config.release_status} />
+          {config.builtin && (
+            <button type="button" className="text-xs font-medium text-accent hover:underline" aria-expanded={comparing} onClick={() => setComparing(!comparing)}>
+              {comparing ? "Hide comparison" : "Compare with release"}
+            </button>
+          )}
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <AgentFileButton
               label="Import agent.md"
@@ -485,6 +494,7 @@ function AgentEditor({ config, catalog }: { config: Agent; catalog: AgentCatalog
           </div>
         )}
       </header>
+      {comparing && <CompareWithRelease agentKey={config.key} onClose={() => setComparing(false)} />}
 
 
       {view === "md" ? (
@@ -979,6 +989,7 @@ export function AgentsPage() {
             >
               <span className="flex-1">{a.title}</span>
               <LibraryBadge library={a.scope} customised={a.customised} compact />
+              <ReleaseBadge status={a.release_status} compact />
               <ModeBadge mode={a.mode} />
             </NavLink>
           ))}

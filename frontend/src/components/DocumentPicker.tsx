@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ArtifactSummary } from "../lib/api";
+import { documentGuide } from "../lib/documentGuide";
 
 export type DocumentChoice = number | "all";
 
@@ -55,6 +56,7 @@ export function DocumentPicker({ docs, value, onChange }: { docs: ArtifactSummar
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label="Choose a document"
+        title={current ? documentGuide(current.path)?.what : undefined}
         onClick={() => setOpen(!open)}
         className="flex w-full items-center gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-left text-sm hover:border-accent/50"
       >
@@ -96,6 +98,7 @@ export function DocumentPicker({ docs, value, onChange }: { docs: ArtifactSummar
             {options.length === 0 && <li className="px-2 py-1.5 text-sm text-subtle">No document matches “{query}”</li>}
             {options.map((o, i) => {
               const selected = o.id === value || (o.id === "all" && !current);
+              const guide = o.path ? documentGuide(o.path) : undefined;
               return (
                 <li
                   key={o.id}
@@ -105,11 +108,13 @@ export function DocumentPicker({ docs, value, onChange }: { docs: ArtifactSummar
                   onMouseEnter={() => setActive(i)}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => pick(o.id)}
+                  title={guide ? `${guide.what}\n\nUsed: ${guide.usage}` : undefined}
                   className={`flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm ${i === active ? "bg-muted" : ""} ${selected ? "font-medium text-accent" : ""}`}
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">{o.name}</span>
                     {o.path && shortPath(o.path) !== o.name && <span className="block truncate text-xs text-subtle">{shortPath(o.path)}</span>}
+                    {guide && <span className="block truncate text-xs text-subtle">{guide.what}</span>}
                   </span>
                   {o.kind && <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-subtle">{KIND_LABELS[o.kind] ?? o.kind}</span>}
                 </li>

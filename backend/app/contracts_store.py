@@ -39,6 +39,16 @@ ORCHESTRATOR_EXTRACTION_FILE = "orchestrator-extraction.yaml"  # the Orchestrato
 ORCHESTRATOR_SERVICE_FILE = "orchestrator-service-extraction.yaml"  # the Orchestrator microservice step's declaration
 INTEGRATION_ROUTING_FILE = "integration-routing.yaml"  # the Monolith integration step's declaration of its toggle
 ROUTING_TARGETS = {"orchestrator-service": "orchestrator-openapi.yaml", "domain-service": "openapi.yaml"}
+DOMAIN_OPENAPI_FILE = "openapi.yaml"  # the domain's public API, written by the design
+ORCHESTRATOR_OPENAPI_FILE = "orchestrator-openapi.yaml"  # the orchestrator's API, written by the design when it has one
+# Where each functionality of the feature goes, decided by the dependency step and approved (and amended) by a
+# reviewer before the design: the design builds on it and never re-decides it.
+FUNCTIONAL_ALLOCATION_FILE = "functional-allocation.yaml"
+PLACEMENTS = ("domain", "domain-call", "orchestrator", "event-handler", "other-domain", "ui-unchanged")
+EVENT_TRIGGERS = ("domain", "orchestrator")  # where an event-handler's event is published from
+CALLERS = ("orchestrator", "domain-call")  # how this feature asks another domain (other-domain's `via`)
+# Placements done by this feature's own code (the domain module or the orchestrator): their owner is this domain.
+OWN_PLACEMENTS = ("domain", "domain-call", "orchestrator", "ui-unchanged")
 COORDINATES = re.compile(r"^[\w.\-]+:[\w.\-]+$")  # Maven groupId:artifactId
 DOMAIN_DESIGN_FILE = "domain-design.yaml"  # the domain design's declaration against the guardrails
 # Lists in domain-design.yaml that must stay empty unless the user approved an exception for that rule.
@@ -159,6 +169,398 @@ def load_domain_dependencies(text: str) -> dict:
                               "choose domain-only or list the dependency")
     return {"decision": decision, "dependencies": items, "shared_code": data.get("shared_code") or [],
             "god_modules": data.get("god_modules") or []}
+
+
+def parse_functional_allocation(text: str) -> dict:
+    """Where each functionality of one feature goes: the domain itself, a direct call from the domain to another
+    domain's API, the orchestrator, an event handler (with the event, where it is published from and what the handler
+    does), another domain (asked through the orchestrator or a direct call), or the unchanged UI."""
+    data = _load(text, FUNCTIONAL_ALLOCATION_FILE)
+    where = FUNCTIONAL_ALLOCATION_FILE
+    _require(data, ("feature", "domain"), where)
+    items = data.get("functionalities")
+    if not isinstance(items, list) or not items:
+        raise InvalidDocument(f"{where}: 'functionalities' must list every functionality of the feature")
+    seen: set[str] = set()
+    for i, item in enumerate(items, 1):
+        at = f"{where} functionality {i}"
+        if not isinstance(item, dict):
+            raise InvalidDocument(f"{at} must be a mapping")
+        _require(item, ("id", "name", "placement", "reason"), at)
+        item["id"] = str(item["id"])
+        at = f"{where} functionality {item['id']}"
+        if item["id"] in seen:
+            raise InvalidDocument(f"{at}: duplicate id")
+        seen.add(item["id"])
+        placement = item["placement"]
+        _one_of(placement, PLACEMENTS, at)
+        for field in ("requirements", "depends_on", "code_refs", "calls", "interactions"):
+            value = item.get(field)
+            if value is not None and (not isinstance(value, list) or not all(isinstance(v, str) for v in value)):
+                raise InvalidDocument(f"{at}: {field} must be a list")
+        if placement in OWN_PLACEMENTS and item.get("owner") not in (None, "", data["domain"]):
+            raise InvalidDocument(f"{at}: a {placement} functionality is this domain's own ({data['domain']}); owner "
+                                  f"{item['owner']} belongs to an event-handler or other-domain functionality")
+        if placement in ("event-handler", "other-domain"):
+            _require(item, ("owner",), at)
+            if item["owner"] == data["domain"] and placement == "other-domain":
+                raise InvalidDocument(f"{at}: other-domain names the OTHER domain that decides it as owner")
+        if placement == "domain-call" and not item.get("calls"):
+            raise InvalidDocument(f"{at}: a domain-call names the domains the domain module calls directly (calls)")
+        if item.get("calls") and placement not in CALLERS:
+            raise InvalidDocument(f"{at}: only a domain-call or orchestrator functionality calls other domains; a "
+                                  f"{placement} one involves none (or place it where the call is made)")
+        if placement == "other-domain":
+            _require(item, ("via",), at)
+            _one_of(item["via"], CALLERS, f"{at} via")
+        elif item.get("via"):
+            raise InvalidDocument(f"{at}: only an other-domain functionality has via")
+        if data["domain"] in (item.get("calls") or []):
+            raise InvalidDocument(f"{at}: calls lists other domains only, not {data['domain']} itself")
+        event = item.get("event")
+        if placement == "event-handler":
+            if not isinstance(event, dict):
+                raise InvalidDocument(f"{at}: an event-handler needs its event: name, triggered_from (domain or "
+                                      "orchestrator), publisher, when and handler (what the handler does)")
+            _require(event, ("name", "triggered_from", "publisher", "handler"), f"{at} event")
+            _one_of(event["triggered_from"], EVENT_TRIGGERS, f"{at} event triggered_from")
+            if event.get("delegates_to") is not None and not (
+                    isinstance(event["delegates_to"], list) and all(isinstance(d, str) for d in event["delegates_to"])):
+                raise InvalidDocument(f"{at} event: delegates_to must be a list of Class#method")
+            if event.get("no_temporary_handler") is not None:
+                if not str(event["no_temporary_handler"]).strip():
+                    raise InvalidDocument(f"{at} event: no_temporary_handler gives the reason (or remove it)")
+                if event.get("delegates_to"):
+                    raise InvalidDocument(f"{at} event: either delegates_to (a temporary handler calls them) or "
+                                          "no_temporary_handler (why there is none), not both")
+        elif event:
+            raise InvalidDocument(f"{at}: only an event-handler has an event; remove it, or place the functionality "
+                                  "on event-handler")
+        review = item.get("review")
+        if review is not None and not isinstance(review, dict):
+            raise InvalidDocument(f"{at}: review must be a mapping")
+    for item in items:
+        unknown = [d for d in item.get("depends_on") or [] if d not in seen]
+        if unknown:
+            raise InvalidDocument(f"{where} functionality {item['id']}: depends_on names {', '.join(unknown)}, which "
+                                  "is not a functionality here")
+    return {"feature": data["feature"], "domain": data["domain"], "functionalities": items}
+
+
+def allocation_owner(item: dict) -> str:
+    """The owner the design's "Functional allocation" table gives the ids of one functionality: the side that does
+    it (a direct call is made by the domain module), or for an event handler the side that triggers it (what this
+    feature must keep is that it publishes)."""
+    placement = item["placement"]
+    if placement == "event-handler":
+        return item["event"]["triggered_from"]
+    return {"domain-call": "domain", "other-domain": "other domain", "ui-unchanged": "ui unchanged"}.get(placement,
+                                                                                                         placement)
+
+
+def load_functional_allocation(output_dir: Path) -> dict | None:
+    """The run's functional allocation, or None when it has none or it is invalid (reported for that file)."""
+    f = output_dir / FUNCTIONAL_ALLOCATION_FILE
+    try:
+        return parse_functional_allocation(f.read_text(encoding="utf-8")) if f.is_file() else None
+    except InvalidDocument:
+        return None
+
+
+def has_orchestrator(allocation: dict) -> bool:
+    """Whether the allocation needs an orchestrator: a functionality placed on it, another domain asked through it,
+    or an event published from it."""
+    return any(i["placement"] == "orchestrator"
+               or (i["placement"] == "other-domain" and i["via"] == "orchestrator")
+               or (i["placement"] == "event-handler" and i["event"]["triggered_from"] == "orchestrator")
+               for i in allocation["functionalities"])
+
+
+def direct_calls(domain: str) -> list[str] | None:
+    """The other domains this domain may call directly (its Direct calls setting); None when the domain isn't known
+    in this project (nothing to check against)."""
+    try:
+        with session_scope() as s:
+            row = s.get(Domain, (projects.current(), domain))
+            return None if row is None else list(row.direct_calls or [])
+    except Exception:  # noqa: BLE001 - without the database there is no setting to check against
+        return None
+
+
+def _direct_targets(item: dict) -> list[str]:
+    """The domains a functionality calls directly from the domain module."""
+    if item["placement"] == "domain-call":
+        return list(item.get("calls") or [])
+    if item["placement"] == "other-domain" and item["via"] == "domain-call":
+        return [item["owner"]]
+    return []
+
+
+def _functional_allocation_problems(output_dir: Path, allocation: dict) -> list[str]:
+    """The allocation against the documents next to it and the domain's setting: domains it names are this one or
+    ones the feature is related to (domain-dependencies.yaml), and every outbound dependency is allocated; a direct
+    call only to a domain the Direct calls setting allows; no orchestrator for a domain-only feature; interactions
+    that exist; and, when the run has a functional specification, every requirement and rule allocated."""
+    from app import functional_spec as fs
+
+    where, problems = FUNCTIONAL_ALLOCATION_FILE, []
+    items, me = allocation["functionalities"], allocation["domain"]
+    deps_file = output_dir / DOMAIN_DEPENDENCIES_FILE
+    deps = None
+    if deps_file.is_file():
+        try:
+            deps = load_domain_dependencies(deps_file.read_text(encoding="utf-8"))
+        except InvalidDocument:
+            deps = None  # reported for that file itself
+    if deps is not None:
+        known = {me, *(d["domain"] for d in deps["dependencies"])}
+        for i in items:
+            named = [("owner", i.get("owner")), *(("calls", c) for c in i.get("calls") or [])]
+            if i["placement"] == "event-handler":
+                named.append(("event publisher", i["event"]["publisher"]))
+            for label, d in named:
+                if d and d not in known:
+                    problems.append(f"{where} functionality {i['id']}: {label} {d} is neither this domain nor a "
+                                    f"domain {DOMAIN_DEPENDENCIES_FILE} lists; add the dependency or correct it")
+        covered = {d for i in items for d in [*(i.get("calls") or []), i.get("owner"),
+                                              (i.get("event") or {}).get("publisher")] if d}
+        outbound = sorted({d["domain"] for d in deps["dependencies"] if d.get("direction", "outbound") == "outbound"})
+        missing = [d for d in outbound if d not in covered]
+        if missing:
+            problems.append(f"{where}: no functionality covers the outbound dependency on {', '.join(missing)}: name "
+                            "it in the calls of the functionality that asks it, or as the owner of the event handler "
+                            "or other-domain functionality it does")
+        if deps["decision"]["scope"] == "domain-only" and has_orchestrator(allocation):
+            problems.append(f"{where}: the feature is domain-only (no orchestrator is built), but functionalities "
+                            "are placed on the orchestrator or use it; give them to the domain")
+        calling = [i["id"] for i in items if i.get("calls") or i["placement"] == "other-domain"]
+        if deps["decision"]["scope"] == "domain-only" and calling:
+            problems.append(f"{where}: the feature is domain-only, but {', '.join(calling)} ask other domains; "
+                            f"correct them, or the scope decision in {DOMAIN_DEPENDENCIES_FILE}")
+    allowed = direct_calls(me)
+    if allowed is not None:
+        for i in items:
+            barred = [d for d in _direct_targets(i) if d not in allowed]
+            if barred:
+                problems.append(f"{where} functionality {i['id']}: {me} may not call {', '.join(barred)} directly "
+                                f"(the domain's Direct calls setting allows {', '.join(allowed) or 'none'}): go "
+                                "through the orchestrator, or ask the user to allow the direct call on the domain")
+    # At `monolith` the event is published in-process only (Service Bus comes with the Monolith integration step), so
+    # whatever domain handles it, only a temporary handler does the work there: it calls the handling domain's
+    # existing service through its bean, which that domain's own router sends on once it is migrated.
+    unhandled = [i["id"] for i in items if i["placement"] == "event-handler" and i.get("owner") != me
+                 and not i["event"].get("delegates_to") and not i["event"].get("no_temporary_handler")]
+    if unhandled:
+        problems.append(f"{where}: {', '.join(unhandled)} name no delegates_to: at monolith the event is published "
+                        "in-process only, so without a temporary handler nothing does the work (even when the handling "
+                        "domain is migrated, its service listens on Service Bus). Name the handling domain's existing "
+                        "service method(s) that do it today, or, only when the user agrees, no_temporary_handler with "
+                        "the reason")
+    published = [i["id"] for i in items if i["placement"] == "event-handler"
+                 and i["event"]["triggered_from"] == "orchestrator"]
+    if published and not any(i["placement"] == "orchestrator" for i in items):
+        problems.append(f"{where}: {', '.join(published)} publish their event from the orchestrator, but no "
+                        "functionality is placed on it; publish from the domain, or place the operation whose "
+                        "completion triggers it on the orchestrator")
+    cross = output_dir / CROSS_DOMAIN_FILE
+    if cross.is_file():
+        try:
+            interactions = parse_cross_domain(cross.read_text(encoding="utf-8"))
+        except InvalidDocument:
+            interactions = None
+        if interactions is not None and (deps is None or deps["decision"]["scope"] == "cross-domain"):
+            # (a domain-only feature has no outbound interaction to link: one listed is the dependency step's own
+            # inconsistency, reported by the scope decision)
+            ids = {str(x["id"]) for x in interactions}
+            for i in items:
+                unknown = [x for x in i.get("interactions") or [] if x not in ids]
+                if unknown:
+                    problems.append(f"{where} functionality {i['id']}: interactions {', '.join(unknown)} are not in "
+                                    f"{CROSS_DOMAIN_FILE}")
+                # The design decides each linked interaction's pattern from the placement: a placement that involves
+                # another domain names the interactions it covers.
+                if i["placement"] not in ("domain", "ui-unchanged") and not i.get("interactions"):
+                    problems.append(f"{where} functionality {i['id']} ({i['placement']}): name the interactions of "
+                                    f"{CROSS_DOMAIN_FILE} it covers (interactions)")
+                elif i["placement"] in ("domain", "ui-unchanged"):
+                    outbound = [x for x in i.get("interactions") or [] if any(
+                        str(c["id"]) == x and c.get("direction", "outbound") == "outbound" for c in interactions)]
+                    if outbound:
+                        problems.append(f"{where} functionality {i['id']}: a {i['placement']} functionality involves "
+                                        f"no other domain, but links the outbound interaction(s) {', '.join(outbound)}")
+            linked = {x for i in items for x in i.get("interactions") or []}
+            unlinked = sorted(str(x["id"]) for x in interactions
+                              if x.get("direction", "outbound") == "outbound" and str(x["id"]) not in linked)
+            if unlinked:
+                problems.append(f"{where}: the outbound interaction(s) {', '.join(unlinked)} of {CROSS_DOMAIN_FILE} "
+                                "are linked by no functionality: add each to the interactions of the functionality "
+                                "that covers it")
+    spec = output_dir / fs.SPEC_FILE
+    if spec.is_file():
+        defined = fs.spec_ids(spec.read_text(encoding="utf-8"))
+        wanted = [i for k in ("FR", "BR") for i in defined[k]]
+        given = {r for i in items for r in i.get("requirements") or []}
+        missing = [i for i in wanted if i not in given]
+        if missing:
+            problems.append(f"{where}: {', '.join(missing[:30])} of {fs.SPEC_FILE} not allocated: add each to the "
+                            "requirements of the functionality that implements it")
+        everything = {i for ids in defined.values() for i in ids}
+        unknown = sorted(r for r in given if r not in everything)
+        if unknown:
+            problems.append(f"{where}: requirements {', '.join(unknown[:20])} are not defined in {fs.SPEC_FILE}")
+    return problems
+
+
+# The integration patterns each placement allows for the interactions its functionality links (Lean Modulith design).
+SYNC_PATTERNS = ("sync-api", "read-model", "reference-copy", "deferred")
+PATTERNS_BY_PLACEMENT = {"event-handler": ("event",), "orchestrator": (*SYNC_PATTERNS, "saga"),
+                         "domain-call": SYNC_PATTERNS}
+
+
+def _allowed_patterns(item: dict) -> tuple[str, ...]:
+    placement = item["placement"]
+    if placement == "other-domain":
+        placement = item["via"]
+    return PATTERNS_BY_PLACEMENT.get(placement, ())
+
+
+def allocation_decision_problems(output_dir: Path) -> list[str]:
+    """The Lean design's integration decisions against the approved functional allocation: every interaction a
+    functionality links has a decision whose pattern its placement allows and whose target it calls or is owned by; a
+    domain or UI functionality links no outbound interaction; an outbound event decision comes from an event-handler
+    functionality. Empty when either file is absent or invalid (reported for that file)."""
+    allocation = load_functional_allocation(output_dir)
+    f = output_dir / DECISIONS_FILE
+    if allocation is None or not f.is_file():
+        return []
+    try:
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return []
+    decisions = [d for d in (data or {}).get("decisions") or [] if isinstance(d, dict)] if isinstance(data, dict) else []
+    directions: dict[str, str] = {}
+    cross = output_dir / CROSS_DOMAIN_FILE
+    if cross.is_file():
+        try:
+            directions = {str(x["id"]): x.get("direction", "outbound")
+                          for x in parse_cross_domain(cross.read_text(encoding="utf-8"))}
+        except InvalidDocument:
+            pass
+    by_interaction: dict[str, list[dict]] = {}
+    for d in decisions:
+        by_interaction.setdefault(str(d.get("interaction")), []).append(d)
+    where, problems = f"{DECISIONS_FILE} against {FUNCTIONAL_ALLOCATION_FILE}", []
+    from_handlers: set[str] = set()
+    for item in allocation["functionalities"]:
+        linked = [str(x) for x in item.get("interactions") or []]
+        fid, placement = item["id"], item["placement"]
+        if placement in ("domain", "ui-unchanged"):
+            outbound = [x for x in linked if directions.get(x, "outbound") == "outbound"]
+            if outbound:
+                problems.append(f"{where}: {fid} is placed on {placement}, which involves no other domain, but links "
+                                f"the outbound interaction(s) {', '.join(outbound)}: the allocation and the "
+                                "interactions disagree; ask the user")
+            continue
+        if placement == "event-handler":
+            from_handlers.update(linked)
+        allowed = _allowed_patterns(item)
+        targets = {*(item.get("calls") or []), *([item["owner"]] if item.get("owner") else [])}
+        for x in linked:
+            found = by_interaction.get(x)
+            if not found:
+                problems.append(f"{where}: {fid} ({placement}) links {x}, which has no decision")
+                continue
+            for d in found:
+                if d.get("pattern") not in allowed:
+                    problems.append(f"{where}: {x} is decided as {d.get('pattern')}, but {fid} is placed on "
+                                    f"{placement}{' via ' + item['via'] if placement == 'other-domain' else ''}, which "
+                                    f"allows {', '.join(allowed)}; follow the approved allocation")
+                if targets and d.get("target") not in targets:
+                    problems.append(f"{where}: {x} targets {d.get('target')}, but {fid} calls or is owned by "
+                                    f"{', '.join(sorted(targets))}")
+                if placement == "event-handler" and d.get("pattern") == "event":
+                    # The handling domain is still in the monolith exactly when the allocation names the methods
+                    # that do the work today: then the monolith needs a temporary handler that calls them.
+                    want = sorted(item["event"].get("delegates_to") or [])
+                    handler = d.get("temporary_handler") if isinstance(d.get("temporary_handler"), dict) else None
+                    have = sorted((handler or {}).get("delegates_to") or [])
+                    if want and handler is None:
+                        problems.append(f"{where}: {x} needs a temporary_handler: {fid}'s event names delegates_to "
+                                        f"({', '.join(want)}), so its handling domain is still in the monolith")
+                    elif handler is not None and not want:
+                        problems.append(f"{where}: {x} has a temporary_handler, but {fid}'s event names no "
+                                        "delegates_to (its handling domain handles the event itself)")
+                    elif handler is not None and have != want:
+                        problems.append(f"{where}: {x}'s temporary_handler delegates to {', '.join(have) or 'nothing'}, "
+                                        f"but {fid}'s event says {', '.join(want)}")
+    stray = sorted({str(d.get("interaction")) for d in decisions if d.get("pattern") == "event"
+                    and d.get("direction", "outbound") == "outbound" and str(d.get("interaction")) not in from_handlers})
+    if stray:
+        problems.append(f"{where}: {', '.join(stray)} decided as events, but no event-handler functionality links them; "
+                        "a side effect is an event only when the allocation places it on an event handler")
+    return problems
+
+
+def approved_owners(output_dir: Path) -> dict[str, set[str]]:
+    """Requirement id -> the owners the approved functional allocation allows for it in the design's table."""
+    allocation = load_functional_allocation(output_dir)
+    out: dict[str, set[str]] = {}
+    for item in (allocation or {}).get("functionalities") or []:
+        for r in item.get("requirements") or []:
+            owner = allocation_owner(item)
+            if item["placement"] == "other-domain" and r.startswith("MSG-"):
+                # Another domain decides the rule; the message this feature shows for its answer is mapped by the
+                # side that asks it (via), and tested there.
+                owner = "orchestrator" if item["via"] == "orchestrator" else "domain"
+            out.setdefault(r, set()).add(owner)
+    return out
+
+
+def orchestrator_api_problems(output_dir: Path) -> list[str]:
+    """The design's two APIs: when the design has an orchestrator, its own `orchestrator-openapi.yaml`, under
+    /internal/api/v1/<domain>/orchestrator/; the domain's `openapi.yaml` never holds orchestrator paths."""
+    f = output_dir / DOMAIN_DESIGN_FILE
+    try:
+        design = parse_domain_design(f.read_text(encoding="utf-8")) if f.is_file() else None
+    except InvalidDocument:
+        return []  # reported for that file itself
+    if design is None:
+        return []
+    prefix = f"/internal/api/v1/{design['domain']}/orchestrator"
+    problems = []
+    domain_api = _openapi_paths(output_dir / DOMAIN_OPENAPI_FILE)
+    mixed = [p for p in domain_api or [] if p.startswith(prefix)]
+    if mixed:
+        problems.append(f"{DOMAIN_OPENAPI_FILE}: {', '.join(mixed[:5])} are orchestrator operations; they belong in "
+                        f"{ORCHESTRATOR_OPENAPI_FILE}, the domain's API holds only the domain's own")
+    if not isinstance(design.get("orchestrator_module"), dict):
+        return problems
+    orch = output_dir / ORCHESTRATOR_OPENAPI_FILE
+    paths = _openapi_paths(orch)
+    if paths is None:
+        problems.append(f"{ORCHESTRATOR_OPENAPI_FILE}: the design has an orchestrator, so write its API as an OpenAPI "
+                        f"3.1 document next to {DOMAIN_OPENAPI_FILE}: one operation per orchestrator operation, under "
+                        f"{prefix}/")
+    elif not paths:
+        problems.append(f"{ORCHESTRATOR_OPENAPI_FILE}: no paths; give one operation per orchestrator operation")
+    else:
+        outside = [p for p in paths if not p.startswith(prefix + "/")]
+        if outside:
+            problems.append(f"{ORCHESTRATOR_OPENAPI_FILE}: {', '.join(outside[:5])} must be under {prefix}/")
+    return problems
+
+
+def _openapi_paths(f: Path) -> list[str] | None:
+    """An OpenAPI document's paths; None when the file is absent or isn't an OpenAPI document."""
+    if not f.is_file():
+        return None
+    try:
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict) or "openapi" not in data:
+        return None
+    return [str(p) for p in (data.get("paths") or {})] if isinstance(data.get("paths") or {}, dict) else []
 
 
 def parse_linked_domain_contracts(text: str) -> list[dict]:
@@ -283,6 +685,7 @@ def parse_module_extraction(text: str) -> dict:
         if data.get(field) is not None and not isinstance(data[field], list):  # domain's module, or reused from it
             raise InvalidDocument(f"{where}: {field} must be a list")
     _feature_packages(data, where)
+    data["temporary_handlers"] = _temporary_handlers(data.get("temporary_handlers"), where)
     data["toggle_branches"] = _toggle_branches(data.get("toggle_branches"), where)
     data["routing"] = _routing_section(data.get("routing"), where, bool(data["toggle_branches"]))
     bridge = str(data["bridge_dir"]).strip("/")
@@ -424,8 +827,63 @@ def parse_orchestrator_extraction(text: str) -> dict:
             raise InvalidDocument(f"{where} port {i}: the mode defaults to local, which keeps today's behaviour")
     if data.get("outside_changes") is not None and not isinstance(data["outside_changes"], list):
         raise InvalidDocument(f"{where}: outside_changes must be a list")
+    data["temporary_handlers"] = _temporary_handlers(data.get("temporary_handlers"), where)
     data["toggle_branches"] = _toggle_branches(data.get("toggle_branches"), where)
     return data
+
+
+def _temporary_handlers(value, where: str) -> list[dict]:
+    """The temporary event handlers a build step declares it built in the bridge package: [{listener, delegates_to}]
+    (the guardrails compare them with integration-decisions.yaml and with the code)."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise InvalidDocument(f"{where}: temporary_handlers must be a list")
+    seen = set()
+    for i, h in enumerate(value, 1):
+        at = f"{where} temporary handler {i}"
+        if not isinstance(h, dict):
+            raise InvalidDocument(f"{at} must be a mapping")
+        _require(h, ("listener", "delegates_to"), at)
+        if not re.match(r"^[A-Za-z_]\w*$", str(h["listener"])):
+            raise InvalidDocument(f"{at}: listener is the helper's class name (no package)")
+        if not isinstance(h["delegates_to"], list) or not h["delegates_to"] or not all(
+                isinstance(m, str) and re.match(r"^[\w.]+#\w+$", m) for m in h["delegates_to"]):
+            raise InvalidDocument(f"{at}: delegates_to lists the handling domain's existing package.Class#method(s)")
+        if h["listener"] in seen:
+            raise InvalidDocument(f"{at}: duplicate listener {h['listener']}")
+        seen.add(h["listener"])
+    return value
+
+
+def expected_temporary_handlers(output_dir: Path, side: str) -> list[dict] | None:
+    """The temporary handlers of integration-decisions.yaml that the step building `side` (domain: Module in monolith;
+    orchestrator: Orchestrator in monolith) builds: those on events the functional allocation publishes from that side
+    (`triggered_from`). Without an allocation (the standard workflow) every handler is the domain module's. None when
+    the decisions are absent or unreadable (nothing to compare with)."""
+    f = output_dir / DECISIONS_FILE
+    if not f.is_file():
+        return None
+    try:
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    sides: dict[str, str] = {}
+    for item in (load_functional_allocation(output_dir) or {}).get("functionalities") or []:
+        if item["placement"] == "event-handler":
+            for x in item.get("interactions") or []:
+                sides[str(x)] = item["event"]["triggered_from"]
+    out = []
+    for d in data.get("decisions") or []:
+        h = d.get("temporary_handler") if isinstance(d, dict) else None
+        if d.get("pattern") != "event" or not isinstance(h, dict) or not h.get("listener"):
+            continue
+        if sides.get(str(d.get("interaction")), "domain") == side:
+            out.append({"listener": str(h["listener"]), "delegates_to": [str(m) for m in h.get("delegates_to") or []],
+                        "interaction": str(d.get("interaction"))})
+    return out
 
 
 def _orchestrator_extraction_problems(output_dir: Path, declaration: dict) -> list[str]:
@@ -567,6 +1025,14 @@ def parse_integration_routing(text: str) -> dict:
         if not isinstance(op, dict):
             raise InvalidDocument(f"{where} operation {i} must be a mapping")
         _require(op, ("operation_id", "monolith", "client"), f"{where} operation {i}")
+    subs = data.get("temporary_subscribers")
+    if subs is not None:
+        if not isinstance(subs, list):
+            raise InvalidDocument(f"{where}: temporary_subscribers must be a list")
+        for i, sub in enumerate(subs, 1):
+            if not isinstance(sub, dict):
+                raise InvalidDocument(f"{where} temporary subscriber {i} must be a mapping")
+            _require(sub, ("listener", "event", "enabled_property"), f"{where} temporary subscriber {i}")
     return data
 
 
@@ -625,6 +1091,44 @@ def _integration_routing_problems(output_dir: Path, declaration: dict) -> list[s
     declared = {str(op["operation_id"]) for op in declaration["operations"]}
     problems += [f"{where}: operation {i} of {api} is not routed" for i in sorted(ids - declared)]
     problems += [f"{where}: operation {i} is not in {api}" for i in sorted(declared - ids)]
+    return problems + _temporary_subscriber_problems(output_dir, declaration)
+
+
+def expected_temporary_subscribers(output_dir: Path) -> list[dict] | None:
+    """The temporary handlers of integration-decisions.yaml: once the feature runs in its service, the monolith takes
+    each one's event from Service Bus and calls it (the Monolith integration step). None when the decisions are
+    missing or unreadable."""
+    f = output_dir / DECISIONS_FILE
+    if not f.is_file():
+        return None
+    try:
+        data = yaml.safe_load(f.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return None
+    decisions = (data.get("decisions") or []) if isinstance(data, dict) else []
+    out = []
+    for d in decisions:
+        h = d.get("temporary_handler") if isinstance(d, dict) else None
+        if isinstance(h, dict) and d.get("pattern") == "event" and h.get("listener"):
+            out.append({"listener": str(h["listener"]), "event": str(d.get("contract") or ""),
+                        "owner": str(d.get("target"))})
+    return out
+
+
+def _temporary_subscriber_problems(output_dir: Path, declaration: dict) -> list[str]:
+    """Every temporary handler gets a monolith subscriber (with an enabled property, switched off when the handling
+    domain's own subscription goes live: the handling domain's agents are told, catalogue_brief), and no other."""
+    expected = expected_temporary_subscribers(output_dir)
+    if expected is None:
+        return []
+    where = INTEGRATION_ROUTING_FILE
+    declared = {str(x["listener"]) for x in declaration.get("temporary_subscribers") or []}
+    problems = [f"{where}: add {e['listener']} to temporary_subscribers: once the feature runs in its service, the "
+                f"event {e['event']} no longer reaches it in-process, so only a monolith subscriber does {e['owner']}'s "
+                "work until its own subscription is live" for e in expected if e["listener"] not in declared]
+    known = {e["listener"] for e in expected}
+    problems += [f"{where}: temporary subscriber {n} is no temporary_handler of {DECISIONS_FILE}"
+                 for n in sorted(declared - known)]
     return problems
 
 
@@ -713,6 +1217,17 @@ def parse_decisions(text: str, known: frozenset[str] | set[str] = frozenset()) -
                 and not _exists(d["contract"]):
             raise InvalidDocument(f"{where}: contract {d['contract']} is neither listed under contracts, nor a "
                                   "linked-domain contract, nor in the catalogue")
+        handler = d.get("temporary_handler")
+        if handler is not None:
+            if d["pattern"] != "event":
+                raise InvalidDocument(f"{where}: only an event decision has a temporary_handler")
+            if not isinstance(handler, dict):
+                raise InvalidDocument(f"{where}: temporary_handler must be a mapping")
+            _require(handler, ("listener", "delegates_to", "remove_when"), f"{where} temporary_handler")
+            if not isinstance(handler["delegates_to"], list) or not all(
+                    isinstance(m, str) and "#" in m for m in handler["delegates_to"]):
+                raise InvalidDocument(f"{where} temporary_handler: delegates_to lists the handling domain's existing "
+                                      "Class#method(s)")
     return {"decisions": decisions, "contracts": contracts}
 
 
@@ -736,6 +1251,7 @@ def validate_outputs(output_dir: Path, only: set[str] | None = None) -> list[str
 def _validated(output_dir: Path, linked: list[dict]):
     """(file name, its problems) for each structured file present, in the order they depend on each other."""
     for name, parse in ((CROSS_DOMAIN_FILE, parse_cross_domain), (DOMAIN_DEPENDENCIES_FILE, parse_domain_dependencies),
+                        (FUNCTIONAL_ALLOCATION_FILE, parse_functional_allocation),
                         (LINKED_CONTRACTS_FILE, parse_linked_domain_contracts),
                         (DOMAIN_DESIGN_FILE, parse_domain_design),
                         (MODULE_EXTRACTION_FILE, parse_module_extraction),
@@ -758,6 +1274,8 @@ def _validated(output_dir: Path, linked: list[dict]):
             problems += _linked_contracts_problems(output_dir, parsed)
             problems += [f"{LINKED_CONTRACTS_FILE}: spec file {c['spec']} for contract {c['key']} does not exist"
                          for c in parsed if c.get("spec") and not (output_dir / c["spec"]).is_file()]
+        if name == FUNCTIONAL_ALLOCATION_FILE:
+            problems += _functional_allocation_problems(output_dir, parsed)
         if name == DOMAIN_DESIGN_FILE:
             problems += _domain_design_problems(output_dir, parsed)
         if name == MODULE_EXTRACTION_FILE:
@@ -783,6 +1301,34 @@ def _latest_artifact(s, run_id: str, stages: list[str], name: str) -> Artifact |
     for a in rows:
         latest_attempt.setdefault(a.stage, a.attempt)
     return next((a for a in rows if a.name == name and a.attempt == latest_attempt[a.stage]), None)
+
+
+def check_functional_allocation(run_id: str, reviewed_stages: list[str]) -> None:
+    """Before a gate is approved: the functional allocation of the steps it reviews, as a reviewer may have edited it,
+    is valid (InvalidDocument otherwise). Nothing to check when those steps wrote none."""
+    with session_scope() as s:
+        artifact = _latest_artifact(s, run_id, reviewed_stages, FUNCTIONAL_ALLOCATION_FILE)
+        content = None if artifact is None else artifact.content or ""
+        folder = None if artifact is None else str(PurePosixPath(artifact.path).parent)
+    if content is None:
+        return
+    allocation = parse_functional_allocation(content)
+    # The same checks the dependency step had to pass, against the run's documents as they are now (a reviewer may
+    # have changed a placement): the design must be able to follow what is approved.
+    import tempfile
+
+    from app import workspace
+
+    with tempfile.TemporaryDirectory() as tmp:
+        here = Path(tmp)
+        for path, text in workspace.effective_documents(run_id).items():
+            p = PurePosixPath(path)
+            if str(p.parent) == folder and p.name in (CROSS_DOMAIN_FILE, DOMAIN_DEPENDENCIES_FILE, "functional-spec.md"):
+                (here / p.name).write_text(text or "", encoding="utf-8")
+        (here / FUNCTIONAL_ALLOCATION_FILE).write_text(content, encoding="utf-8")
+        problems = _functional_allocation_problems(here, allocation)
+    if problems:  # includes a direct call the domain's setting doesn't allow
+        raise InvalidDocument("; ".join(problems))
 
 
 def _latest_decisions(s, run_id: str, stages: list[str]) -> Artifact | None:
@@ -1001,6 +1547,12 @@ def catalogue_brief(domain: str, settings: dict) -> str:
         else:
             lines.append("No table or package ownership has been recorded for the domains yet; infer it from the "
                          "code and ask the user when unsure.")
+        me = next((d for d in domains if d.key == domain), None)
+        direct = (me.direct_calls or []) if me is not None else []
+        lines.append(f"Direct calls (the domain's setting): {domain} may call "
+                     + (f"{', '.join(direct)} directly through their API, without an orchestrator (`domain-call`); "
+                        "every other domain only through the orchestrator." if direct else
+                        "no other domain directly: every call to another domain goes through the orchestrator."))
         topic = settings.get("event_topic_pattern") or "{domain}-events"
         queue = settings.get("command_queue_pattern") or "{domain}-commands"
         ns = settings.get("event_bus_namespace") or "(namespace not configured yet)"
@@ -1016,7 +1568,59 @@ def catalogue_brief(domain: str, settings: dict) -> str:
                       + (f", spec `{CATALOGUE_DIR}/{c.key}.yaml`" if c.spec else "") for c in contracts]
         else:
             lines.append("The contracts catalogue is empty: this is the first domain to define cross-domain contracts.")
+        handlers = temporary_handlers_calling(s, project, domain)
+    if handlers:
+        lines.append(f"Temporary handlers of other features that call {domain}'s existing services (keep each "
+                     "delegates_to method working through its bean):")
+        lines += [f"- {h['domain']}/{h['feature']}: {h['listener']} for `{h['event']}` → {', '.join(h['delegates_to'])}"
+                  + ((" (also subscribed to Service Bus in the monolith"
+                      + (f", switched by `{h['enabled_property']}`" if h["enabled_property"] else "") + ")")
+                     if h["subscribed"] else "") for h in handlers]
+        lines.append(f"When {domain}'s design subscribes to one of these events itself (an inbound `event` decision), "
+                     "the monolith's Service Bus subscriber of each one marked above is switched off (its enabled "
+                     "property, in that feature's integration-routing.yaml) when that subscription goes live, or the "
+                     "work is done twice; the in-process handler stays until the publishing feature runs only in its "
+                     "own service.")
     return "\n".join(lines)
+
+
+def temporary_handlers_calling(s, project: str, domain: str) -> list[dict]:
+    """The temporary handlers in other domains' latest designs that call `domain`'s existing services (their decision's
+    target), and whether their feature's Monolith integration subscribed them to Service Bus in the monolith (and the
+    property that switches that subscriber off)."""
+    rows = s.scalars(select(Artifact).join(Run, Run.id == Artifact.run_id).where(
+        Run.project == project, Run.domain != domain,
+        Artifact.name.in_((DECISIONS_FILE, INTEGRATION_ROUTING_FILE)))).all()
+    latest: dict[tuple[str, str], Artifact] = {}
+    for a in rows:
+        k = (a.run_id, a.name)
+        if k not in latest or (a.attempt, a.id) > (latest[k].attempt, latest[k].id):
+            latest[k] = a
+    runs = {r.id: r for r in s.scalars(select(Run).where(Run.id.in_({k[0] for k in latest})))} if latest else {}
+    out = []
+    for (run_id, name), a in sorted(latest.items()):
+        if name != DECISIONS_FILE or run_id not in runs:
+            continue
+        try:
+            decisions = (yaml.safe_load(a.content or "") or {}).get("decisions") or []
+        except (yaml.YAMLError, AttributeError):
+            continue
+        routing = latest.get((run_id, INTEGRATION_ROUTING_FILE))
+        try:
+            subscribed = {str(x.get("listener")): str(x.get("enabled_property") or "")
+                          for x in (yaml.safe_load(routing.content or "") or {}).get("temporary_subscribers") or []
+                          if isinstance(x, dict)} if routing else {}
+        except (yaml.YAMLError, AttributeError):
+            subscribed = {}
+        for d in decisions:
+            h = d.get("temporary_handler") if isinstance(d, dict) else None
+            if isinstance(h, dict) and h.get("listener") and d.get("target") == domain:
+                out.append({"domain": runs[run_id].domain, "feature": runs[run_id].operation,
+                            "listener": str(h["listener"]), "event": str(d.get("contract") or ""),
+                            "delegates_to": [str(m) for m in h.get("delegates_to") or []],
+                            "subscribed": str(h["listener"]) in subscribed,
+                            "enabled_property": subscribed.get(str(h["listener"])) or None})
+    return out
 
 
 # Patterns where one domain needs the other to answer or act right away: they shape the migration order.

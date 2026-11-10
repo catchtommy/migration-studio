@@ -273,7 +273,8 @@ def test_the_orchestrator_suite_needs_the_legacy_jdk_for_the_lifted_service(ctx)
 
 def test_publish_only_events_leave_nothing_to_orchestrate_and_a_rule_decided_elsewhere_is_theirs():
     design = " ".join(defaults.INSTRUCTIONS["modulith_design"].split())
-    assert "there is nothing to orchestrate: the domain publishes them itself" in design
+    assert ("places nothing on the orchestrator" in design and "there is nothing to orchestrate: the domain does its "
+            "work, its direct calls and its publishing itself" in design)
     assert "`orchestrator_module: none` with `no_orchestrator_reason`" in design
     assert "A rule another domain decides" in design and "is `other domain`, naming the contract" in design
     deps = " ".join(defaults.INSTRUCTIONS["dependency_analysis"].split())
@@ -363,6 +364,11 @@ def test_a_feature_that_only_publishes_runs_without_an_orchestrator(client, monk
         deps, design = ctx.output_dir / "domain-dependencies.yaml", ctx.output_dir / "domain-design.yaml"
         if self.stage == "dependency_analysis":
             deps.write_text(deps.read_text().replace("strength: hard", "strength: side-effect"))
+            # Nothing waits for the other domain's answer, so nothing is allocated to an orchestrator
+            allocation = ctx.output_dir / "functional-allocation.yaml"
+            allocation.write_text(_re.sub(r"placement: orchestrator\n    calls: .*\n    interactions: .*\n",
+                                          "placement: domain\n", allocation.read_text())
+                                  .replace("interactions: [X2]", "interactions: [X2, X1]"))  # X1 is the side effect now
         if self.stage == "modulith_design":
             text = _re.sub(r"orchestrator_module:\n(  .*\n)+", "orchestrator_module: none\n"
                            "no_orchestrator_reason: Only publishes the event the other domain reacts to\n",

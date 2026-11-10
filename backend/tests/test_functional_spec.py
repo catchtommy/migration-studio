@@ -282,7 +282,7 @@ def test_the_new_agent_reaches_an_existing_database_with_the_analysis_agents_cho
         with session_scope() as s:
             added = s.get(Agent, (SHARED, "dependency_analysis"))
             assert (added.mode, added.model) == ("llm", "claude-opus-5-5")  # not the stub, where Analysis runs the AI
-            assert added.outputs == ["cross-domain.yaml", "domain-dependencies.yaml"]
+            assert added.outputs == ["cross-domain.yaml", "domain-dependencies.yaml", "functional-allocation.yaml"]
             copy = s.get(Agent, (project, "dependency_analysis"))
             assert copy is not None and (copy.mode, copy.effort) == ("llm", "max")
     finally:
@@ -338,6 +338,48 @@ def test_stored_lean_workflows_get_the_domain_dependencies_step_once(client):
             copy_gate = {st["key"]: st for st in s.get(WorkflowDef, (project, "lean")).steps}["gate_analysis"]
             assert shared_gate["checklist"] == list(LEAN_ANALYSIS_CHECKLIST)
             assert copy_gate["checklist"] == own_checklist  # a checklist of its own is kept
+    finally:
+        with session_scope() as s:
+            s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)).steps = before
+            s.delete(s.get(WorkflowDef, (project, workflow_store.LEAN_KEY)))
+
+
+def test_stored_lean_analysis_gates_get_the_allocation_description_once(client):
+    """A lean analysis gate still holding the built-in description from before the functional allocation gets the
+    current one (which tells the reviewer to change a placement before approving); an edited one is kept."""
+    from tests.test_projects import new_project
+
+    project = new_project(client)
+    current = LEAN.by_key["gate_analysis"].description
+    own = "Our own review instructions"
+
+    def with_description(text):
+        return [{**st, "description": text} if st["key"] == "gate_analysis" else st
+                for st in workflow_store.steps_of(LEAN)]
+
+    with session_scope() as s:
+        shared = s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY))
+        before = shared.steps
+        shared.steps = with_description(workflow_store._LEAN_GATE_ANALYSIS_V1)
+        s.add(WorkflowDef(project=project, key=workflow_store.LEAN_KEY, name="Lean migration",
+                          steps=with_description(own)))
+        s.query(Setting).filter(Setting.project == GLOBAL,
+                                Setting.key == "_lean_allocation_gate_description").delete()
+    try:
+        workflow_store.seed()
+        with session_scope() as s:
+            gates = {owner: {st["key"]: st for st in s.get(WorkflowDef, (owner, "lean")).steps}["gate_analysis"]
+                     for owner in (SHARED, project)}
+            assert gates[SHARED]["description"] == current
+            assert "change a placement" in current
+            assert gates[project]["description"] == own  # an edited description is kept
+            # once only: a later edit back to the old text stays
+            shared = s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY))
+            shared.steps = with_description(workflow_store._LEAN_GATE_ANALYSIS_V1)
+        workflow_store.seed()
+        with session_scope() as s:
+            gate = {st["key"]: st for st in s.get(WorkflowDef, (SHARED, "lean")).steps}["gate_analysis"]
+            assert gate["description"] == workflow_store._LEAN_GATE_ANALYSIS_V1
     finally:
         with session_scope() as s:
             s.get(WorkflowDef, (SHARED, workflow_store.LEAN_KEY)).steps = before

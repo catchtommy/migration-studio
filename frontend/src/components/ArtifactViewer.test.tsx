@@ -46,3 +46,14 @@ test("without the right to edit, the text still shows and no Edit is offered", a
   expect(await screen.findByText(/can't be shown formatted/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
 });
+
+test("an open document says what it is, and how it's used on request", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  show(false);
+  const note = await screen.findByRole("note", { name: "About this document" });
+  expect(note).toHaveTextContent("The domain microservice's REST API");
+  expect(note).not.toHaveTextContent("Review by");
+  fireEvent.click(screen.getByRole("button", { name: "How it's used" }));
+  expect(note).toHaveTextContent("The Spring Boot microservice step implements it");
+  expect(note).toHaveTextContent("Review by");
+});

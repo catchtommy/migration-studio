@@ -53,12 +53,14 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
     "deep_dive": {"a0bf087fe4ccf4df5533d0d01a762c5dfea5e866fd934d0083607cad2c15544e",
                   "9a50019f34790f8b4de82b88a85d7d0b5c7d877100d052ad2886fd66252dc4a3",
                   "e7932db2bbf7b61072ab89b6480fc7d34a7f64ce91db9cb502d3ceb5bbecfdd1"},
-    "domain_dependencies": {"d2e6c80aa47483757e655c6c803808e5ebfa2e90872ff8684efe257618cd3e33",
+    "domain_dependencies": {"ce57e012db11db34e57dc3971aadde957595ea19a147970031ba617015403861",
+        "d2e6c80aa47483757e655c6c803808e5ebfa2e90872ff8684efe257618cd3e33",
                             "e414b29584fc2df4dfd5d5a4bf1b67f2202e015b1bdbc9e992f937e41a7d51cd",
                               "d2fc147964a2e477c07072900e92b7356898e7613f3274d96dfab97576ec8476",
                             "6909abd6a1c273ef64d44d286532f0171c7c92c3d0cd78939ce8db8610c33d25",
                             "3d453659a94a2f241277ea0f3c3feb349d125fdd97057bb5bc1f1d39bd3dbcab"},
-    "domain_design": {"dd198f239be4b92d142930b6e651ac90dadd1dd31d7209a8b43d70ca384b162d",
+    "domain_design": {"9caf82f7ff22962b079c8b1fefdffc17a476f6d246f6d70ffb798ef3feb081ca",
+        "dd198f239be4b92d142930b6e651ac90dadd1dd31d7209a8b43d70ca384b162d",
                       "9c129233aca1bf0a00dd893f4f0c44ab545f0ac5346a75b7222432e398bc2e31",
         "183bbce289171e4d9b20d7d1506417c2aaf10d85c76f278ae91f80e1cadb6405",
                               "45ad59b8a91325d3caa86f53505051bda11071e52282340470b7eef5fa0649eb",
@@ -71,7 +73,8 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                       "94017c67ed50785e4c739eb40fb064ce2305efc75fe06ea1cea7e7409b3f2e91"},
     "wrapper_design": {"0b7340f3ee69cbe7160f80ba51c4fa93dfb94fadf32e7518ee62b4975f948c2a",
                        "062dd7634ace2214055e5bcb90218043bcd5f142da5a0d70fb99090d26c10a62"},
-    "orchestrator_design": {"fec9b1a759bfbb513210a58472431041d014335317139309281fd8546c42b34a",
+    "orchestrator_design": {"681cfb1c03349c7f6edfd3852b9c303f464e4375525857e4edb71e0dd677ad49",
+        "fec9b1a759bfbb513210a58472431041d014335317139309281fd8546c42b34a",
                             "44b0788e38d118d0b1a4a7cf2de98d2dbcf3bee334a7885bc8ce8788bac6c365",
                             "35da265d3395dafb7b16aaa1477ff1c3fba106c2c0bc11ca340c8f05da063b62",
                             "81cf9ffa985d209c21d9d32644ff19055335c8fbb6b7941d140ccae39c05d133",
@@ -88,7 +91,10 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                                 "7373d95b05eadcacff8638d41bc2da63c8627647d323f824a12159828a41f3d7",
                                 "f769606aba568416e0e3892f88a6fd147ab3eeb1ff082d9be446ec6ea3fc9dbf",
                                 "7a589e02ca2bb06072c304f2f0d99e47482f4eba4d3a7846a4986cfbaef45a8a"},
-    "integration_design": {"17fb32be72076d00361fca9333d38ee203dc223b996db012f277e13b44c8b4e5",
+    "integration_design": {"de5041e39759b2d42c8a5a01034f82a3f0ad7b6914ea4e30465f65d4525af132",
+        "0bc173e30220ab4a146c8d55d3c3e7eb228a16a6b1b75fabcaf6bbceb720576f",
+        "e8dda7fd040ae6b01935f0b2228207308b0ee8d9cfb67e0800de29597f07425c",
+        "17fb32be72076d00361fca9333d38ee203dc223b996db012f277e13b44c8b4e5",
                            "11231d4efa53ca45a9e53af4e52a3666c5258092e03dff6ae17f948ca462ab6d",
         "50062f4c3b3dcc7aab9e4ace195d0134977a341a4a81a22518962ed7f87474c2",
         "22b0c4621eb6a97503c878794caed382350840e41c8ee9dd174b6338d7674bf7",
@@ -124,7 +130,9 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "3fdbd40d27cf56a744c4dcc0cc874d058243279094fb3aabf3f9ca725a0c492a",
         "acf98d8971c8430231b71d5a41e44f92e9ffd9824bdd8500769936b7ae934cac",
         "b16faecb3264355335f347ecdff807fa3b96979e2f4f880e47a200e3a48982a5"},
-    "modular_monolith": {"db223089cf2602d7762ed350e887a5e62e581bb1565dada1fb2862f7c3c54ae2",
+    "modular_monolith": {"dba97de3ae2d5f99c1f4de6d53112580f8fdbb699366d88a5f9561955bb47e9b",
+        "0b2f87692a0161118f228703f72775d4df27f3d904a0646e04db7d36b3ad0388",
+        "db223089cf2602d7762ed350e887a5e62e581bb1565dada1fb2862f7c3c54ae2",
         "86499680a4b1d9ac6ca5cc3ff6b6c46b2ea084a85aed2ab0b21a16a7dcf88e07",
         "ae6adcee76691ce042b38a21231c497ea4ff3dcf880fa94905f5c0098571bfde",
                          "496c048b744624038c78d0318f8576b486700d5936d2a2b60215dde6e2bdab5a",
@@ -145,7 +153,9 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                          "20369f074da4f5870c38bdea7c129dc92217a37a182b7e3dba3c983e3a226a09",
                          "c3a678317498d3b0682c70f3a3b41727037b401f23c54713108a735babbd28fa",
                          "8d67e4fd44f4bce07fa5d8aa0d6658c52c4bb703100914bc538267e060258dac"},
-    "monolith_integration": {"6a03b6553fc4062747ffdd63058c818020acb607946c9d1e0c1805465594e8b3",
+    "monolith_integration": {"00946d501dc1074cd5db3e24cc07d23fe060ca16b87610ca6c2661515dd60ab8",
+        "133635292b0946704b5ed7ea641316940df360df236815da635ae1ade410e408",
+        "6a03b6553fc4062747ffdd63058c818020acb607946c9d1e0c1805465594e8b3",
         "2599df41784b8e9212b94ab2de016496db7308f2323635ed380de312556fa57a",
         "b41c0cbf33c34303d4822e5c32ece71077a54659ec51cc621870a6e015eb4eaf",
                              "29b5cee315c086c998bba657793a71713eb7f46bf71a98b67fcff29efaa32738",
@@ -158,7 +168,10 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
                              "673a0969f74f104d418d47b8e935f34ca65c6eeeca498425883cdda80006894b"},
     "as_is_doc": {"9fb0392d1747e6a478a3e0cd6d77ea8cd4564fd9e815959b5baf2f48ee52c892"},
     "bounded_contexts": {"0fe37358d0947d3a11a0fc7d5440eb9ebaa72ec9171caff82a4612112c073294"},
-    "monolith_orchestrator": {"b657db126d0c4c1e1c89547fb8a15d33b835cb1d6a0f672ef3349d37a50d2288",
+    "monolith_orchestrator": {"9413d856b7092c5e63d5153534afe28bf8c26c63030d65e6fa380b7517087a3f",
+        "aa5ab86edeb3922fd89adbd4218d41bcf5b07872686d447e7daa7ae0aa46644d",
+        "d7c5287b7420e74a8fe380f2f3a171e4e3f9802deb70550bbcd7fd176a3b50fb",
+        "b657db126d0c4c1e1c89547fb8a15d33b835cb1d6a0f672ef3349d37a50d2288",
         "35a24835d71b95dc27b3516c23305bb5ba7eb9525e031f7931aa5d1fb4af382e",
         "cae3d71b1aea57fadae64e5ddcf348386475d4f6890dc311606ccbf486e96e47",
         "74d58902f2f8850ab0f40a8ae931b69d0d12745d6b21071d848463d786cfe630",
@@ -167,28 +180,35 @@ PREVIOUS_DEFAULT_HASHES: dict[str, set[str]] = {
         "5b1954381befa4b650c27376281f54dcdd5e53b1b8b844eb308f315dd59e632a",
         "3179eeac8cf303ea388310a0c0c6c950c414a5aef1f1e9ed7101b39da4232903",
                               "17eb8df57a93ef73c26dc2eb09ff90403eb57b0c52f8cbfde79a2fba511fec64"},
-    "orchestrator_service": {"45b299890d3b03c87327a570a46a7a3aca76641318fbd2afc087693924f0acfd",
+    "orchestrator_service": {"7319dc8a36c96a8cee660ebc44e92a8e3493d778666885d6363032b27c02a68b",
+        "45b299890d3b03c87327a570a46a7a3aca76641318fbd2afc087693924f0acfd",
         "84da51f2092f27ab9f264d98062fd5444fa6b35e27b63cb83fed187c824a6fee",
         "49bee293f5d1a39bbaa8014822dfe74319a13645fa2c8bc89bdc3b32185f1e68",
         "e9a0a4f846d21ff3e0b360c6acd0d6017f453bfe9dc5c5ea937669b2c49c9be9",
                              "60e428368d945638916a3fd4a8fe75479eeca06e59a4cb3eed65fc861021c2ed"},
-    "modulith_design": {"9e1f48da5f5a2658cde5e7f7ad261fa0fb253d4ab49590d8c17f66ce61f5162d",
+    "modulith_design": {"ff034a9939629786a8035913a5955c679fc486e1a85a4d9025cb7cba9f4177c1",
+        "a8c53e3d530620c70745c1acaa65dccbb77258d932faf7707670ce728aefe67f",
+        "0265edb02c4e0185a7079115bfbdb789cade24afe450f06778e2d8d251bdd597",
+        "ca24f0f89fa6386a8562748c376199366381dab8c59adb1e7981b41851a779d7",
+        "9e1f48da5f5a2658cde5e7f7ad261fa0fb253d4ab49590d8c17f66ce61f5162d",
         "71579eb23690ceaebc0428cedfd0c53fd25330676724c94f28f519d26ebcf93a",
         "252cf4ec3774bac5dc90c8853ec400f96308cd88864ddc7f2d0d6c241e190c54",
         "da774e69420c666793587dc7f0e433e7a06e56c3f3ca5bf203e672cc98a53739",
                         "3082df6c03384325fd257008848ad68ee4420b1bbf92388e51f2901161690271"},
     "service_tests": {"92748bd2b1cb6f490d603714dc95bd9067baead0f79409ac43927cf7a1f81149"},
-    "modernise_and_test": {"e7bc5c0262d9b6c238b365b12635a74126853cd5da96ed091f23201cc2a28a73",
+    "modernise_and_test": {"b03b62d6f6e2e2d003169e95cf1fb52c1d1a108cc6057cb18fa454fa95cb6f93",
+        "e7bc5c0262d9b6c238b365b12635a74126853cd5da96ed091f23201cc2a28a73",
         "f344e3a8168e60d7ce6aff5aaaafe61ef51c0687c994261490c708af0cb135cf",
         "b440b328d64fa7626d422669ac339a160cc813275ebb26c519aef5f9ad73cb6f",
         "a33d06bbba111d533ffd3973d9226f06ad3f072e13cf06e19ad366352edd7bdd",
                            "3017cc168fb1c98e83afe8bcf0f31cd82894893a7fd92d47d909d523e49f71d8"},
-    "dependency_analysis": {"ba664201046396f05dd167c9996bd3a331c1b3b6365db7f2af0d11c3d56e0254"},  # added in this release: no earlier default
+    "dependency_analysis": {"9065f34f204858e38b0ab566908d0857ab743947350df51a1ceda6e67c5b5815",
+        "ba664201046396f05dd167c9996bd3a331c1b3b6365db7f2af0d11c3d56e0254"},  # added in this release: no earlier default
     "orchestrator_tests": {"59931983dacdd34d87b17875f1882ba5ba60a68c477f0cec80386bcf4360bfe6"},  # added in this release: no earlier default
 }
 # Built-ins whose step now needs more turns than before: an upgrade raises (never lowers) their limit.
 MORE_TURNS = {"modular_monolith", "microservice_scaffold"}
-UPGRADE_MARKER = "_upgraded_builtin_defaults_v33"
+UPGRADE_MARKER = "_upgraded_builtin_defaults_v36"
 GUARDRAILS_MARKER = "_builtin_guardrails_v1"  # built-ins got their guardrail tools and checks (_add_guardrails)
 GUARDRAILS_MOVED_MARKER = "_guardrails_moved_to_agents"  # global and project guardrails became agents' own
 GUARDRAILS_OUT_MARKER = "_guardrails_out_of_instructions"  # built-ins' guardrails moved from instructions to Guardrails
@@ -203,7 +223,54 @@ def _as_dict(row: Agent, customised: bool = False) -> dict[str, Any]:
     return {"key": row.key, **{f: getattr(row, f) for f in FIELDS}, "checks": row.checks or [],
             "guardrails": row.guardrails or "",
             "builtin": row.key in BUILTIN, "scope": "shared" if row.project == SHARED else "project",
-            "customised": customised, "created_at": row.created_at, "updated_at": row.updated_at}
+            "customised": customised, "release_status": release_status(row),
+            "created_at": row.created_at, "updated_at": row.updated_at}
+
+
+# What a built-in agent is compared with this release's default on: what a release sets (mode, model, effort, JDK and
+# turns are the user's choices and never part of a release's change).
+RELEASE_FIELDS = ("instructions", "outputs", "tools", "checks", "guardrails")
+
+
+def _release_value(field: str, value: Any) -> Any:
+    if field in ("outputs", "tools", "checks"):
+        return list(value or [])
+    return value or ""
+
+
+def release_status(row: Agent) -> str | None:
+    """How a built-in agent stands against this release's default: `current` (everything a release sets is the
+    default), `older-default` (instructions an earlier release gave that nobody edited: the next start upgrades them),
+    or `edited` (changed by someone: a release never overwrites it). None for a custom agent (no default)."""
+    if row.key not in BUILTIN:
+        return None
+    default = default_config(row.key)
+    if all(_release_value(f, getattr(row, f)) == _release_value(f, default[f]) for f in RELEASE_FIELDS):
+        return "current"
+    if hashlib.sha256((row.instructions or "").encode()).hexdigest() in PREVIOUS_DEFAULT_HASHES.get(row.key, set()):
+        return "older-default"
+    return "edited"
+
+
+def compare_with_default(key: str, project: str | None = None) -> dict[str, Any]:
+    """The agent the project uses against this release's default, field by field (lists one item per line), for the
+    Agents page's comparison. KeyError when unknown; ValueError for a custom agent (it has no default)."""
+    project = _project(project)
+    with session_scope() as s:
+        row = _effective(s, key, project)
+        if row is None:
+            raise KeyError(key)
+        if key not in BUILTIN:
+            raise ValueError("Only built-in agents have a default to compare with")
+        default = default_config(key)
+        fields = []
+        for f in RELEASE_FIELDS:
+            mine, theirs = _release_value(f, getattr(row, f)), _release_value(f, default[f])
+            text = (lambda v: "\n".join(v)) if isinstance(mine, list) else (lambda v: v)
+            fields.append({"field": f, "stored": text(mine), "default": text(theirs), "same": mine == theirs})
+        return {"key": key, "title": row.title, "status": release_status(row),
+                "scope": "shared" if row.project == SHARED else "project", "updated_at": row.updated_at,
+                "fields": fields}
 
 
 def builtin_default(key: str) -> dict[str, Any]:

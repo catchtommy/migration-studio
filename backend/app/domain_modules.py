@@ -284,19 +284,33 @@ def design_problems(project: str, domain: str, feature: str, output_dir: Path) -
     out = _declared_module(project, domain, feature, where, data, mods["domain"], "domain module")
     orch = data.get("orchestrator_module")
     scope = _design_scope(output_dir)
+    allocation = cs.load_functional_allocation(output_dir)
     if isinstance(orch, dict):
         out += _declared_module(project, domain, feature, f"{where} orchestrator_module", orch, mods["orchestrator"],
                                 "orchestrator module")
+        if allocation and not cs.has_orchestrator(allocation):
+            out.append(f"{where}: the approved {cs.FUNCTIONAL_ALLOCATION_FILE} places nothing on the orchestrator "
+                       "(the domain does its work and its direct calls itself): write `orchestrator_module: none` "
+                       "with no_orchestrator_reason")
     elif scope == "cross-domain" and orch in ("none", "") and orch is not None:
-        # A cross-domain feature without an orchestrator: only when it just publishes to the other domains (side
-        # effects it needs no answer to), which the domain does itself. The orchestrator steps are then skipped.
+        # A cross-domain feature without an orchestrator. With an approved functional allocation: when it places
+        # nothing on the orchestrator (the domain calls the domains it may call directly, and publishes its events).
+        # Without one (runs from before it): only when the feature just publishes to the other domains. The
+        # orchestrator steps are then skipped.
         if not str(data.get("no_orchestrator_reason") or "").strip():
             out.append(f"{where}: orchestrator_module is none for a cross-domain feature: give no_orchestrator_reason "
-                       "(what the feature only publishes to the other domains)")
-        answered = needs_an_answer(output_dir)
-        if answered:
-            out.append(f"{where}: orchestrator_module can be none only when every outbound dependency is a side effect "
-                       f"the feature publishes; it needs an answer from {', '.join(answered)}: add orchestrator_module")
+                       "(what the feature only publishes to, or calls directly in, the other domains)")
+        if allocation is not None:
+            if cs.has_orchestrator(allocation):
+                out.append(f"{where}: orchestrator_module is none, but the approved {cs.FUNCTIONAL_ALLOCATION_FILE} "
+                           "places functionalities on the orchestrator (or asks or publishes through it): add "
+                           "orchestrator_module")
+        else:
+            answered = needs_an_answer(output_dir)
+            if answered:
+                out.append(f"{where}: orchestrator_module can be none only when every outbound dependency is a side "
+                           f"effect the feature publishes; it needs an answer from {', '.join(answered)}: add "
+                           "orchestrator_module")
     elif scope == "cross-domain":
         out.append(f"{where}: add orchestrator_module (module, artifact, base_package, feature_package): a "
                    "cross-domain feature's orchestrator goes in the domain's one orchestrator module, a separate Maven "

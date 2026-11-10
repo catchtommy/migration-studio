@@ -57,3 +57,13 @@ test("keyboard: arrows move, Enter picks, no match says so", () => {
   fireEvent.change(screen.getByRole("combobox", { name: "Search documents" }), { target: { value: "nothing-like-this" } });
   expect(screen.getByText(/No document matches/)).toBeInTheDocument();
 });
+
+test("each document says what it is, under its name and as a tooltip", () => {
+  const docs = [doc(1, ".migration/client/x/functional-allocation.yaml"), doc(2, ".migration/client/x/notes.txt", "text")];
+  render(<DocumentPicker docs={docs} value="all" onChange={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Choose a document" }));
+  const option = screen.getByRole("option", { name: /functional-allocation\.yaml/ });
+  expect(option).toHaveTextContent("Where each functionality goes once migrated");
+  expect(option.getAttribute("title")).toMatch(/Used: Approved \(and changed if needed/);
+  expect(screen.getByRole("option", { name: /notes\.txt/ }).getAttribute("title")).toBeNull(); // nothing to say
+});

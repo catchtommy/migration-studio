@@ -147,6 +147,17 @@ def update_agent(key: str, body: AgentIn, scope: Scope = "shared", access: Proje
         raise HTTPException(404, "Agent not found")
 
 
+@router.get("/{key}/compare", dependencies=[Depends(require("agents.manage"))])
+def compare_agent(key: str):
+    """The agent this project uses against this release's default, field by field (read only)."""
+    try:
+        return agent_store.compare_with_default(key)
+    except KeyError:
+        raise HTTPException(404, "Agent not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
 @router.post("/{key}/customise", response_model=AgentOut, dependencies=[Depends(require("agents.manage"))])
 def customise_agent(key: str):
     """Give this project its own copy of a shared agent, to change without affecting other projects."""

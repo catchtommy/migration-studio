@@ -155,6 +155,25 @@ def prior_documents(ctx: AgentContext) -> str:
     return "\n".join(lines)
 
 
+def allocation_brief(ctx: AgentContext) -> str | None:
+    """Lean Modulith design: the approved functional allocation in full, as its decisive input (where each
+    functionality goes is final; the design follows it). None for other steps, or when the run has none."""
+    if ctx.stage != "modulith_design":
+        return None
+    f = ctx.output_dir / contracts_store.FUNCTIONAL_ALLOCATION_FILE
+    try:
+        text = f.read_text(encoding="utf-8") if f.is_file() else None
+    except OSError:
+        text = None
+    if not text:
+        return None
+    return ("## Approved functional allocation: FINAL\n"
+            "Where each functionality of this feature goes, as the reviewer approved it at the analysis gate (a "
+            "`review` entry says what they changed and why). Design exactly this: don't re-decide or question a "
+            "placement; ask about one only for a conflict, as your instructions define it.\n"
+            f'<document path="{ctx.rel(f)}">\n{text}\n</document>')
+
+
 def refresh_brief(ctx: AgentContext) -> str:
     """For a restart from a completed stage: work from the existing documents rather than starting over."""
     existing = "\n".join(f"- `{p}`" for p in ctx.previous_outputs) or "- (none recorded; check the documents folder)"
@@ -322,6 +341,9 @@ def brief(ctx: AgentContext) -> str:
         parts.append(resume_brief(ctx))
     if ctx.previous_artifacts:
         parts.append(prior_documents(ctx))
+    allocation = allocation_brief(ctx)
+    if allocation:
+        parts.append(allocation)
     guidance = ctx.inputs.as_markdown()
     parts.append(guidance or "## Guidance\nNo source locations or notes were provided for this domain or "
                              "operation. Explore the workspace, and ask the user if you cannot find the code.")
@@ -448,6 +470,10 @@ def verify(ctx: AgentContext, written: set[str] | None = None) -> list[str]:
     if own is None or contracts_store.DOMAIN_DESIGN_FILE in own:
         problems += contracts_store.domain_design_ownership_problems(ctx.output_dir, ctx.domain, ctx.ownership)
         problems += _design_module_problems(ctx)
+    if "orchestrator-design.md" in (ctx.config.get("outputs") or []):  # the design steps that design the orchestrator
+        problems += contracts_store.orchestrator_api_problems(ctx.output_dir)
+    if ctx.stage == "modulith_design":  # Lean only: the decisions follow the approved functional allocation
+        problems += contracts_store.allocation_decision_problems(ctx.output_dir)
     problems += discovery_store.validate_outputs(ctx.output_dir)
     problems += _functional_spec_problems(ctx)
     problems += guardrail_problems(ctx, checks)
@@ -469,7 +495,7 @@ def _functional_spec_problems(ctx: AgentContext) -> list[str]:
     spec, design = ctx.output_dir / fs.SPEC_FILE, ctx.output_dir / fs.DESIGN_FILE
     if fs.DESIGN_FILE in outputs and spec.is_file() and design.is_file():
         problems += fs.allocation_problems(spec.read_text(encoding="utf-8"), design.read_text(encoding="utf-8"),
-                                           _scope(ctx))
+                                           _scope(ctx), contracts_store.approved_owners(ctx.output_dir))
     return problems
 
 

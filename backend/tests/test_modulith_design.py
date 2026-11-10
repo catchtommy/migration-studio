@@ -27,10 +27,13 @@ def _steps(client):
 
 def test_standard_workflow_replaces_modulith_design_with_the_sub_flow(client):
     keys = [st["key"] for st in client.get("/api/workflows/standard").json()["steps"]]
-    assert keys[:9] == ["as_is_doc", "deep_dive", "gate_analysis", *MODULITH, "integration_design", "gate_design"]
+    # The dependency finder (with the functional allocation) is approved with the analysis, before the design
+    assert keys[:9] == ["as_is_doc", "deep_dive", MODULITH[0], "gate_analysis", *MODULITH[1:], "integration_design",
+                        "gate_design"]
     assert "boundary_design" not in keys
     steps = _steps(client)
-    assert steps["gate_design"]["reviews"] == [*MODULITH, "integration_design"]
+    assert steps["gate_analysis"]["reviews"] == ["as_is_doc", "deep_dive", MODULITH[0]]
+    assert steps["gate_design"]["reviews"] == [*MODULITH[1:], "integration_design"]
 
 
 def test_each_modulith_step_reads_only_what_it_builds_on(client):
@@ -50,9 +53,10 @@ def test_modulith_agents_are_read_only_design_agents(client):
         assert "run_command" not in agent["tools"]  # edit_file only edits their documents in place
         assert agent["checks"] == []
     outputs = {k: client.get(f"/api/agents/{k}").json()["outputs"] for k in MODULITH}
-    assert outputs["domain_dependencies"] == ["domain-dependencies.md", "domain-dependencies.yaml"]
+    assert outputs["domain_dependencies"] == ["domain-dependencies.md", "domain-dependencies.yaml",
+                                             "functional-allocation.yaml"]
     assert outputs["linked_domain_contracts"] == ["linked-domain-contracts.md", "linked-domain-contracts.yaml"]
-    assert outputs["orchestrator_design"] == ["orchestrator-design.md"]
+    assert outputs["orchestrator_design"] == ["orchestrator-design.md"]  # and orchestrator-openapi.yaml, when it has one
 
 
 def test_instructions_carry_each_agents_focus():
@@ -178,7 +182,8 @@ def test_standard_workflow_upgrade_from_the_previous_release(client):
 
     reset(previous)
     workflow_store.seed()
-    assert [st["key"] for st in _steps(client).values()][3:7] == MODULITH
+    keys = [st["key"] for st in _steps(client).values()]
+    assert keys[2:3] + keys[4:7] == MODULITH
 
     customised = [st for st in previous if st["key"] != "modernise"]
     reset(customised)
@@ -259,6 +264,8 @@ def _run_to_design_gate(client, domain, domain_only, monkeypatch):
         if domain_only and self.stage == "domain_dependencies":
             (ctx.output_dir / "domain-dependencies.yaml").write_text(
                 DOMAIN_ONLY.format(op=ctx.operation, domain=ctx.domain))
+            (ctx.output_dir / "functional-allocation.yaml").write_text(  # a domain-only allocation to match
+                stub.sample_allocation(ctx.domain, ctx.operation, spec=(ctx.output_dir / "functional-spec.md").is_file()))
         return out
 
     monkeypatch.setattr(stub.StubAgent, "run", run)

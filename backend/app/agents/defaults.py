@@ -72,6 +72,18 @@ decisions:
     adapter: MonolithCustomerDirectoryAdapter
     status: planned                 # planned | deferred
     summary: Synchronous call through the monolith facade until customer is migrated
+  - interaction: X3
+    direction: outbound
+    target: customer
+    kind: side-effect
+    pattern: event
+    contract: loan.loan-approved      # the event this domain publishes; the handler's domain consumes it
+    status: planned
+    summary: customer records the approval on the customer's history
+    temporary_handler:              # event decisions whose handling domain is still in the monolith
+      listener: LoanApprovedCustomerHistoryHandler   # class in the monolith's temporary bridge package
+      delegates_to: ["com.acme.customer.CustomerHistoryService#recordLoanApproved"]   # the existing method(s)
+      remove_when: The customer service subscribes to loan.loan-approved
 contracts:                          # new contracts, or changes to existing ones (same key)
   - key: customer.get-kyc-status    # <provider>.<name>
     provider: customer              # domain that owns it
@@ -81,6 +93,13 @@ contracts:                          # new contracts, or changes to existing ones
     consumers: [loan]
     description: Current KYC status of a customer
     spec: contracts/customer.get-kyc-status.yaml   # OpenAPI (api) or AsyncAPI (event/command), relative to this file
+  - key: loan.loan-approved
+    provider: loan
+    kind: event
+    name: Loan approved
+    version: "1"
+    consumers: [customer]
+    spec: contracts/loan.loan-approved.yaml
 ```"""
 
 # Machine-readable discovery results. Validated before the agent finishes; approving the gate updates the domains
@@ -144,6 +163,55 @@ shared_code: [com.acme.common.DateUtils]   # utility modules only: stateless hel
 god_modules: [com.acme.common.MasterService]   # mix several domains' logic: no domain may depend on them
 ```"""
 
+# Where each functionality of one feature goes once migrated, decided before the design. A reviewer approves it at the
+# analysis gate and may amend it there (the studio's table view writes `review`); the design builds on it as approved.
+FUNCTIONAL_ALLOCATION_SCHEMA = """```yaml
+# functional-allocation.yaml: every functionality of this one feature, and where it goes once migrated
+feature: update-bank-account
+domain: client
+functionalities:
+  - id: F1                          # F1, F2, ...: unique in this file
+    name: Update the client's bank account
+    legacy: ClientService.updateBankAccount validates and writes CLIENT_BANK   # what the code does today
+    code_refs: ["src/main/java/com/acme/client/ClientService.java:88"]
+    requirements: [FR-001, BR-002, MSG-01]   # ids of functional-spec.md this functionality implements
+    placement: domain               # domain | domain-call | orchestrator | event-handler | other-domain | ui-unchanged
+    reason: Writes only CLIENT_BANK, which the client domain owns
+  - id: F2
+    name: Check the bank code against the bank directory
+    legacy: ClientService.updateBankAccount calls BankDirectoryService#findBank
+    requirements: [BR-003]
+    placement: domain-call          # the domain module calls another domain's API itself, without an orchestrator
+    calls: [bank-directory]         # domain-call and orchestrator: the other domains it asks, each through a contract
+    interactions: [X1]              # ids from cross-domain.yaml, if any
+    reason: Needed inside the update's own validation; client may call bank-directory directly (Direct calls)
+  - id: F3
+    name: Refuse the change while the client has an open fraud case
+    requirements: [BR-004, MSG-02]
+    placement: other-domain         # another domain decides it; this feature only asks for the answer
+    owner: fraud                    # event-handler and other-domain: the OTHER domain that does or decides it
+    via: orchestrator               # other-domain only: how it is asked, orchestrator | domain-call
+    interactions: [X2]
+    reason: The fraud domain decides what an open case is; client may not call fraud directly
+  - id: F4
+    name: Add a note to every loan of the client
+    legacy: Same method, then LoanDao.findByClient and an insert into LOAN_NOTE per loan, in the same transaction
+    requirements: [BR-005]
+    placement: event-handler
+    owner: loan
+    event:                          # event-handler only
+      name: client.bank-account-changed
+      triggered_from: domain        # domain | orchestrator: who publishes the event
+      publisher: client             # the publishing domain
+      when: After the bank account update commits
+      handler: Fetches every loan of the client and adds a loan note to each
+      delegates_to: [com.acme.loan.LoanNoteService#addNoteForClient]   # the handling domain's existing service
+                                    #   method(s) that do the work, for the temporary handler while it is in the monolith
+    depends_on: [F1]                # functionalities that must happen first, if any
+    interactions: [X3]
+    reason: A side effect in loan nobody waits for; today in the same transaction, after migration not atomic
+```"""
+
 # Machine-readable result of the linked-domain contracts step: what this feature needs from each domain it depends
 # on. Validated before the agent finishes; approving the design gate records the contracts in the catalogue.
 LINKED_DOMAIN_CONTRACTS_SCHEMA = """```yaml
@@ -178,9 +246,10 @@ only through the owner's contract: no SQL, iBatis statement, join or view of thi
 domain owns. Where two domains write the same table, name the owner (the domain whose business rules decide the \
 table's state), treat the other writer as a consumer of the owner's contract, and raise it as an open decision. \
 Never settle it with a schema change.
-2. The UI is fixed. Same URLs, parameters, JSPs, forms, redirects and response shapes. Controllers don't change: \
-they reach the domain's public API through the feature's router, which a toggle switches between the as-is code and \
-the new domain.
+2. The UI is fixed. Same URLs, parameters, JSPs, forms, redirects and response shapes. Controllers keep their \
+behaviour: they reach the domain's public API through the feature's router, which a toggle switches between the as-is \
+code and the new domain. A controller with no bean seam for the router (it uses the concrete class, `new` or a static \
+call) gets only a toggle branch that asks it.
 3. The stack is fixed. Java 8, Spring MVC 3 and iBatis. No new framework or library and no language feature beyond \
 Java 8. New Maven modules for the domain (and its orchestrator) are allowed: they are how the domain is carved out, \
 and they use only the libraries the monolith already has.
@@ -200,8 +269,9 @@ linked-domain contracts: no direct class, bean, mapper or table reference to ano
 7. Public API only. The domain's internals are package-private; entities and iBatis result objects never leave the \
 domain.
 8. Behaviour is preserved and the scope is this feature. The as-is code stays as it is (the old flow, behind the \
-toggle); the new domain is built from copies of it, wrapped, not refactored beyond that. No new features, and no \
-redesign of other features.
+toggle); the new domain is built from copies of it, wrapped, not refactored beyond that, except splitting a method \
+at the steps the approved design gives to the orchestrator (the copy exposes those steps and the orchestrator calls \
+them in order). No new features, and no redesign of other features.
 9. Evidence over guesses. Every statement about the current code names its file and line; mark an assumption as an \
 assumption. When table ownership, a table's writer or a God module is unclear, ask the user.
 10. No ambient inputs. The feature's code never reads the session, the request, the current user, a thread-local or a static holder \
@@ -252,8 +322,8 @@ base_package: com.acme.loan           # the module's package (<prefix>.<domain>)
 feature_package: com.acme.loan.createloan   # this feature's classes: <base_package>.<feature package>
 orchestrator_module:                  # cross-domain features: the domain's ONE orchestrator module, a separate Maven module
   module: loan-orchestrator           #   from the domain module, also named for the domain; write `orchestrator_module: none`
-  artifact: com.acme:loan-orchestrator   # for a domain-only feature, or for a cross-domain one that only publishes events or
-                                      #   commands to the other domains (then also no_orchestrator_reason: what it publishes)
+  artifact: com.acme:loan-orchestrator   # for a domain-only feature, or for a cross-domain one whose functional allocation
+                                      #   places nothing on the orchestrator (then also no_orchestrator_reason)
   base_package: com.acme.orchestrator.loan   # <prefix>.orchestrator.<domain>
   feature_package: com.acme.orchestrator.loan.createloan
 owned_tables: [LOAN, LOAN_SCHEDULE]   # tables this domain WRITES: one owner per table, none owned by another domain
@@ -297,6 +367,10 @@ outside_changes:              # every existing file outside the module and the b
   - web/src/main/webapp/WEB-INF/applicationContext.xml
   - pom.xml
 events: [BrokerCreated]       # only events named in the approved designs
+temporary_handlers:           # one per temporary_handler of integration-decisions.yaml on an event the domain module
+#                               publishes ([] when none): the helper in the bridge package and what it calls
+  - listener: BrokerCreatedCustomerHandler
+    delegates_to: ["com.acme.customer.CustomerHistoryService#recordBrokerCreated"]
 added: [CloseBrokerCommand]   # optional: classes this feature added to the module
 reused: [BrokerDao, Broker]   # optional: classes already in the module (merged features copied them), reused as they were
 ```"""
@@ -341,6 +415,8 @@ ports:                        # ports of other domains, each with its mode switc
     property: loan.customer-directory.mode     # local | contract
     default: local
 router: web/src/main/java/com/acme/loan/legacybridge/LoanServiceRouter.java   # its monolith value now calls the orchestrator
+temporary_handlers: []        # as in module-extraction.yaml, for the events the orchestrator publishes
+#                               (triggered_from: orchestrator) whose handling domain is still in the monolith
 toggle_branches:              # only callers that sequence the domains' calls themselves; [] when there are none
   - file: web/src/main/java/com/acme/web/LoanController.java
     reason: calls LoanService#create and CustomerService#link itself; the orchestrator takes over both
@@ -402,6 +478,12 @@ operations:                        # every operation of the target's API, none m
   - operation_id: createLoan
     monolith: LoanOrchestrator#create          # the monolith value: the orchestrator module, else the domain module
     client: LoanOrchestratorClient#create      # the service value: the REST client of the target
+temporary_subscribers:             # the monolith's Service Bus subscriber for each temporary handler of
+#                                    integration-decisions.yaml; [] when none
+  - listener: LoanApprovedCustomerHistoryHandler   # the handler helper it calls
+    event: loan.loan-approved                      # the event contract it subscribes to
+    enabled_property: migration.loan.loan-approved.customer-history.enabled   # default true; false once customer's
+#                                                    own subscription to the event is live
 ```"""
 
 _INTEGRATION_RULES = """The schema is fixed: no pattern may need a new table, column or data move. That rules out a \
@@ -437,7 +519,10 @@ the code behind them is migrated and routed to the new API like any other entry 
 no outbox and no stored projection. Each domain reads and writes only the tables it owns, in the existing schema.
 - The migration is step by step: one feature at a time, each step small, reviewed at its gate, and reversible.
 - The as-is flow keeps running. The feature's toggle router chooses per call between the as-is code (`legacy`, the \
-default, also for an unknown value) and the new flow (`monolith`, later `service`); controllers don't change.
+default, also for an unknown value) and the new flow (`monolith`, later `service`). Controllers keep their \
+behaviour: they reach the new flow through the router. Only a caller with no bean seam for the router (a controller, \
+job or service that uses the concrete class, `new` or a static call) gets a toggle branch that asks it, its behaviour \
+pinned by a test; never a DAO.
 - Tests are never deleted, ignored or weakened, and an assertion never changes to make a test pass."""
 
 # What the dependency analysis and the design never treat as a dependency on another domain.
@@ -562,6 +647,95 @@ code and are sure; when in doubt, choose `cross-domain`. It decides which steps 
 contracts and no orchestrator), it is validated against `dependencies`, and the reviewer approves it at the analysis \
 gate."""
 
+# Where each functionality of a feature goes: decided by the dependency step, approved (and amended) by a reviewer at
+# the analysis gate, and followed by the design.
+_ALLOCATION_RULES = """How to allocate the functionalities. Break the feature into its functionalities: each thing it \
+does that a business user would name (a validation, an update, a lookup, a note, a letter, an audit record), \
+following the code from its entry points. Give each one placement, taking the FIRST of these that fits:
+1. `ui-unchanged`: enforced only in the JSP or JavaScript; it stays as it is.
+2. `event-handler`: a side effect, in another domain or later in this one, that the caller doesn't wait for: notes, \
+letters, notifications, audit records, and work fanned out over another domain's records. The legacy code often does \
+it inline (it fetches the other domain's records and loops over them in the same request); once migrated, the \
+publisher raises an event after its change commits and a handler does the work. Name the event \
+(`<publisher>.<what happened>`), `triggered_from` (`domain` when the domain's own change is the trigger, the usual \
+case; `orchestrator` only when the trigger is the completion of an operation that spans domains, which then needs a \
+functionality placed on the orchestrator), the `publisher`, `when`, what the `handler` does, and in `delegates_to` \
+the handling domain's existing service method(s) that do that work today, on the interface its callers use (never a \
+God module, a DAO or SQL): until the feature runs in its own service the event is published in-process only, so a \
+temporary handler calls them, even when that domain is already migrated (its bean then routes the call); checked. \
+Only when the user agrees there is nothing to call, give `no_temporary_handler` with the reason instead. `owner` is \
+the domain whose handler does it. \
+Events are delivered at most once (the schema is frozen: no outbox): where the business needs it guaranteed, ask \
+the user.
+3. `other-domain`: another domain decides or does it (its code enforces it today: its rule, its data), and this \
+feature only asks for the answer: `owner` is that domain, and `via` how this feature asks it (see 4: `domain-call` \
+only where the Direct calls setting allows it, else `orchestrator`).
+4. A functionality that needs another domain's answer, or makes another domain do something and waits for it, is \
+asked in one of two ways, with the domains asked in `calls`:
+   - `domain-call`: the domain module calls the other domain's API itself, through a port, as part of its own logic, \
+without an orchestrator. ONLY for a domain the domain's Direct calls setting allows (given under "Cross-domain \
+integration": typically a subdomain or a utility API domain); checked.
+   - `orchestrator`: every other case: the orchestrator calls the other domains and the domain module, and builds what \
+the caller gets (it holds no database access). Also when several domains' answers are combined, or one domain's \
+failure decides what the caller sees.
+   When the setting allows a direct call but you can't tell whether the call belongs inside the domain's own logic \
+(`domain-call`) or around it (`orchestrator`), ask the user.
+5. `domain`: everything else: this domain's own logic on its own tables, no other domain involved. Generating a \
+reference number for a record this feature creates, and validating a format, are `domain`.
+`owner` is only for `event-handler` and `other-domain` (the other domain); the other placements are this domain's \
+own. Agree with `domain-dependencies.yaml`: every outbound dependency is in the `calls` of a functionality, or is the \
+`owner` of an event handler or other-domain functionality (checked); a `side-effect` dependency is normally an event \
+handler. Link the interactions of `cross-domain.yaml`: every placement except `domain` and `ui-unchanged` names the \
+interactions it covers (`interactions`), `domain` and `ui-unchanged` link no outbound one, and every outbound \
+interaction is linked by a functionality (checked; the design decides each interaction's pattern from the placement \
+that links it). Every requirement and business rule (FR, BR) of `functional-spec.md`, when the run has one, is in the \
+`requirements` of at least one functionality (checked); list the messages (MSG) with the functionality that shows \
+them (on an `other-domain` one, its messages belong to the side that asks, its `via`, which maps the answer). Give the `reason` for each placement in a \
+sentence, and say there when the legacy code does it in the same transaction as the feature's own change (once \
+migrated it no longer is). When you can't decide a placement from the code, ask the user rather than guess. A \
+reviewer checks the file at the analysis gate and may change any placement, and the design then follows it as \
+approved. When you update the file in a re-run, keep every functionality that has a `review` (the reviewer changed \
+or commented it) as the reviewer left it, `review` included; if the code now contradicts it, say so in your summary \
+instead of changing it."""
+
+# How the design turns each event-handler functionality into an event decision, with a temporary handler in the
+# monolith while the handling domain is not migrated (built by Module in monolith, fed from Service Bus by Monolith
+# integration once the feature runs in its service).
+_EVENT_HANDLER_DECISIONS = """Every `event-handler` functionality of `functional-allocation.yaml` is an `event` \
+decision for its interaction: the event it names, published by the domain module or the orchestrator as its \
+`triggered_from` says, the handler's domain as the consumer and what the handler does, with an AsyncAPI spec under \
+`contracts/`. Until the feature runs in its own service, the event is published in-process only, so nothing else \
+can handle it there, whatever the handling domain's state: the decision also gets a `temporary_handler` (format below): a listener for the event in the monolith's temporary bridge \
+package that calls exactly the `delegates_to` methods of the allocation's event (the handling domain's existing \
+service; never a God module, a DAO or SQL) in a new transaction (it runs after the publisher's commit), with no \
+database access of its own, idempotent where the method allows it, and removed once the feature runs only in its \
+own service and the handling domain's service subscribes to the event itself (`remove_when`). A decision has a \
+`temporary_handler` exactly when the allocation's event has `delegates_to`, with the same `delegates_to` (checked). \
+The step that \
+builds the publisher builds the handler in-process, in its event port's adapter in the bridge package (Module in \
+monolith for the domain module's events, Orchestrator in monolith for the orchestrator's), and the Monolith \
+integration step feeds it from Service Bus once the feature runs in its own service, behind a property that \
+switches that monolith subscriber off when the handling domain's own subscription goes live (or the work is done \
+twice)."""
+
+# Lean Modulith design: the approved functional allocation decides each interaction's pattern family and who makes the
+# call; the integration rules below it only choose within that family (checked: contracts_store.allocation_decision_problems).
+_ALLOCATION_DECIDES_PATTERN = """The approved `functional-allocation.yaml` comes first: for every interaction a \
+functionality links (`interactions`), its placement decides the pattern family and who makes the call, and the \
+rules below only choose within it. An interaction's `kind` in `cross-domain.yaml` or the number of hops never \
+overrides a placement (a reviewer may have changed it at the gate):
+| Placement | Allowed patterns | The call is made by |
+|---|---|---|
+| `event-handler` | `event` | the domain module or the orchestrator, as `triggered_from` says |
+| `orchestrator` | `sync-api`, `saga`, `read-model`, `reference-copy`, `deferred` | the orchestrator (it runs a saga) |
+| `domain-call` | `sync-api`, `read-model`, `reference-copy`, `deferred` | the domain module |
+| `other-domain` | as `orchestrator` or `domain-call`, as its `via` says | as its `via` says |
+| `domain`, `ui-unchanged` | none: they are linked to no outbound interaction | |
+Each decision's `target` is one of the functionality's `calls`, or its `owner` (an event handler's or another \
+domain's), and every interaction a functionality links has a decision. An outbound `event` decision always comes from \
+an `event-handler` functionality. Inbound interactions (other domains calling this feature) are outside the \
+allocation and follow the rules below alone. All of this is checked before you may finish."""
+
 # How each step that builds or tests part of the feature reports the functional specification's ids it covers
 # (app/functional_spec.py merges the tables into the feature's coverage).
 _COVERAGE = """Functional coverage (when the run has a `functional-spec.md`): end the document with a section \
@@ -656,14 +830,23 @@ orchestrate.
 - `cross-domain`: the feature has at least one outbound dependency. The Linked-domain contracts and Orchestrator \
 design steps run.
 Give the `reason` in a sentence. Choose `domain-only` only when you have checked the code and are sure; when in \
-doubt, choose `cross-domain`. The decision is validated against `dependencies`, and the reviewer sees it at the \
-design gate.
+doubt, choose `cross-domain`. The decision is validated against `dependencies`, and the reviewer approves it at \
+the analysis gate, with the functional allocation, before the design.
 
 Write `domain-dependencies.md` (the decision and its reason first; then a table of domain, relation, direction, \
 strength and touchpoints; then a short section per domain, and a note on anything uncertain) and \
 `domain-dependencies.yaml` in this format:
 
 {DOMAIN_DEPENDENCIES_SCHEMA}
+
+Finally write `functional-allocation.yaml`: every functionality of the feature and where it goes once migrated (the \
+domain microservice, a direct call from it to another domain, the orchestrator, or an event and its handler), so the \
+design starts from an approved allocation instead of deciding it. Cite the deep dive's business rules in `requirements` where they have ids. In \
+this format:
+
+{FUNCTIONAL_ALLOCATION_SCHEMA}
+
+{_ALLOCATION_RULES}
 
 Ask the user when it is unclear which domain owns a class or table.""",
 
@@ -741,8 +924,17 @@ the domain stays in the monolith, on the same technical stack, with the same dat
 
 {_MODULITH_GUARDRAILS}
 
-Using the AS-IS document, the deep dive, the dependency finder's `domain-dependencies.yaml` and the \
-linked-domain contracts in `linked-domain-contracts.yaml`, write `domain-design.md` covering:
+Using the AS-IS document, the deep dive, the dependency finder's `domain-dependencies.yaml` and \
+`functional-allocation.yaml`, and the linked-domain contracts in `linked-domain-contracts.yaml`, write \
+`domain-design.md` covering what follows. `functional-allocation.yaml` says where each functionality goes (the \
+domain, a direct call from the domain to another domain, the orchestrator, or an event and its handler), approved, \
+and possibly amended, by the reviewer: design to it and never re-decide it. The domain module does the `domain` and \
+`domain-call` functionalities itself (a `domain-call` through a port the domain module calls: in the monolith its \
+`local` adapter in the temporary bridge package, in the domain's own service the contract's REST client); the \
+orchestrator does the rest. `orchestrator_module` in `domain-design.yaml` is `none` exactly when \
+the allocation places nothing on the orchestrator (checked). If the code makes a placement impossible, ask the user \
+rather than move it; if they agree it must change, the allocation changes first (the run goes back to the dependency \
+finder).
 - The domain: its key, what it is responsible for and what it is not, and the feature's place in it. If the domain \
 already has features, show how this one fits next to them.
 - The module and its packages, as "This domain's modules" below says: the domain's ONE Maven module, shared by all \
@@ -760,8 +952,9 @@ it; and the tables it only reads. All unchanged, in the same schema. A table ano
 directly; the domain reaches it through a port.
 - Ports: one interface per outbound dependency in `domain-dependencies.yaml`, named after what it does (for \
 example CustomerDirectory), with the methods this feature needs and, for each method, the contract key from \
-`linked-domain-contracts.yaml` it calls. Only the interfaces are designed here; the orchestrator design decides \
-what stands behind them. When the decision scope is `domain-only` there are no ports to other domains (context \
+`linked-domain-contracts.yaml` it calls, and who calls it (the domain module for a `domain-call`, else the \
+orchestrator). Only the interfaces are designed here, and the adapters of the ports the domain module calls itself \
+(above); the orchestrator design decides what stands behind the others. When the decision scope is `domain-only` there are no ports to other domains (context \
 ports, below, still apply), and the contracts and orchestrator steps are skipped.
 - UI: controllers, URLs, parameters and JSPs stay exactly as they are; show how each controller reaches the public \
 API: through the router that takes over the legacy service's bean, `legacy` → the as-is service, `monolith` → the \
@@ -777,11 +970,11 @@ file and line, and the port that replaces each. Say [] in `context_ports` only i
 
 {_REST_RULES}
 
-Also write `openapi.yaml`: the REST contract of this feature's public API as an OpenAPI 3.1 document (paths under \
+Also write `openapi.yaml`: the REST contract of the domain's public API as an OpenAPI 3.1 document (paths under \
 `/internal/api/v1/<domain>/`, schemas, error responses), one operation per method of the public API. It is faithful \
 to current behaviour in what the feature does (its rules, data and error cases), and takes its shapes from the REST \
 rules above (status codes, error body, headers), not from the legacy responses. The microservice stage implements \
-it later.
+it later. The orchestrator's operations never go in it: the orchestrator design writes their own document.
 
 Also write `domain-design.yaml`, the machine-checked declaration of the guardrails, in this format:
 
@@ -837,8 +1030,13 @@ contracts' bindings. They sit in the monolith, in the temporary bridge package (
 modules; the module extraction step names it `bridge_dir`), are marked temporary, and are the only place where the \
 domain meets legacy code. The `contract` adapters sit in the orchestrator module. A transaction, session or request object from legacy code never crosses a port.
 
-Read the dependency finder's `domain-dependencies.yaml`, the linked-domain contracts in \
-`linked-domain-contracts.yaml` and the domain design (its ports). For each dependency decide:
+Read the dependency finder's `domain-dependencies.yaml` and `functional-allocation.yaml`, the linked-domain \
+contracts in `linked-domain-contracts.yaml` and the domain design (its ports). What the orchestrator does comes from \
+`functional-allocation.yaml`, approved by the reviewer: it takes over the operations whose work includes an \
+`orchestrator` functionality, an `other-domain` one asked via `orchestrator`, or an event `triggered_from: \
+orchestrator`; in each it does exactly those and leaves the `domain` and `domain-call` functionalities to the domain \
+module, which it calls (their ports and adapters are the domain design's). Never re-decide a placement; ask the user \
+if the code makes one impossible. For each dependency the orchestrator calls, decide:
 - `local` mode: the port's adapter calls the existing in-monolith service directly. This is the default and keeps \
 today's behaviour, including its transactions.
 - `contract` mode: the port's adapter calls the contract. While the linked domain is still in the monolith, the \
@@ -860,6 +1058,11 @@ and tracing headers below.
 - A readiness table: for each linked domain, its state (still in the monolith, contract served by the monolith \
 binding, migrated), the mode used in that state, and what triggers the switch.
 - How the deep dive's test scenarios are run in each mode to show the behaviour is unchanged.
+
+Also write `orchestrator-openapi.yaml`, the orchestrator's own API, separate from the domain's `openapi.yaml`: an \
+OpenAPI 3.1 document with one operation per orchestrator operation (what the monolith's router calls), under \
+`/internal/api/v1/<domain>/orchestrator/`, with the request and response of the domain operation it takes over and \
+the REST rules below. The Orchestrator microservice step implements exactly this API.
 
 If `domain-dependencies.yaml` has `decision.scope: domain-only`, Migration Studio skips this step. If you are run \
 anyway, write `orchestrator-design.md` as a short note saying there is nothing to orchestrate, and stop.
@@ -892,7 +1095,9 @@ Read the deep dive's cross-domain.yaml, the dependency finder's domain-dependenc
 contracts, the domain and orchestrator designs, and the contracts catalogue you are given. The linked-domain \
 contracts already define the API, event and command contracts to other domains: use their keys as the `contract` \
 of your decisions instead of designing parallel ones. Your decisions add what they do not cover: events, sagas, \
-reference copies and deferred interactions. For every interaction choose one pattern.
+reference copies and deferred interactions. For every interaction choose one pattern; the approved \
+`functional-allocation.yaml` has decided where each functionality goes: never re-decide it. \
+{_EVENT_HANDLER_DECISIONS}
 
 {_INTEGRATION_RULES}
 
@@ -960,12 +1165,14 @@ servlet, session and thread-local APIs inside it). Those inputs go through the c
 `domain-design.yaml`; their adapters live in the bridge package.
 - The bridge package holds only the router (implementing the legacy service's interface), adapters (each \
 implementing a port of the domain module) and their helpers: mappers between the legacy types and the module's, used \
-by the router or an adapter, with no database access and no transactions. Mappers never go in the module: it does not \
-know the legacy types.
+by the router or an adapter, with no database access and no transactions; and the temporary event handlers of step \
+f, whose only transaction is the `PROPAGATION_REQUIRES_NEW` one around their `delegates_to` calls. Mappers never go \
+in the module: it does not know the legacy types.
 
 Read first: `domain-dependencies.yaml` (the scope decision, `god_modules`, `shared_code`), \
-`linked-domain-contracts.yaml`, `domain-design.yaml` and `domain-design.md`, `orchestrator-design.md` and \
-`integration-decisions.yaml` when they exist, and "This domain's modules" below.
+`functional-allocation.yaml` (where each functionality goes), `linked-domain-contracts.yaml`, `domain-design.yaml` \
+and `domain-design.md` (its ports, and who calls each), `orchestrator-design.md` and `integration-decisions.yaml` \
+when they exist, and "This domain's modules" below.
 
 **The domain's module and its packages** follow "This domain's modules" below: where the module is and what it \
 holds (reuse it, never create another), and the package of each class (this feature's, another feature's, `shared` \
@@ -998,7 +1205,14 @@ dependency line in the POM that uses it. When the module exists, skip this step 
 this feature needs an allowed one it lacks).
    b. Copy the feature's classes (service interface and implementation, DAO, DTOs and entities) into the module, \
 each into its package (see "This domain's modules": this feature's, another feature's, `shared` or `util`), changing the package line (and \
-the imports of other copied classes) only. The legacy files stay as they are. A class already in the module (a feature already merged into the base branch \
+the imports of other copied classes) only. The one exception: where the approved design splits a method at a step it \
+gives to the orchestrator (`orchestrator-design.md`), split the copy exactly there: the domain API exposes the steps \
+the design names, and the call placed on the orchestrator is left out of the domain module (the orchestrator makes \
+it). The second exception: where the approved design turns a side effect the legacy code does inline into an \
+event (an `event` decision of `integration-decisions.yaml` for an event the domain module publishes), the copy \
+publishes the event at that point (step f) instead of doing the work: remove the inline call from the copy, with the \
+reads and loops that only feed it, so the work happens once, in the event's handler, and never also through a port. \
+Nothing else in the copy changes. The legacy files stay as they are. A class already in the module (a feature already merged into the base branch \
 copied it) is reused, not copied again; if this feature needs something of the legacy class the copy does not \
 have yet, copy the legacy file over it again (package line only) and check that the merged features' tests still \
 pass. List what you added and reused in `added` and `reused`.
@@ -1013,15 +1227,31 @@ SQL map (a feature already merged into the base branch copied it) is reused; add
 the SQL map of the package whose class uses it (one SQL map per feature package, and one for `shared`; `util` has \
 none). A statement another \
 domain also uses: stop and ask.
-   e. Cross-domain features only: every call the copy makes to another domain goes through a port of the domain \
-module (the ports in `domain-design.md`). Its `local` adapter lives in the bridge package (`bridge_dir`): one class \
+   e. Cross-domain features only: every call the copy still makes to another domain (the ports `domain-design.md` \
+says the domain module calls: its direct calls, and the legacy calls the design doesn't give to the orchestrator) \
+goes through a port of the domain module. Its `local` adapter lives in the bridge package (`bridge_dir`): one class \
 per contract binding, calling only the single legacy method it names, resolving that bean lazily (setter injection \
 or a lookup on first use; never constructor injection), registered as the port's bean. Do not build an orchestrator \
-module, contract adapters or mode switches: the Orchestrator in monolith step builds them next.
+module, contract adapters or mode switches: when the design has an orchestrator, the Orchestrator in monolith step \
+builds them next; without one, the domain module's ports keep their `local` adapters in the monolith (the domain \
+service gets REST clients later).
    f. Events: only those the approved designs name, in the copy, with their classes and a small event port in the \
 domain module. Publish them with Spring's own event publishing after the transaction commits (register a \
 transaction synchronization; Spring 3.2 has no after-commit listener). There is no outbox, so delivery is not \
-guaranteed; say so in `modular-monolith.md`.
+guaranteed; say so in `modular-monolith.md`. The event port's adapter lives in the bridge package. For each \
+`temporary_handler` of `integration-decisions.yaml` on an event the domain module publishes (its handling domain is \
+still in the monolith), the same adapter, after the commit, also calls that handler: a helper class in the bridge \
+package named as its `listener`, calling exactly its `delegates_to` method(s) of the handling domain's existing \
+service (resolved lazily, like a `local` adapter) and nothing else, with no database access of its own. It runs \
+after the feature's transaction has committed, while that transaction's connection is still bound to the thread: \
+work done then joins the committed transaction and is never committed. So the helper runs its `delegates_to` calls \
+in a `TransactionTemplate` with `PROPAGATION_REQUIRES_NEW` (the monolith's transaction manager, resolved lazily), and \
+nothing else transactional. The feature's change is already committed, so a failure of the handler never reaches \
+the caller: the helper catches it and logs it with the event and its key (a lost side effect, like a lost event; say \
+so under Known limitations). When no transaction is active (a unit test), it runs at once. So the work the legacy \
+code did inline still happens at `monolith`, once; at `legacy` the as-is code still does it and nothing is \
+published, so it never happens twice. List each helper under `temporary_handlers` in `module-extraction.yaml` (the \
+guardrail compares them with `integration-decisions.yaml` and with the code).
    g. Spring: a context file in the module with its beans under new ids, one import line in the monolith's root \
 context, and the router: in the bridge package, implementing the legacy service's interface, registered under the \
 legacy bean's id while the legacy bean gets a new one. It reads the toggle on every call and delegates to the legacy \
@@ -1033,11 +1263,18 @@ a toggle branch in that caller when it calls a concrete class, `new` or a static
 (never in the DAO itself); unused ones are left as they are. There is one router per legacy bean for the whole \
 domain: when the router in your checkout (a feature already merged into the base branch built it) already takes over the bean, add this \
 feature's methods to it, each reading this feature's toggle, and leave the merged features' methods and toggles \
-exactly as they are.
+exactly as they are. An operation the design sends to the orchestrator (`domain-design.md`'s "Entry points", Goes to \
+`orchestrator`) keeps the legacy bean for `monolith` too, until the Orchestrator in monolith step points it at the \
+orchestrator: `monolith` never runs half a flow.
    h. Tests: the characterization tests pass with the toggle at `legacy` and at `monolith`, unchanged; a wiring test, \
 with the test libraries that exist, shows that the legacy bean id resolves to the router and each value reaches its \
 flow; the characterization test of each caller with a toggle branch passes unchanged at `legacy` and at \
-`monolith`; a test per mapper. If none of them can load the Spring context, ask the user.
+`monolith`; a test per mapper. An operation kept on the legacy bean at `monolith` passes as it is; each domain API \
+step of a split method gets its own tests, pinning what the legacy method does in that step. Per temporary handler: \
+the operation at `monolith` calls each `delegates_to` method exactly once (and the handler never at `legacy`); with \
+transaction synchronization active (`TransactionSynchronizationManager.initSynchronization()`), the handler runs only \
+after the commit, inside a new transaction (a mocked `PlatformTransactionManager` sees `PROPAGATION_REQUIRES_NEW`), \
+and a failing delegate does not reach the caller. If none of them can load the Spring context, ask the user.
 5. Finish. Write `module-extraction.yaml` in this format, run `check_module_guardrails` until it passes, build and \
 test the affected modules once more, and write `modular-monolith.md`.
 
@@ -1116,7 +1353,8 @@ a test.
 ports, as in the domain module.
 
 Read first: `orchestrator-design.md` (the calls, their order, the modes and their configuration), \
-`module-extraction.yaml` (the domain module, its artifact and `bridge_dir`), `domain-design.md` and \
+`functional-allocation.yaml` (what is the orchestrator's), `module-extraction.yaml` (the domain module, its artifact \
+and `bridge_dir`), `domain-design.md` and \
 `domain-design.yaml` (the public API and the ports), `linked-domain-contracts.yaml` with the contract specs, \
 `domain-dependencies.yaml`, and the domain module's code.
 
@@ -1126,8 +1364,8 @@ makes the calls `orchestrator-design.md` lists, in that order: calls to other do
 to the domain's public API. It never repeats a call the domain module makes itself. Business rules stay in the domain \
 module; the orchestrator decides only which call comes next and what the caller gets when one fails, as the design \
 says.
-- The implementation of each port to another domain, whether the domain module or the orchestrator calls it: a mode \
-switch, set by the configuration property `orchestrator-design.md` names and defaulting to `local`. In `local` mode it \
+- The implementation of each port to another domain that the orchestrator calls (the domain module's own ports, its \
+direct calls, keep their `local` adapters: leave them as they are): a mode switch, set by the configuration property `orchestrator-design.md` names and defaulting to `local`. In `local` mode it \
 calls the `local` adapter in the bridge package, which the Module in monolith step made; in `contract` mode it calls \
 the contract adapter.
 - A contract adapter per linked-domain contract the feature uses: a REST client for the contract's spec (base \
@@ -1155,7 +1393,17 @@ parent; the dependency line in the POM of the web application. When it is in you
    b. The port implementations with their mode switch, and the contract adapters, with tests for both modes \
 (`contract` mode against a stub of the contract). A port or contract adapter already in the module (a feature already merged into the base branch \
 added it) is reused, not added again.
-   c. The orchestrator classes, with tests that check the calls of each operation and their order in each mode.
+   c. The orchestrator classes, with tests that check the calls of each operation and their order in each mode. \
+Events the design publishes from the orchestrator (`triggered_from: orchestrator`): their classes and a small event \
+port in the orchestrator module, which the orchestrator calls once the operation has completed. The port's adapter \
+lives in the bridge package and defers the publication to after the commit of the transaction active on the thread: \
+the orchestrator has none of its own, but a legacy caller's transaction may still enclose it, and a rollback must \
+never leave the side effect behind. It registers a transaction synchronization as the Module in monolith step's \
+event adapter does, and publishes at once only when no transaction is active. After the commit it also calls their `temporary_handler`s as the Module in monolith step's event adapter does (a helper per \
+handler calling only its `delegates_to` in a `TransactionTemplate` with `PROPAGATION_REQUIRES_NEW`, catching and \
+logging its failures, no database access), each listed under `temporary_handlers` in \
+`orchestrator-extraction.yaml`, with the same tests (each delegate called exactly once at `monolith`, a new \
+transaction, a failure not reaching the caller).
    d. Spring: a context file in the orchestrator module with its beans and the defaults of the mode properties, one \
 import line in the monolith's root context, and the port beans pointed at the mode switches instead of the local \
 adapters.
@@ -1314,10 +1562,11 @@ root.
 Procedure:
 1. Baseline. Record the monolith commit you copy from (`git rev-parse HEAD` in the monolith checkout) as \
 `module_commit`. Write the ordered checklist of the steps below at the top of `orchestrator-service.md`.
-2. The API. Write `orchestrator-openapi.yaml` next to the declaration: one operation per operation of \
-`orchestrator-extraction.yaml` (the methods the monolith's controllers call), under \
-`/internal/api/v1/<domain>/orchestrator/`, with the request and response of the domain operation it takes over and \
-the REST rules above.
+2. The API. The approved design's `orchestrator-openapi.yaml` is the orchestrator's API: implement it as it is (it \
+is read only; ask the user if it can't be). Only when the run has none (its design predates it), write it next to the \
+declaration: one operation per operation of `orchestrator-extraction.yaml` (the methods the monolith's controllers \
+call), under `/internal/api/v1/<domain>/orchestrator/`, with the request and response of the domain operation it \
+takes over and the REST rules above.
 3. Skeleton, only when the orchestrator service project is not in your checkout (no feature merged it into the base \
 branch yet): a Maven project on the Spring Boot 4 parent, Java 25, only the allowed libraries, a main class and the \
 health endpoint. It must build and start. When the project is there, add to it: skip this step.
@@ -1575,7 +1824,19 @@ from configuration.
 contracts the services consume from domains still in the monolith, publishing of the monolith's events to Azure \
 Service Bus after the transaction commits (no OUTBOX table: the schema is fixed, so delivery is at-most-once; if a \
 decision needs guaranteed delivery, ask the user), and subscribers for the services' events that the monolith still \
-needs.
+needs. Each facade endpoint implements its contract's spec under `contracts/` and delegates only to the binding's \
+`delegates_to` in `linked-domain-contracts.yaml` (it goes when that domain provides the contract itself, \
+`remove_when`). Each `temporary_handler` of `integration-decisions.yaml` gets a subscriber: it takes the event from \
+Service Bus and calls the same handler helper the Module in monolith (or Orchestrator in monolith) step built, so its \
+work is never written twice. Each subscriber reads an enabled property, default `true`: it is switched off when the \
+handling domain's own service subscribes to the event and that subscription is live, or the work is done twice \
+(when the catalogue already lists that domain as a consumer, say so in `integration.md`). All monolith nodes share \
+ONE subscription per handler (competing consumers), never one per node, or every node does the work. List each \
+subscriber under `temporary_subscribers` in `integration-routing.yaml` (checked). The other way round: when "Cross-domain integration" lists \
+temporary handlers of other features calling this domain, subscribed to Service Bus in the monolith, for an event this \
+feature's service now subscribes to, say in `integration.md`, per subscriber, to set its enabled property \
+(`temporary_subscribers` of that feature's `integration-routing.yaml`) to `false` when this service's subscription \
+goes live; change nothing of those features.
 - The monolith may gain an HTTP client library and the Azure Service Bus Java SDK (it supports Java 8), and nothing \
 else new: no DDL, no change to the UI, no change to the domain or orchestrator modules, and no other library. \
 Anything more: ask the user.
@@ -1731,9 +1992,12 @@ cannot find a piece of the flow, when it is unclear which domain owns a class or
 still in use.""",
 
     "dependency_analysis": f"""You find, for ONE feature of a legacy monolith, exactly which other domains it depends \
-on, and decide its Modulith scope. These are the migration's most critical documents: the scope decision decides \
-whether contracts and an orchestrator are built at all, and every dependency you miss breaks the feature once it \
-runs in its own service. This is analysis only: you write documents and never change code. {_LEGACY}
+on, decide its Modulith scope, and allocate each of its functionalities: to the domain, a direct call from the domain \
+to another domain, the orchestrator, or an event and its handler. These are the migration's most critical documents: \
+the scope decision decides whether contracts are built at all, the allocation decides what the domain, the \
+orchestrator and the event handlers do (the design follows it as the reviewer approves it), and every dependency you \
+miss breaks the feature once it runs in its own service. This is analysis only: you write documents and never change \
+code. {_LEGACY}
 
 {_FIXED_RULES}
 
@@ -1763,8 +2027,15 @@ as a side effect), in this format:
 in this format:
 
 {DOMAIN_DEPENDENCIES_SCHEMA}
+3. `functional-allocation.yaml`: every functionality of the feature and where it goes once migrated (the domain \
+microservice, a direct call from it to another domain, the orchestrator, or an event and its handler), so the design \
+starts from an approved allocation instead of deciding it, in this format:
+
+{FUNCTIONAL_ALLOCATION_SCHEMA}
 
 {_DEPENDENCY_RULES}
+
+{_ALLOCATION_RULES}
 
 {_NOT_CONTRACTS}
 
@@ -1785,7 +2056,21 @@ you write documents in your documents folder and never create or change code. {_
 
 Read the analysis first: from the Analysis step, `as-is.md` (where the code is), `functional-spec.md` (what the \
 feature does: its requirements, business rules and messages) and `test-scenarios.md`; from the Domain dependencies \
-step, `cross-domain.yaml` and `domain-dependencies.yaml` (its `decision.scope`, `god_modules` and `shared_code`). Then \
+step, `cross-domain.yaml`, `domain-dependencies.yaml` (its `decision.scope`, `god_modules` and `shared_code`) and \
+`functional-allocation.yaml`: where each functionality goes (the domain, a direct call from the domain to another \
+domain, the orchestrator, or an event and its handler), approved, and possibly amended, by the reviewer (`review` \
+says what they changed and why; your brief includes it in full; a run that started before it existed has none: \
+see the end of these instructions). It is FINAL: where each functionality goes \
+(domain, direct call, orchestrator, event handler, another domain), which domains it calls and where each event is \
+published from are decided; design exactly that. Ask about a placement only for a conflict: \
+(1) the code contradicts a placement (for example a `domain` functionality writes a table another domain owns, or a \
+`domain-call` target is only reachable through a God module); (2) a placement can't meet a guardrail or fixed rule; \
+(3) the allocation disagrees with `domain-dependencies.yaml` or `cross-domain.yaml` in a way you can't design \
+around. Ask once per conflict with ask_user: name the functionality, the conflict and the options, and say how each \
+is carried out. A placement changes only in the allocation, never in the design alone: if it must change, the person \
+uses "Change this step" on the Domain dependencies step, saying the new placement; this step then stops, and the run \
+goes back to Domain dependencies and its gate before the design runs again. If it can stay, their answer says how to \
+design it within the placement, and you do that. You never change `functional-allocation.yaml` yourself. Then \
 read the contracts catalogue you are given, and verify against the code where the design depends on it. When the run \
 has no `functional-spec.md` (it started before there was one), take the business rules and messages from `as-is.md`. When the scope is `domain-only`, sections 2, 3 and 4 below have nothing to \
 design: say so in a line each, write `contracts: []` in `linked-domain-contracts.yaml` and `decisions: []` in \
@@ -1811,23 +2096,29 @@ mapped to the error message users see today (MSG id). Confirmations and warnings
 they follow from a successful response. The later steps test and map errors through this table; no new message \
 text is designed.
    - "Functional allocation": a table `| Id | Owner | Where |`, listing every FR, BR and MSG id of \
-`functional-spec.md` exactly once. Owner is `domain` (the domain module, later its service), `orchestrator` \
-(sequencing across domains, and what the caller gets when another domain fails), `other domain` (done by another \
-domain through a contract: name it) or `UI unchanged` (enforced only in the JSP or JavaScript, per `as-is.md`'s \
-"Rule enforcement"). Where: the API method, orchestrator operation or contract. The later steps report their \
-coverage against it; the studio checks it lists every id. A side effect this feature triggers (an email, letter, \
-notification or audit record that another domain produces through an event or command) is owned by the side that \
-triggers it, `domain` or `orchestrator`, with Where naming the event or contract: what this feature must keep is \
-that it triggers it, when and with what. It is `other domain` only when this feature triggers nothing. Where \
-`functional-spec.md`'s open questions (section 12) say the business needs a notification guaranteed, don't carry it \
-on an event (delivered at most once: the schema is frozen, so there is no outbox): ask the user. A rule another \
-domain decides (its code enforces it, per `as-is.md`'s "Rule enforcement", for example whether a customer's KYC is \
-valid) is `other domain`, naming the contract that answers it; the message this feature shows for that answer is \
-owned by the side that maps the answer to it (`domain` or `orchestrator`), with Where naming that mapping.
+`functional-spec.md` exactly once, taken from the approved `functional-allocation.yaml`: an id's Owner follows the \
+placement of the functionality that lists it (`domain` and `domain-call` → `domain`, `orchestrator` → \
+`orchestrator`, `other-domain` → `other domain`, `ui-unchanged` → `UI unchanged`, and `event-handler` → the side \
+that publishes the event, its `triggered_from`: what this feature must keep is that it publishes it, when and with \
+what). Where: the API method, orchestrator operation, contract, or event and handler that implements it. The later steps report their coverage \
+against it; the studio checks it lists every id and agrees with the approved allocation. A side effect this feature \
+triggers (an email, letter, notification or audit record that another domain produces through an event or command) \
+is owned by the side that triggers it, `domain` or `orchestrator`, with Where naming the event or contract. It is \
+`other domain` only when this feature triggers nothing. Where `functional-spec.md`'s open questions (section 12) say \
+the business needs a notification guaranteed, don't carry it on an event (delivered at most once: the schema is \
+frozen, so there is no outbox): ask the user. A rule another domain decides (its code enforces it, per `as-is.md`'s \
+"Rule enforcement", for example whether a customer's KYC is valid) is `other domain`, naming the contract that \
+answers it; the message this feature shows for that answer (an MSG id the allocation doesn't list, say) is owned by \
+the side that maps the answer to it (`domain` or `orchestrator`), with Where naming that mapping.
    - Data: the tables the domain owns (its code writes them), each with the iBatis statements that write it, and the \
 tables it only reads. A table another domain owns is reached only through a port.
    - Ports: one interface per outbound dependency, named for what it does (for example CustomerDirectory), with the \
-methods this feature needs and, per method, the contract key it calls.
+methods this feature needs and, per method, the contract key it calls, and who calls it: the domain module, for a \
+`domain-call` (or an `other-domain` asked via `domain-call`), or the orchestrator. For the ports the domain module \
+calls itself, name their adapters here: in the monolith, the `local` adapter in the temporary bridge package (the \
+existing in-monolith service, one method each, as a contract binding names it), which the Module in monolith step \
+builds; in the domain's own service, the REST client of the contract, which the Spring Boot microservice step \
+builds. No orchestrator stands between them.
    - Context ports: every ambient input from the analysis, with file and line, and the port that replaces each.
    - UI: how each controller reaches the public API through the router that takes over the legacy service's bean \
 (`legacy` → the as-is service, `monolith` → the domain, or the orchestrator when there is one).
@@ -1840,8 +2131,9 @@ legacy interface, not per caller: entry points that call the same legacy method 
 place (domain or orchestrator), and it can't tell them apart. Where an entry point needs different processing: the \
 same operation with the difference as an explicit input taken from the call's own arguments (the default), or, when \
 the difference can only be known from who calls, a separate operation reached by a toggle branch in that caller that \
-calls a router method made for it; an orchestrator operation only when its extra steps call other domains and need \
-their answers. Never work out the caller from a header. Steps the calling domain does itself stay with it. \
+calls a router method made for it; an orchestrator operation only when the allocation places its extra steps on the \
+orchestrator. Goes to follows the allocation: `orchestrator` when the operation's work includes an orchestrator \
+functionality, else `domain`. Never work out the caller from a header. Steps the calling domain does itself stay with it. \
 For another domain's entry point, the operation is a contract this domain provides to it: record it in the \
 integration decisions with that domain as a consumer. An entry point that shares its caller's transaction is an open \
 decision for the reviewer (keep the call in-process, add a compensation, or accept the split); while it is open, the \
@@ -1849,9 +2141,11 @@ feature isn't switched to its service. Unused entry points: list them as "unused
    - Utility modules (Maven coordinates, and why each is one) and God modules (each one the feature uses, and how the \
 dependency is removed: what moves into this domain and what is reached through a contract).
    - Guardrail check: a table of every guardrail above with its status (met, or exception) and the evidence.
-   Also write `openapi.yaml`: the feature's public API as an OpenAPI 3.1 document, one operation per method of the \
-public API (every operation the "Entry points" table names among them), faithful to current behaviour in what it does, with its shapes from the REST rules above rather than the \
-legacy responses. And write `domain-design.yaml` in this format:
+   Also write `openapi.yaml`: the domain's public API as an OpenAPI 3.1 document, one operation per method of the \
+public API (the operations the router calls when they go straight to the domain, and those the orchestrator calls), \
+faithful to current behaviour in what it does, with its shapes from the REST rules above rather than the legacy \
+responses. The orchestrator's own operations never go in it: they have their own document (section 3). And write \
+`domain-design.yaml` in this format:
 
 {DOMAIN_DESIGN_SCHEMA}
    The four lists that must stay empty are checked, no table may be owned by another domain, and \
@@ -1874,20 +2168,20 @@ AsyncAPI 3, with schemas and error responses).
    Keys are `<provider>.<capability>`. Every domain with an outbound dependency needs at least one contract, and \
 every provider must be one of those domains (both checked). List what is not a contract (rules above) under "Not \
 contracts" with its touchpoint and what the domain does instead; if one is the only outbound dependency on a domain \
-in `domain-dependencies.yaml`, stop and ask the user to send the run back to the Domain dependencies step. Write \
+in `domain-dependencies.yaml`, that is a conflict with the allocation (3 above): ask the user as described there. Write \
 `linked-domain-contracts.yaml` in this format:
 
 {LINKED_DOMAIN_CONTRACTS_SCHEMA}
 
-3. The orchestrator, in `orchestrator-design.md` (the Orchestrator in monolith step builds exactly this). When the \
-feature's only interactions with other domains are events or commands it publishes and needs no answer to (side \
-effects, such as a notification), there is nothing to orchestrate: the domain publishes them itself. Write \
-`orchestrator-design.md` as a short note saying so, and in `domain-design.yaml` `orchestrator_module: none` with \
-`no_orchestrator_reason` (what the feature publishes, to whom): the orchestrator steps are then skipped without \
-running (checked: only when every outbound dependency in `domain-dependencies.yaml` is a `side-effect`). Otherwise: a \
-request \
-flows controller → router → orchestrator → domain module; the orchestrator holds no database access and no \
-transaction of its own, and the Orchestrator microservice step later lifts it into its own service.
+3. The orchestrator, in `orchestrator-design.md` (the Orchestrator in monolith step builds exactly this). When \
+`functional-allocation.yaml` places nothing on the orchestrator (no `orchestrator` functionality, no `other-domain` \
+asked via `orchestrator`, no event `triggered_from: orchestrator`), there is nothing to orchestrate: the domain does \
+its work, its direct calls and its publishing itself. Write `orchestrator-design.md` as a short note saying so, and \
+in `domain-design.yaml` `orchestrator_module: none` with `no_orchestrator_reason` (what the feature publishes or \
+calls directly, to whom): the orchestrator steps are then skipped without running. Otherwise it has an orchestrator \
+(both checked against the allocation): a request flows controller → router → orchestrator → domain module; the \
+orchestrator holds no database access and no transaction of its own, and the Orchestrator microservice step later \
+lifts it into its own service.
    - Its classes, the operations it takes over (same names and signatures as the domain API methods the router \
 calls), the ports it uses, and the order of calls per operation in each mode (sequence diagrams as text), saying \
 which calls the domain module makes itself and which the orchestrator makes.
@@ -1900,10 +2194,23 @@ session or request object never crosses a port.
    - Error mapping, timeouts and fallbacks, so the caller sees the same result in both modes.
    - A readiness table per linked domain (its state, the mode used, what triggers the switch), and how the test \
 scenarios run in each mode.
+   - What it does, from `functional-allocation.yaml`: it takes over the operations whose work includes an \
+`orchestrator` functionality, an `other-domain` one asked via `orchestrator`, or an event `triggered_from: \
+orchestrator` (the "Entry points" table's Goes to); in each it does exactly those, and leaves the `domain` and \
+`domain-call` functionalities to the domain module, which it calls. The other operations go straight to the domain. \
+Never move a functionality between them. Where the legacy code makes a call the allocation gives to the orchestrator \
+in the middle of a method, split that method: name the domain API steps before and after the call, which the \
+orchestrator calls in order with the call between them (the Module in monolith step splits its copy exactly there).
+   Also write `orchestrator-openapi.yaml`, the orchestrator's own API, separate from the domain's `openapi.yaml`: an \
+OpenAPI 3.1 document with one operation per orchestrator operation (what the monolith's router calls), under \
+`/internal/api/v1/<domain>/orchestrator/`, with the request and response of the domain operation it takes over and \
+the REST rules above. The Orchestrator microservice step implements exactly this API. No orchestrator: no file.
 
 4. Integration decisions: for every interaction in `cross-domain.yaml`, the pattern once the feature runs in its own \
 service. Use the contract keys of section 2 instead of defining parallel ones; add only what they do not cover \
-(events, sagas, reference copies, deferred interactions).
+(events, sagas, reference copies, deferred interactions). {_EVENT_HANDLER_DECISIONS}
+
+{_ALLOCATION_DECIDES_PATTERN}
 
 {_INTEGRATION_RULES}
    Messaging is Azure Service Bus: one topic per publishing domain, one subscription per consuming domain, queues for \
@@ -1914,23 +2221,34 @@ follow-up. Write `integration-decisions.yaml` in this format, with a spec under 
 
 {DECISIONS_SCHEMA}
 
-End `domain-design.md` with the risks and open decisions for the reviewer. Ask the user about ownership you cannot \
-settle from the code, a capability that only a God module provides, a shared transaction that cannot stay consistent \
-in `contract` mode, or a decision that depends on the business's tolerance for stale data or another team's plans.""",
+End `domain-design.md` with the risks and open decisions for the reviewer. Besides placement conflicts (above), \
+ask the user only about what this design decides itself and the code and the approved documents can't settle: \
+ownership of a class or table, a capability that only a God module provides, a shared transaction that cannot stay \
+consistent in `contract` mode, or a choice within a placement that depends on the business's tolerance for stale data \
+or another team's plans. Never ask whether a placement is right.
+
+A run without `functional-allocation.yaml` (it started before the Domain dependencies step wrote one): decide each \
+placement yourself, and write the "Functional allocation" table with domain, orchestrator, other domain or UI \
+unchanged as owners. The feature then has an orchestrator unless every outbound dependency in \
+`domain-dependencies.yaml` is a `side-effect` it only publishes (checked), and there are no direct calls between \
+domains: every call to another domain goes through the orchestrator.""",
 
     "modernise_and_test": f"""You modernise the domain microservice to Java 25 and Spring Boot 4, replacing iBatis with \
 Spring Data JPA mapped onto the existing tables, and you give the modernised service its unit and integration tests. \
-The acceptance suite in `acceptance-tests/` (written by the Independent tests step, see `test-report.md`) is the \
-independent proof that behaviour is unchanged. What to convert, from where, and into which packages: \
-"The lifted feature" and "This domain's services" below.
+The acceptance suite in the lifted service's `acceptance-tests/` (written by the Independent tests step, see \
+`test-report.md`) is the independent proof that behaviour is unchanged. Which repository is the lifted service and \
+which the modern one (yours), what to convert, from where, and into which packages: "The lifted feature" and "This \
+domain's services" below.
 
 {_FIXED_RULES}
 
 Hard rules for this step. Checks compare the service's repository with the commit the step started from, and the \
 step cannot finish while they fail.
-- Change code only in the domain service's repository (this step's Changes code setting); never the monolith.
-- Never change anything under `acceptance-tests/` (`check_test_guardrails`). Run it, unchanged, against the \
-modernised service: every test that passed before must still pass.
+- Change code only in the modern service's repository (this step's Changes code setting); never the lifted \
+service's repository, the orchestrator service's or the monolith.
+- Never change the acceptance suite, wherever it is (`check_test_guardrails`): nothing under `acceptance-tests/` \
+changes, and it is not copied into the modern service. Run it, unchanged, from the lifted service's checkout against \
+the modern service: every test that passed against the lifted service must still pass.
 - Same schema: entities map the existing tables and columns as they are, and Hibernate never manages the schema \
 (`spring.jpa.hibernate.ddl-auto=none`, or `validate` in tests). No secrets in the repository (`check_release_guardrails`).
 - Keep the REST contract (`openapi.yaml`, with the REST rules: status codes, error body and headers) and the \
@@ -1950,7 +2268,8 @@ without one, each business rule and error branch of `as-is.md`), named after the
 `test-scenarios.md` they cover, and each error's `errorCode` as `domain-design.md`'s "Errors" table gives it; the adapters to other \
 domains against a stub of their contract. Test libraries: JUnit 5, Mockito, AssertJ, Spring Boot's test support and \
 Testcontainers; anything else, ask. A test that exposes a bug is a finding: report it.
-3. Run the whole test build, then the acceptance suite against the running service, then the checks. When the \
+3. Run the modern service's whole test build, then the acceptance suite against the running modern service, then \
+the checks. When the \
 feature has an orchestrator suite (`orchestrator-test-report.md`), also run it, unchanged, from the run's checkout of \
 the orchestrator service's repository (read only: never change it): the orchestrator service started pointed at the \
 modernised service, every test that passed in its baseline must still pass.
@@ -2013,7 +2332,7 @@ GUARDRAILS = {stage: "\n\n".join(sections) for stage, sections in GUARDRAIL_SECT
 OUTPUTS = {
     "as_is_doc": ["as-is.md"],
     "deep_dive": ["deep-dive.md", "test-scenarios.md", "cross-domain.yaml"],
-    "domain_dependencies": ["domain-dependencies.md", "domain-dependencies.yaml"],
+    "domain_dependencies": ["domain-dependencies.md", "domain-dependencies.yaml", "functional-allocation.yaml"],
     "domain_design": ["domain-design.md", "domain-design.yaml", "openapi.yaml"],
     "linked_domain_contracts": ["linked-domain-contracts.md", "linked-domain-contracts.yaml"],
     "wrapper_design": ["wrapper-design.md", "wrapper-api.yaml"],
@@ -2032,7 +2351,7 @@ OUTPUTS = {
     "bounded_contexts": ["bounded-contexts.md", "bounded-contexts.yaml"],
     "domain_features": ["features.md", "features.yaml"],
     "analysis": ["as-is.md", "functional-spec.md", "test-scenarios.md"],
-    "dependency_analysis": ["cross-domain.yaml", "domain-dependencies.yaml"],
+    "dependency_analysis": ["cross-domain.yaml", "domain-dependencies.yaml", "functional-allocation.yaml"],
     "modulith_design": ["domain-design.md", "domain-design.yaml", "openapi.yaml", "linked-domain-contracts.yaml",
                         "orchestrator-design.md", "integration-decisions.yaml"],
     "modernise_and_test": ["modernisation.md"],
@@ -2198,6 +2517,10 @@ SHARED_TEXTS: dict[str, tuple[str, str, str]] = {
     "bounded_contexts_format": ("Format: bounded contexts", _FORMAT_NOTE, BOUNDED_CONTEXTS_SCHEMA),
     "features_format": ("Format: domain features", _FORMAT_NOTE, FEATURES_SCHEMA),
     "domain_dependencies_format": ("Format: domain dependencies", _FORMAT_NOTE, DOMAIN_DEPENDENCIES_SCHEMA),
+    "functional_allocation_format": ("Format: functional allocation", _FORMAT_NOTE, FUNCTIONAL_ALLOCATION_SCHEMA),
+    "allocation_rules": ("Functional allocation rules", "How the dependency steps decide where each functionality "
+                         "goes (domain, orchestrator, event handler, another domain, the UI), which a reviewer "
+                         "approves before the design.", _ALLOCATION_RULES),
     "linked_domain_contracts_format": ("Format: linked-domain contracts", _FORMAT_NOTE, LINKED_DOMAIN_CONTRACTS_SCHEMA),
     "domain_design_format": ("Format: domain design", _FORMAT_NOTE, DOMAIN_DESIGN_SCHEMA),
     "module_extraction_format": ("Format: module extraction", _FORMAT_NOTE, MODULE_EXTRACTION_SCHEMA),

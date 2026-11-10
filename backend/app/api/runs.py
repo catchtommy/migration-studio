@@ -290,6 +290,11 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
         if body.target_stage and body.target_stage not in gate["reviews"]:
             raise HTTPException(422, f"target_stage must be one of {gate['reviews']}")
     else:
+        # The functional allocation, as the reviewer left it (amended or not), is what the design builds on.
+        try:
+            contracts_store.check_functional_allocation(run_id, list(gate["reviews"]))
+        except contracts_store.InvalidDocument as e:
+            raise HTTPException(422, f"The functional allocation is invalid: {e}. Edit it or reject the step.")
         # An approved design becomes part of the company-wide contracts catalogue before the run moves on.
         try:
             linked = contracts_store.record_linked_domain_contracts(run_id, list(gate["reviews"]))

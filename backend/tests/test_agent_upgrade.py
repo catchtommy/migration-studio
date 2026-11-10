@@ -134,3 +134,40 @@ def test_every_built_in_agent_can_follow_a_release():
     from app.orchestrator.stages import BUILTIN_STAGES
 
     assert [k for k in BUILTIN_STAGES if k not in PREVIOUS_DEFAULT_HASHES] == []
+
+
+def test_an_agent_says_how_it_stands_against_the_release_and_shows_what_differs(client, monkeypatch):
+    """After a release, a built-in agent is the release's default, an earlier default nobody edited (the next start
+    upgrades it), or edited; the comparison shows, field by field, what differs from the release's default."""
+    key = "service_tests"
+    assert client.post(f"/api/agents/{key}/reset").status_code == 200
+    listed = {a["key"]: a for a in client.get("/api/agents").json()}
+    assert listed[key]["release_status"] == "current"
+    compared = client.get(f"/api/agents/{key}/compare").json()
+    assert compared["status"] == "current" and all(f["same"] for f in compared["fields"])
+    try:
+        default = default_config(key)
+        edited = {**client.get(f"/api/agents/{key}").json(), "instructions": default["instructions"] + "\nAlso lint."}
+        assert client.put(f"/api/agents/{key}", json=edited).status_code == 200
+        compared = client.get(f"/api/agents/{key}/compare").json()
+        assert compared["status"] == "edited"
+        instructions = next(f for f in compared["fields"] if f["field"] == "instructions")
+        assert not instructions["same"] and instructions["stored"].endswith("Also lint.")
+        assert instructions["default"] == default["instructions"]
+        assert next(f for f in compared["fields"] if f["field"] == "outputs")["same"]
+        # An earlier release's default nobody edited: the next start brings it up
+        monkeypatch.setitem(agent_store.PREVIOUS_DEFAULT_HASHES, key,
+                            agent_store.PREVIOUS_DEFAULT_HASHES[key] | {_sha(edited["instructions"])})
+        assert client.get(f"/api/agents/{key}").json()["release_status"] == "older-default"
+    finally:
+        client.post(f"/api/agents/{key}/reset")
+
+
+def test_a_custom_agent_has_nothing_to_compare_with(client):
+    r = client.post("/api/agents", json={"key": "lint_check", "title": "Lint check", "description": ""})
+    assert r.status_code == 201, r.text
+    try:
+        assert r.json()["release_status"] is None
+        assert client.get("/api/agents/lint_check/compare").status_code == 409
+    finally:
+        client.delete("/api/agents/lint_check")

@@ -336,7 +336,7 @@ def test_an_older_run_approved_at_a_gate_asks_for_branches_before_a_later_code_s
         r = s.get(Run, run["id"])
         r.workflow, r.repositories, r.delivery = None, None, None
     wf = proj.get("/api/workflows/standard").json()
-    later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]  # the first step after the first gate
+    later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][3]  # the first step after the first gate
     steps = [{**st, "code": {"repository": domain_repo(proj, tmp_path / "loan-service", later)}} if st.get("key") == later
              else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
@@ -484,7 +484,7 @@ def test_a_run_started_before_any_step_changed_code_reviews_its_commits_once_one
         r = s.get(Run, run["id"])
         r.repository, r.legacy, r.base_sha, r.delivery = "", None, None, {"commit": False}  # as such a run was made
     wf = proj.get("/api/workflows/standard").json()
-    later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][2]  # the first step after the first gate
+    later = [st["key"] for st in wf["steps"] if st["kind"] == "agent"][3]  # the first step after the first gate
     steps = [{**st, "code": {"repository": domain_repo(proj, service, later)}} if st.get("key") == later else st for st in wf["steps"]]
     assert proj.put("/api/workflows/standard?library=project", json={"steps": steps}).status_code == 200
 
@@ -1515,6 +1515,11 @@ def test_a_step_the_scope_decision_skips_asks_for_no_branches(client, tmp_path):
     text = text.replace("scope: cross-domain", "scope: domain-only")
     text = re.sub(r"(?ms)^dependencies:\n(?:[ -].*\n)*", "dependencies: []\n", text)  # domain-only: none
     assert proj.put(f"/api/artifacts/{deps['id']}", json={"content": text}).status_code == 200
+    allocation = next(a for a in proj.get(f"/api/runs/{run_id}/artifacts").json()
+                      if a["name"] == "functional-allocation.yaml")
+    from app.agents.stub import sample_allocation  # the allocation edited to match: everything on the domain
+    assert proj.put(f"/api/artifacts/{allocation['id']}",
+                    json={"content": sample_allocation("loan", "approve")}).status_code == 200
     run = finish_workflow(proj, run_id, confirm)
     assert "modular_monolith" in asked and "monolith_orchestrator" not in asked
     skipped = next(e for e in run["stages"] if e["stage"] == "monolith_orchestrator")

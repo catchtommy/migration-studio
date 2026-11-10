@@ -121,6 +121,12 @@ dependencies:
 considered_unrelated: []
 shared_code: []
 """
+    if contracts_store.FUNCTIONAL_ALLOCATION_FILE in outputs:
+        # Agrees with the design's sample allocation table (_sample_functional_files): FR-002 is the orchestrator's
+        # for a cross-domain feature; the event the sample integration decisions publish is handled by `other`.
+        cross = "domain-dependencies.yaml" in files or _scope(ctx) == "cross-domain"
+        files[contracts_store.FUNCTIONAL_ALLOCATION_FILE] = sample_allocation(
+            ctx.domain, ctx.operation, other, event, cross, (ctx.output_dir / "functional-spec.md").is_file())
     if "domain-design.yaml" in outputs:
         owned = (ctx.ownership.get(ctx.domain) or {}).get("tables") or []
         from app import domain_modules
@@ -187,7 +193,7 @@ exceptions: []
                   f"    - bean: {ctx.domain}Service", f"      legacy_bean: {ctx.domain}ServiceLegacy",
                   f"      interface: com.example.{ctx.domain}.{name}Service",
                   f"      module: {n['domain']['package']}.{_segment(ctx.operation)}.{name}Service",
-                  "outside_changes: []", "events: []"]
+                  "outside_changes: []", "events: []", *_handler_lines(ctx, "domain")]
         files["module-extraction.yaml"] = "\n".join(lines) + "\n"
     if "orchestrator-extraction.yaml" in outputs:  # the orchestrator of a cross-domain feature, beside its domain module
         lines = ["# [stub] sample orchestrator extraction declaration", f"feature: {ctx.operation}",
@@ -203,7 +209,8 @@ exceptions: []
                       f"    replaces: {name}Service#{_ident(ctx.operation)[0].lower() + _ident(ctx.operation)[1:]}",
                       f"router: src/main/java/com/example/{ctx.domain}/legacybridge/{name}ServiceRouter.java",
                       "ports:", f"  - port: {_ident(other)}Directory", f"    contract: {query}",
-                      f"    property: {ctx.domain}.{other}-directory.mode", "    default: local", "outside_changes: []"]
+                      f"    property: {ctx.domain}.{other}-directory.mode", "    default: local", "outside_changes: []",
+                      *_handler_lines(ctx, "orchestrator")]
         else:
             lines += ["orchestrator: none", 'reason: "[stub] The feature is domain-only: controllers call the domain '
                       'module directly"']
@@ -292,7 +299,11 @@ decisions:
     pattern: event
     contract: {event}
     status: planned
-    summary: Published through the outbox to the {ctx.domain} topic
+    summary: Published to the {ctx.domain} topic after the transaction commits
+    temporary_handler:
+      listener: {_ident(ctx.operation)}Completed{_ident(other)}Handler
+      delegates_to: ["com.acme.{other}.{other.capitalize()}Service#on{_ident(ctx.operation)}Completed"]
+      remove_when: The {other} service subscribes to {event}
 contracts:
   - key: {query}
     provider: {other}
@@ -348,6 +359,58 @@ components:
         f.write_text(content, encoding="utf-8")
         written.append(ArtifactOut(name=f.name, path=ctx.rel(f), kind="yaml"))
     return written
+
+
+def _handler_lines(ctx: AgentContext, side: str) -> list[str]:
+    """`temporary_handlers` of an extraction declaration: those integration-decisions.yaml gives the step building
+    `side` (domain or orchestrator)."""
+    handlers = contracts_store.expected_temporary_handlers(ctx.output_dir, side) or []
+    if not handlers:
+        return ["temporary_handlers: []"]
+    return ["temporary_handlers:", *(f"  - {{listener: {h['listener']}, delegates_to: [{', '.join(h['delegates_to'])}]}}"
+                                     for h in handlers)]
+
+
+def sample_allocation(domain: str, operation: str, other: str = "", event: str = "", cross: bool = False,
+                      spec: bool = False) -> str:
+    """A valid sample functional allocation: for a cross-domain feature, F2 on the orchestrator (calling `other`, X1)
+    and F3 an event handled by `other` (X2); for a domain-only one, everything on the domain. `spec`: the run has a
+    functional specification, whose sample ids it allocates."""
+    ids = lambda *i: f"    requirements: [{', '.join(i)}]\n" if spec else ""  # noqa: E731
+    handler = f"""  - id: F3
+    name: Let {other} react once {operation} completes
+    legacy: "[stub] The same request updates {other}'s records inline"
+    placement: event-handler
+    owner: {other}
+    event:
+      name: {event}
+      triggered_from: domain
+      publisher: {domain}
+      when: After the {domain} change commits
+      handler: "[stub] {other} updates its own records"
+      delegates_to: ["com.acme.{other}.{other.capitalize()}Service#on{_ident(operation)}Completed"]
+    depends_on: [F1]
+    interactions: [X2]
+    reason: "[stub] A side effect in {other}; the caller needs no answer"
+""" if cross else ""
+    calls = f"    calls: [{other}]\n    interactions: [X1]\n" if cross else ""
+    why = f"Needs the answer of {other} for the caller's response" if cross else "Stays in the domain"
+    return f"""# [stub] sample functional allocation
+feature: {operation}
+domain: {domain}
+functionalities:
+  - id: F1
+    name: Record the {operation} request
+    legacy: "[stub] The legacy service validates and records the request"
+{ids("FR-001", "BR-001", "MSG-01")}    placement: domain
+    reason: "[stub] Writes only tables {domain} owns"
+  - id: F2
+    name: Show the {other or "summary"} summary
+    legacy: "[stub] Reads a summary while handling {operation}"
+{ids("FR-002")}    placement: {"orchestrator" if cross else "domain"}
+{calls}    depends_on: [F1]
+    reason: "[stub] {why}"
+{handler}"""
 
 
 def _scope(ctx: AgentContext) -> str:
@@ -649,6 +712,10 @@ def _sample_api_files(ctx: AgentContext) -> list[ArtifactOut]:
         files["wrapper-api.yaml"] = sample_openapi(
             f"{other} wrapper for {ctx.domain} (stub)", f"/internal/api/v1/{other}", _ident(other),
             f"Operations {other} exposes so {ctx.domain} stops reaching into its tables.")
+    if "orchestrator-design.md" in outputs and _scope(ctx) == "cross-domain":  # the orchestrator's own API
+        files[contracts_store.ORCHESTRATOR_OPENAPI_FILE] = sample_openapi(
+            f"{ctx.domain} orchestrator – {ctx.operation} (stub)", f"{base}/orchestrator", f"{resource}Orchestration",
+            f"What the monolith calls for {ctx.operation}; the orchestrator calls the {ctx.domain} domain.")
     if ctx.stage in ("domain_design", "modulith_design"):
         files["domain-events.yaml"] = sample_asyncapi(f"{ctx.domain} events – {ctx.operation} (stub)", ctx.domain,
                                                       ctx.operation)
@@ -816,7 +883,11 @@ None.
         every = [i for k in fs.KINDS for i in ids[k]]
         cross = _scope(ctx) == "cross-domain"
         if main.name == fs.DESIGN_FILE:
-            rows = [f"| {i} | {'orchestrator' if cross and i == 'FR-002' else 'domain'} | [stub] |" for i in every]
+            # The owner the approved functional allocation implies, as a design agent must follow it
+            approved = contracts_store.approved_owners(ctx.output_dir)
+            owner = lambda i: (sorted(approved[i])[0] if i in approved  # noqa: E731
+                               else "orchestrator" if cross and i == "FR-002" else "domain")
+            rows = [f"| {i} | {owner(i)} | [stub] |" for i in every]
             with main.open("a", encoding="utf-8") as f:
                 f.write("\n## Functional allocation\n| Id | Owner | Where |\n|---|---|---|\n" + "\n".join(rows) + "\n")
         elif ctx.stage in fs.COVERAGE_STEPS and main.name == fs.COVERAGE_STEPS[ctx.stage][0]:

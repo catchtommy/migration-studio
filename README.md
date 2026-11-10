@@ -4,7 +4,7 @@ A web UI that drives the migration of the Java 8 / Spring MVC 3 / iBatis monolit
 one domain operation at a time. Each operation goes through a workflow of agent stages and human approval gates.
 Workflows are editable (Workflows page); the built-in *Standard migration* workflow is:
 
-AS-IS docs → Deep dive → 👤 → **Cross-domain dependency finder → Modulith design (Linked-domain contracts → Domain → Orchestrator)** → Cross-domain integration design → 👤 → Module in monolith → Orchestrator in monolith\* → Spring Boot microservice → Orchestrator microservice\* → Independent tests (acceptance suite) → 👤 → Modernisation → Service tests → Monolith integration → 👤
+AS-IS docs → Deep dive → **Cross-domain dependency finder** → 👤 → **Modulith design (Linked-domain contracts → Domain → Orchestrator)** → Cross-domain integration design → 👤 → Module in monolith → Orchestrator in monolith\* → Spring Boot microservice → Orchestrator microservice\* → Independent tests (acceptance suite) → 👤 → Modernisation → Service tests → Monolith integration → 👤
 
 \* Only for a cross-domain feature that has an orchestrator; skipped otherwise.
 
@@ -26,9 +26,100 @@ The domain service and the orchestrator service each get a black-box acceptance 
 
 The studio checks that the three agree before Analysis may finish: the specification's sections, every BR and MSG id
 in both `as-is.md` and the specification, every requirement and rule covered by a scenario. *Domain dependencies*
-then writes `cross-domain.yaml` and `domain-dependencies.yaml` (the scope decision) from that trace and targeted
-searches, linking each interaction to the requirements and scenarios it serves. *Approve analysis* reviews both
-steps, with one checklist item per audience (architect, test lead, business owner or BA).
+then writes `cross-domain.yaml`, `domain-dependencies.yaml` (the scope decision) and `functional-allocation.yaml` (see
+below) from that trace and targeted searches, linking each interaction to the requirements and scenarios it serves.
+*Approve analysis* reviews both steps, with one checklist item per audience (architect, test lead, business owner or
+BA) and one for the functional allocation.
+
+### Functional allocation: decided and approved before the design
+
+A legacy feature often reaches into several domains and their tables. Before any design runs, the dependency step
+(*Domain dependencies* in the Lean workflow, the *Cross-domain dependency finder* in the Standard one) breaks the
+feature into its functionalities and decides where each goes once migrated, in `functional-allocation.yaml`. The agent
+takes the first placement that fits, and asks you when it can't decide:
+
+| Placement | When |
+|---|---|
+| `ui-unchanged` | Enforced only in the JSP or JavaScript |
+| `event-handler` | A side effect nobody waits for: the event (`name`), where it is published from (`triggered_from`: `domain` or `orchestrator`), the `publisher`, what the `handler` in the `owner` domain does, and the existing method(s) it calls today (`delegates_to`) |
+| `other-domain` | Another domain decides it (`owner`); the feature asks for the answer `via` the orchestrator or a direct call |
+| `domain-call` | The domain module calls another domain's API itself (`calls`), without an orchestrator. Only to domains the domain's **Direct calls** setting allows |
+| `orchestrator` | Any other call to other domains (`calls`) whose answers the caller needs. No database |
+| `domain` | This domain's own logic on its own tables, with no other domain involved |
+
+**Direct calls (domain setting).** On a domain's *Boundary* tab, tick the other domains it may call directly through
+their API, such as a subdomain or a utility API domain. Every other domain is reached through the orchestrator. Agents
+see the setting, and a direct call to a domain it doesn't allow is refused, both when the step finishes and when the
+gate is approved.
+
+Example: today, updating a client's bank account loops over the client's loans and adds a note to each. Allocated,
+the bank account update is `domain`, and the loan notes are an `event-handler`: the client domain publishes
+`client.bank-account-changed` and the loan domain's handler fetches the loans and adds the notes. No orchestrator
+fetches the loans.
+
+**Who builds an event handler.** A decision gets a `temporary_handler` in `integration-decisions.yaml` exactly when the
+allocation's event names `delegates_to`, meaning the handling domain is still in the monolith. It has the same
+`delegates_to`; this is checked.
+- *Module in monolith* builds it for the domain module's events. The event port's adapter in the bridge package calls a
+  helper after commit, and the helper calls only the handling domain's existing method(s).
+- *Orchestrator in monolith* does the same for events the orchestrator publishes.
+- *Monolith integration* adds a Service Bus subscriber that calls the same helper once the feature runs in its own
+  service.
+- With the toggle at `legacy`, the old code still does the work inline and publishes nothing, so the work is never
+  done twice.
+- When the handling domain is migrated, its service subscribes and the handler is removed.
+
+**Calls the allocation gives to the orchestrator.** Where the legacy code makes such a call in the middle of a method,
+the design splits the method there. *Module in monolith* splits its copy at exactly that point. This is the one
+exception to copying with only the package line changed, and Modulith guardrail 8 allows it. The orchestrator then
+calls the domain steps in order, with the call between them. Until *Orchestrator in monolith* points the router at
+the orchestrator, those operations stay on the legacy code at the `monolith` toggle, so it never runs half a flow. The
+domain module's direct calls keep their `local` adapters; the orchestrator's mode switches cover only the ports it
+calls.
+
+**Decisions follow the allocation (Lean).** In *Modulith design*, the approved allocation decides each linked
+interaction's pattern family and who makes the call; the integration rules only choose within it. An interaction's
+`kind` or the number of hops never overrides a placement.
+
+| Placement | Allowed patterns |
+|---|---|
+| `event-handler` | `event` |
+| `orchestrator` | `sync-api`, `saga`, `read-model`, `reference-copy`, `deferred` |
+| `domain-call` | `sync-api`, `read-model`, `reference-copy`, `deferred` |
+| `other-domain` | as its `via` |
+
+The design can't finish until `integration-decisions.yaml` agrees with the allocation:
+- each linked interaction has a decision, with an allowed pattern and the functionality's target domain;
+- `domain` and `ui-unchanged` functionalities link no outbound interaction;
+- every outbound event comes from an event-handler functionality.
+
+Inbound interactions (other domains calling the feature) are outside the check. The Standard workflow isn't held to
+it.
+
+**Orchestrator or not.** With an approved allocation, the feature has an orchestrator exactly when the allocation
+places something on it: an `orchestrator` functionality, an `other-domain` one asked via the orchestrator, or an event
+published from it. Otherwise the domain does its work, its direct calls and its publishing itself, and the orchestrator
+steps are skipped.
+
+At *Approve analysis*, which reviews the dependency step in both workflows, the file shows as a table grouped by
+placement. A reviewer can **Change placements**: placement, the domains called, the deciding domain and how it's asked,
+the event and its trigger, with a comment. Each change is recorded on the functionality (`review`: `amended`, the
+agent's `original` placement and the `comment`), and an invalid file blocks approval. A re-run of the dependency step
+keeps the reviewer's changes. The design agents read the approved allocation and follow it without deciding it again;
+when a placement turns out to be impossible, the agent asks you, and the allocation changes first (back to the
+dependency step), never the design alone. The studio checks that the design's "Functional allocation" table gives each
+id the owner the approved allocation implies: `domain-call` ids belong to the domain, and an event handler's ids to the
+side that publishes the event.
+
+The file is validated when the step finishes, and again in full when the gate is approved, so a reviewer's change
+can't leave the design with nothing valid to produce:
+- every domain it names is this one or one the feature depends on, and every outbound dependency is allocated;
+- every event handler has an event, and direct calls go only to allowed domains;
+- in a cross-domain feature, every placement that involves another domain names the `cross-domain.yaml` interactions it
+  covers, `domain` and `ui-unchanged` link none, and every outbound interaction is linked;
+- a domain-only feature puts nothing on the orchestrator;
+- with a functional specification, every FR and BR is allocated. A message on an `other-domain` functionality belongs
+  to the side that asks (its `via`).
 
 **Functional coverage (a report, never a block).** *Modulith design* assigns every FR, BR and MSG an owner in
 `domain-design.md` ("Functional allocation": domain, orchestrator, another domain, or UI unchanged). Each later step
@@ -41,22 +132,28 @@ started before the specification existed has none; its agents take the rules fro
 ### Modulith design
 
 After the analysis is approved, four focused agents prepare the feature for the monolith. Each reads only the earlier
-documents it builds on (the step's *uses*), and one gate (*Approve design*) reviews all of them with the cross-domain
-integration design.
+documents it builds on (the step's *uses*). The dependency finder runs before *Approve analysis*, so its results, including the
+functional allocation, are approved with the analysis, before the design runs. One gate (*Approve design*)
+then reviews the three design agents with the cross-domain integration design.
 
 | Agent | Does | Writes |
 | --- | --- | --- |
-| **Cross-domain dependency finder** | For this one feature, finds exactly which other domains it is related to: which service, DAO or table of each, in which direction, how strongly, with code references. Also lists the domains it ruled out. | `domain-dependencies.md`, `domain-dependencies.yaml` |
+| **Cross-domain dependency finder** | For this one feature, finds exactly which other domains it is related to: which service, DAO or table of each, in which direction, how strongly, with code references. Also lists the domains it ruled out, and allocates each functionality (domain, orchestrator or event handler). | `domain-dependencies.md`, `domain-dependencies.yaml`, `functional-allocation.yaml` |
 | **Modulith design: Linked-domain contracts** | Consumer-first: defines what this feature needs from each linked domain as a contract (API, event or command), reusing contracts already in the catalogue. For each, it states what the feature relies on and the **temporary monolith binding** that provides it until the domain is migrated (the existing `Class#method` it delegates to, and when to remove it). | `linked-domain-contracts.md`, `linked-domain-contracts.yaml`, specs under `contracts/` |
 | **Modulith design: Domain** | Designs the feature's domain inside the monolith: packages, public API, owned tables, and the ports it needs, each naming the contract it calls. Same technical stack, no database change, no UI change. | `domain-design.md`, `domain-design.yaml`, `openapi.yaml` |
-| **Modulith design: Orchestrator** | Looks up the dependencies, the contracts and the domain design, and designs how the feature works as is while other domains are not ready (`local` mode: the existing service) and how it moves to the contracts (`contract` mode: served by the monolith binding now, by the domain's own service later), per dependency, by configuration. | `orchestrator-design.md` |
+| **Modulith design: Orchestrator** | Looks up the dependencies, the contracts and the domain design, and designs how the feature works as is while other domains are not ready (`local` mode: the existing service) and how it moves to the contracts (`contract` mode: served by the monolith binding now, by the domain's own service later), per dependency, by configuration. Its operations are the functionalities the allocation places on the orchestrator. | `orchestrator-design.md`, `orchestrator-openapi.yaml` |
+
+**Two APIs.** The design writes the domain's API (`openapi.yaml`, under `/internal/api/v1/<domain>/`) and, when the
+feature has an orchestrator, the orchestrator's own API (`orchestrator-openapi.yaml`, under
+`/internal/api/v1/<domain>/orchestrator/`). Both are reviewed at *Approve design*. The studio refuses an orchestrator
+without its API, orchestrator paths in the domain's API, and orchestrator paths outside their prefix.
 
 **Scope decision.** The dependency finder also records a decision in `domain-dependencies.yaml`: `domain-only` (the
 feature has no outbound dependency on another domain) or `cross-domain`, with a reason. For a `domain-only` feature
 the **Linked-domain contracts** and **Orchestrator** steps are skipped: no agent runs, and each leaves a short "skipped" note that
 quotes the decision, so the timeline and later steps still see it. The decision is checked against the dependency
-list (`domain-only` with an outbound dependency, or `cross-domain` with none, is refused), and the reviewer sees it
-at the design gate. To bring the steps back, change the decision to `cross-domain` and reject the gate so they
+list (`domain-only` with an outbound dependency, or `cross-domain` with none, is refused), and the reviewer approves
+it with the functional allocation, before the design. To bring the steps back, change the decision to `cross-domain` and reject the gate so they
 re-run.
 
 `domain-dependencies.yaml` is validated before the dependency finder may finish (the decision, relations, directions,
@@ -202,8 +299,10 @@ Boot 4** service (it has no data layer to rewrite, so it goes straight to the ta
 calls the feature through it: **monolith → orchestrator service → domain service**, and the other domains through their
 contracts. The orchestrator's classes and tests are copied unchanged apart from package and import lines; the domain
 API becomes a REST client of the domain service, each port is wired straight to its contract adapter (outside the
-monolith there is no `local` mode), and the Spring XML becomes Boot configuration. It writes `orchestrator-openapi.yaml`
-(under `/internal/api/v1/<domain>/orchestrator/`), `orchestrator-service-extraction.yaml` and `orchestrator-service.md`.
+monolith there is no `local` mode), and the Spring XML becomes Boot configuration. It implements the approved design's
+`orchestrator-openapi.yaml` (under `/internal/api/v1/<domain>/orchestrator/`). The file is read-only by then; only a
+run whose design predates it writes one here. The step writes `orchestrator-service-extraction.yaml` and
+`orchestrator-service.md`.
 **`check_orchestrator_service_guardrails`** refuses any database (data-access code, transactions, SQL, JDBC/JPA/iBatis
 libraries, datasource or migration-tool settings), a stack other than Java 25 on Spring Boot 4, changes to the monolith,
 secrets, other domains' code, and operations other than the declared ones. Set the step's *Changes code* to the
@@ -516,8 +615,10 @@ beyond that.
 - *Service:* each cross-domain dependency is a **port** (interface in `<domain>.integration.port`). Its
   **adapter** calls the monolith's facade while the other domain is still in the monolith; it is swapped for the
   other service's adapter by configuration once that domain migrates. No classes copied from other domains.
-- *Monolith:* **facade endpoints** (`/internal/api/v1/<domain>/…`) for what migrated services still need, an
-  **OUTBOX** table + relay publishing to Service Bus, and subscribers for the services' events.
+- *Monolith:* **facade endpoints** (`/internal/api/v1/<domain>/…`) for what migrated services still need. Each
+  implements its contract's spec and delegates only to the binding's `delegates_to` until that domain provides the
+  contract. Also: publishing the monolith's events to Service Bus after commit (no outbox table, since the schema is
+  fixed, so delivery is at most once), and subscribers for the services' events, including the temporary handlers.
 - *Azure Service Bus:* one topic per publishing domain (`{domain}-events`), one subscription per consumer, queues
   for saga commands (`{domain}-commands`), idempotent consumers, sessions where order matters (Settings →
   Cross-domain integration).

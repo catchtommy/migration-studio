@@ -6,6 +6,8 @@ import { DownloadButton } from "./DownloadButton";
 import { SpecView } from "./SpecView";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { parseYaml } from "./YamlView";
+import { ALLOCATION_FILE, FunctionalAllocationView, parseAllocation } from "./FunctionalAllocationView";
+import { documentGuide, type DocumentGuide } from "../lib/documentGuide";
 
 const isYaml = (name: string) => /\.ya?ml$/i.test(name);
 
@@ -18,7 +20,7 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
   useEffect(() => setEditing(false), [artifactId]);
 
   const save = useMutation({
-    mutationFn: () => api.updateArtifact(artifactId, draft),
+    mutationFn: (content: string) => api.updateArtifact(artifactId, content),
     onSuccess: (updated) => {
       queryClient.setQueryData(["artifact", artifactId], updated);
       queryClient.invalidateQueries({ queryKey: ["artifacts"] });
@@ -52,6 +54,7 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
           )}
         </div>
       </div>
+      <GuideBar guide={documentGuide(artifact.path)} />
       {editing ? (
         <div className="space-y-2 p-3">
           <textarea
@@ -70,7 +73,7 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
             <button
               className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
               disabled={save.isPending}
-              onClick={() => save.mutate()}
+              onClick={() => save.mutate(draft)}
             >
               Save &amp; commit
             </button>
@@ -81,12 +84,53 @@ export function ArtifactViewer({ artifactId, editable }: { artifactId: number; e
         <ErrorBoundary key={artifact.content} fallback={(error) => <Unrendered text={artifact.content} error={error} editable={editable} />}>
           {artifact.kind === "markdown" ? (
             <Markdown className="p-4">{artifact.content}</Markdown>
+          ) : artifact.name === ALLOCATION_FILE && parseAllocation(artifact.content) ? (
+            // Placements are changed in the table; Edit above still gives the raw YAML.
+            <FunctionalAllocationView
+              key={artifact.content}
+              content={artifact.content}
+              editable={editable}
+              saving={save.isPending}
+              error={save.error ? (save.error as Error).message : null}
+              onSave={(text) => save.mutate(text)}
+            />
           ) : (
             <div className="max-w-full overflow-x-auto">
               <SpecView content={artifact.content} yaml={<pre className="max-w-full overflow-x-auto p-4 font-mono text-xs">{artifact.content}</pre>} />
             </div>
           )}
         </ErrorBoundary>
+      )}
+    </div>
+  );
+}
+
+/** What the document is and how the migration uses it, so a reviewer knows why it matters; details on demand. */
+function GuideBar({ guide }: { guide?: DocumentGuide }) {
+  const [open, setOpen] = useState(false);
+  if (!guide) return null;
+  return (
+    <div role="note" aria-label="About this document" className="border-b border-border bg-accent/5 px-4 py-2 text-xs">
+      <div className="flex items-start gap-2">
+        <span aria-hidden="true" className="mt-px text-accent">
+          ⓘ
+        </span>
+        <p className="min-w-0 flex-1">{guide.what}</p>
+        <button className="shrink-0 font-medium text-accent hover:underline" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? "Less" : "How it's used"}
+        </button>
+      </div>
+      {open && (
+        <dl className="mt-1.5 grid gap-x-3 gap-y-1 pl-5 sm:grid-cols-[auto_1fr]">
+          <dt className="font-medium text-subtle">Used</dt>
+          <dd>{guide.usage}</dd>
+          {guide.audience && (
+            <>
+              <dt className="font-medium text-subtle">Review by</dt>
+              <dd>{guide.audience}</dd>
+            </>
+          )}
+        </dl>
       )}
     </div>
   );

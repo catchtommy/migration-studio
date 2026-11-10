@@ -163,6 +163,24 @@ def _routing(monolith: Path, diff: list[mg.Change], routing: dict, domain: str) 
         if routing["target"] == "domain-service" and orchestrator_api.search(line):
             problems.append(f"{path} calls an orchestrator service (`{line.strip()[:80]}`), but the feature has no "
                             "orchestrator: the monolith calls the domain service")
+    # Each declared temporary subscriber: new code in this step calls its handler helper, and reads its enabled
+    # property, which defaults to true (switched off when the handling domain's own subscription goes live).
+    code = [line for path, line in added if path.endswith(".java") and not mg._is_test(path)]
+    for sub in routing.get("temporary_subscribers") or []:
+        name = re.compile(rf"\b{re.escape(str(sub['listener']))}\b")
+        if not any(name.search(line) for line in code):
+            problems.append(f"No subscriber in this step's change calls the temporary handler {sub['listener']} "
+                            f"(temporary_subscribers in integration-routing.yaml): it takes {sub['event']} from "
+                            "Service Bus and calls that helper")
+        enabled = str(sub["enabled_property"])
+        if not any(enabled in line for _path, line in added):
+            problems.append(f"The temporary subscriber's property {enabled} is not read or configured anywhere in this "
+                            "step's change")
+        off = re.compile(rf"^\s*{re.escape(enabled)}\s*[:=]\s*[\"']?false[\"']?\s*$", re.IGNORECASE)
+        for path, line in added:
+            if path.endswith((".properties", ".yml", ".yaml")) and off.match(line):
+                problems.append(f"{path} sets {enabled} to false. The monolith's subscriber stays on until the "
+                                "handling domain's own subscription is live")
     return problems
 
 

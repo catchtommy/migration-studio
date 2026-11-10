@@ -188,6 +188,9 @@ class Domain(Base):
     # that belong to this domain. No other domain's service may use them directly.
     owned_tables: Mapped[list | None] = mapped_column(JSONText)
     owned_packages: Mapped[list | None] = mapped_column(JSONText)
+    # Other domains this domain may call directly through their API, without an orchestrator (a subdomain, a utility
+    # API domain). Every other domain is reached through the orchestrator. Set by a person, never by an agent.
+    direct_calls: Mapped[list | None] = mapped_column(JSONText)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

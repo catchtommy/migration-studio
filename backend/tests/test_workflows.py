@@ -18,7 +18,8 @@ def _two_step(gate_reviews=("as_is_doc",)):
 
 def test_standard_workflow_is_seeded(client):
     standard = client.get("/api/workflows/standard").json()
-    assert [s["key"] for s in standard["stages"]][:3] == ["as_is_doc", "deep_dive", "gate_analysis"]
+    assert [s["key"] for s in standard["stages"]][:4] == ["as_is_doc", "deep_dive", "domain_dependencies",
+                                                             "gate_analysis"]
     assert standard["stages"][0]["title"] == "AS-IS documentation"  # agent titles come from the library
 
 

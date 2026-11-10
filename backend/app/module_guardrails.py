@@ -264,14 +264,17 @@ def base_pom_info(root: Path, base: str) -> tuple[set[tuple[str, str]], dict[tup
 
 def check(root: Path, base: str, declaration: dict | None, design: dict | None, ownership: dict[str, dict],
           domain: str, god_modules: list[str] | None = None, extra_artifacts: list[str] | None = None,
-          earlier: dict | None = None, wiring: set[str] | None = None) -> list[str]:
+          earlier: dict | None = None, wiring: set[str] | None = None,
+          expected_handlers: list[dict] | None = None) -> list[str]:
     """Violations of the step's limits since `base`. `declaration` is module-extraction.yaml (parsed) and `design` is
     domain-design.yaml (parsed); either may be None while the agent has not written it yet. `extra_artifacts` are
     modules built by an earlier step (groupId:artifactId) that the new modules may depend on. `earlier` holds the
     module folders and bridge packages earlier runs of the domain declared ({"modules": set, "bridges": set}): a
     feature may extend those; any other folder must be new. `wiring` are more class names whose beans the Spring
     wiring may name (the domain module's, for the Orchestrator in monolith step). A declaration without `routing` may
-    name the feature's `router` and its legacy `routes` (the Orchestrator in monolith step's view of the bridge)."""
+    name the feature's `router` and its legacy `routes` (the Orchestrator in monolith step's view of the bridge).
+    `expected_handlers` are the temporary handlers integration-decisions.yaml gives this step
+    (contracts_store.expected_temporary_handlers); None: nothing to compare the declared ones with."""
     try:
         diff = changes(root, base)
     except (RuntimeError, OSError) as e:
@@ -425,8 +428,14 @@ def check(root: Path, base: str, declaration: dict | None, design: dict | None, 
 
     # 5b. The parallel run (Module in monolith): own folders, the bridge holds the router and adapters, the toggle.
     routes = routing.get("routes") or (declaration or {}).get("routes") or []
+    handlers = (declaration or {}).get("temporary_handlers") or []
     if bridge and router:
-        problems += _bridge_classes(root, bridge[0], inside, in_bridge, routes, router)
+        problems += _bridge_classes(root, bridge[0], inside, in_bridge, routes, router,
+                                    {str(h.get("listener")) for h in handlers})
+    # 5c. The temporary event handlers: the ones the decisions give this step, each calling only its delegates_to,
+    # in a new transaction (it runs after the feature's commit).
+    if declaration is not None and bridge:
+        problems += _temporary_handler_problems(root, bridge[0], handlers, expected_handlers)
     if routing:
         problems += _own_folders(root, base, diff, modules, bridge, earlier or {})
         if bridge and not _under(router, bridge):
@@ -520,10 +529,11 @@ def _own_folders(root: Path, base: str, diff: list[Change], modules: list[str], 
 
 
 def _bridge_classes(root: Path, bridge: str, inside: list[Change], in_bridge: list[Change], routes: list[dict],
-                    router: str) -> list[str]:
+                    router: str, listeners: set[str] = frozenset()) -> list[str]:
     """Every class added to the bridge package is the router, an adapter (it implements the legacy interface the router
     takes over, or a port of the domain module), or a helper such as a mapper that the router or an adapter uses and
-    that has no database access."""
+    that has no database access. A declared temporary handler (`listeners`) is a helper too, checked on its own
+    (_temporary_handler_problems): it runs its delegates in a new transaction."""
     ports = set()
     for c in inside:
         if c.path.endswith(".java") and c.status != "D":
@@ -541,7 +551,8 @@ def _bridge_classes(root: Path, bridge: str, inside: list[Change], in_bridge: li
                if path == router or (not _is_test(path) and implemented(text) & ports)]
     problems = []
     for c in in_bridge:
-        if c.status != "A" or not c.path.endswith(".java") or _is_test(c.path) or _simple(c.path) == "package-info":
+        if c.status not in "AM" or not c.path.endswith(".java") or _is_test(c.path) \
+                or _simple(c.path) == "package-info":
             continue
         text = classes.get(c.path, "")
         if c.path == router or implemented(text) & ports:
@@ -552,10 +563,103 @@ def _bridge_classes(root: Path, bridge: str, inside: list[Change], in_bridge: li
                             "module nor the legacy interface the router takes over, and neither the router nor an "
                             "adapter uses it. The bridge holds only the router, adapters and their helpers (mappers)")
             continue
+        if _simple(c.path) in listeners:
+            continue  # a temporary handler: _temporary_handler_problems
         hit = DB_ACCESS.search(text) or TRANSACTION.search(text)
         if hit:
             problems.append(f"{c.path} uses {hit.group(0).strip()}. A helper in the bridge package only converts "
                             "between the legacy and the module's types: no database access, no transactions")
+    return problems
+
+
+# A temporary handler runs after the feature's transaction has committed, while that transaction's connection is still
+# bound to the thread (TransactionSynchronization#afterCommit): writes made then join the committed transaction and are
+# never committed, unless they run in a new one.
+REQUIRES_NEW = re.compile(r"\bPROPAGATION_REQUIRES_NEW\b|\bPropagation\.REQUIRES_NEW\b")
+OTHER_PROPAGATION = re.compile(r"\bPROPAGATION_(?!REQUIRES_NEW\b)[A-Z_]+\b|\bPropagation\.(?!REQUIRES_NEW\b)[A-Z_]+\b")
+# Classes a temporary handler might call besides its delegates_to: other legacy services and data access.
+COLLABORATOR = re.compile(r"\b[A-Z]\w*(?:Service|ServiceImpl|Manager|Facade|Repository|Dao|DAO)\b")
+HANDLER_INFRASTRUCTURE = {"PlatformTransactionManager", "DataSourceTransactionManager", "JtaTransactionManager",
+                          "LogManager"}
+# The class that calls a temporary handler (the event port's adapter) defers it to after the commit.
+AFTER_COMMIT = re.compile(r"\bafterCommit\s*\(")
+REGISTERS = re.compile(r"\bregisterSynchronization\s*\(")
+
+
+def _temporary_handler_problems(root: Path, bridge: str, declared: list[dict],
+                                expected: list[dict] | None) -> list[str]:
+    """The temporary handlers declared in module-extraction.yaml (orchestrator-extraction.yaml for the orchestrator's
+    events): exactly those integration-decisions.yaml gives this step (`expected`, when known), each a class in the
+    bridge package that calls its delegates_to method(s) and no other service or data access, inside a
+    TransactionTemplate (or @Transactional) with PROPAGATION_REQUIRES_NEW."""
+    where, problems = "module-extraction.yaml", []
+    by_name = {str(h["listener"]): h for h in declared}
+    if expected is not None:
+        for e in expected:
+            h = by_name.get(e["listener"])
+            if h is None:
+                problems.append(f"{where} declares no temporary handler {e['listener']}: integration-decisions.yaml "
+                                f"gives the event of {e['interaction']} one (its handling domain is still in the "
+                                "monolith). Build it in the bridge package and list it under temporary_handlers")
+            elif sorted(h["delegates_to"]) != sorted(e["delegates_to"]):
+                problems.append(f"{where}: temporary handler {e['listener']} delegates to "
+                                f"{', '.join(h['delegates_to'])}, but integration-decisions.yaml says "
+                                f"{', '.join(e['delegates_to'])}")
+        wanted = {e["listener"] for e in expected}
+        problems += [f"{where} declares the temporary handler {n}, which integration-decisions.yaml does not give "
+                     "this step: build only the handlers of the events this step publishes" for n in by_name
+                     if n not in wanted]
+    folder = root / bridge
+    files = {f.stem: f for f in folder.rglob("*.java") if not _is_test(f.relative_to(root).as_posix())} \
+        if folder.is_dir() else {}
+    sources = {stem: COMMENTS.sub("", f.read_text(encoding="utf-8", errors="replace")) for stem, f in files.items()}
+    for name, h in by_name.items():
+        f = files.get(name)
+        if f is None:
+            problems.append(f"Temporary handler {name} is not in the bridge package {bridge}: the event port's adapter "
+                            "calls it after the commit")
+            continue
+        path = f.relative_to(root).as_posix()
+        code = sources[name]
+        # Who calls it: the event port's adapter, which defers it (with the publication) to after the commit of the
+        # transaction active on the thread, so a rollback never leaves the side effect behind.
+        word = re.compile(rf"\b{re.escape(name)}\b")
+        callers = [stem for stem, text in sources.items() if stem != name and word.search(text)]
+        if not callers:
+            problems.append(f"Nothing in the bridge package calls the temporary handler {name}: the event port's "
+                            "adapter calls it after the commit")
+        for stem in callers:
+            if not (AFTER_COMMIT.search(sources[stem]) and REGISTERS.search(sources[stem])):
+                problems.append(f"{stem} calls the temporary handler {name} without deferring it to after the commit: "
+                                "register a TransactionSynchronization (afterCommit) when a transaction is active, "
+                                "and call it at once only when none is")
+        delegates = {m.split("#")[0].split(".")[-1] for m in h["delegates_to"]}
+        for m in h["delegates_to"]:
+            cls, method = m.split("#")
+            simple = cls.split(".")[-1]
+            if not re.search(rf"\b{re.escape(simple)}\b", code) or not re.search(rf"\.\s*{re.escape(method)}\s*\(", code):
+                problems.append(f"{path} does not call {m}: a temporary handler calls exactly its delegates_to")
+            imported = re.search(rf"^\s*import\s+([\w.]+\.{re.escape(simple)})\s*;", code, re.MULTILINE)
+            if imported and "." in cls and imported.group(1) != cls:
+                problems.append(f"{path} imports {imported.group(1)}, not {cls} that delegates_to names")
+        others = sorted({n for n in COLLABORATOR.findall(code)} - delegates - HANDLER_INFRASTRUCTURE - {name})
+        if others:
+            problems.append(f"{path} uses {', '.join(others)}: a temporary handler calls only its delegates_to "
+                            f"({', '.join(h['delegates_to'])}), nothing else of the legacy code")
+        hit = DB_ACCESS.search(code)
+        if hit:
+            problems.append(f"{path} uses {hit.group(0).strip()}: a temporary handler has no database access of its "
+                            "own; the delegates_to method does the work")
+        if not REQUIRES_NEW.search(code):
+            problems.append(f"{path} does not run its delegates in a new transaction. It runs after the feature's "
+                            "transaction has committed, while that transaction's connection is still bound: without "
+                            "PROPAGATION_REQUIRES_NEW (a TransactionTemplate) the delegates' writes join the committed "
+                            "transaction and are lost")
+        else:
+            other = OTHER_PROPAGATION.search(code)
+            if other:
+                problems.append(f"{path} uses {other.group(0)}: a temporary handler runs its delegates with "
+                                "PROPAGATION_REQUIRES_NEW only")
     return problems
 
 
@@ -624,7 +728,8 @@ def for_context(ctx) -> list[str]:
                 "check needs"]
     root = (ctx.workspace / ctx.code_dir).resolve()
     return check(root, ctx.base_sha, declaration, design, ctx.ownership, ctx.domain, (finder or {}).get("god_modules"),
-                 earlier=domain_folders(ctx, root)) + one_per_domain(ctx, root, "domain", next(
+                 earlier=domain_folders(ctx, root),
+                 expected_handlers=cs.expected_temporary_handlers(out, "domain")) + one_per_domain(ctx, root, "domain", next(
                      (str(m["path"]) for m in declaration["modules"] if m["kind"] == "domain"), ""), declaration)
 
 

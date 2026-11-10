@@ -101,6 +101,10 @@ def test_agent_question_pauses_the_run_until_answered(client, monkeypatch):
     q2 = client.get(f"/api/runs/{run_id}/questions").json()[1]
     assert q2["stage"] == "deep_dive"
     client.post(f"/api/questions/{q2['id']}/answer", json={"answer": "", "answered_by": "tester"})  # skip
+    wait_for(client, run_id, {"awaiting_input"})  # the dependency finder asks too, before the analysis gate
+    q3 = client.get(f"/api/runs/{run_id}/questions").json()[2]
+    assert q3["stage"] == "domain_dependencies"
+    client.post(f"/api/questions/{q3['id']}/answer", json={"answer": "", "answered_by": "tester"})
     run = wait_for(client, run_id, {"awaiting_approval"})
 
     content = document(run, "as_is_doc").read_text()
@@ -108,7 +112,7 @@ def test_agent_question_pauses_the_run_until_answered(client, monkeypatch):
     deep = document(run, "deep_dive").read_text()
     assert "Use your best judgement" in deep
     events = [e for e in client.get(f"/api/runs/{run_id}/questions").json()]
-    assert [e["status"] for e in events] == ["answered", "answered"]
+    assert [e["status"] for e in events] == ["answered", "answered", "answered"]
 
 
 # --- the Claude agent loop, against a scripted client -------------------------------------------------------------

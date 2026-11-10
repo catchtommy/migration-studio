@@ -716,3 +716,161 @@ def test_renaming_an_id_in_a_legacy_sql_map_is_refused(repo):
     put(root, SQLMAP_PATH, SQLMAP.replace('id="selectBroker"', 'id="legacySelectBroker"'))
     declaration = {**DECLARATION, "outside_changes": [*DECLARATION["outside_changes"], SQLMAP_PATH]}
     assert any("Legacy SQL map changed: " + SQLMAP_PATH in p for p in run(root, base, declaration))
+
+
+def test_the_event_ports_adapter_may_call_a_temporary_handler_helper_without_database_access(repo):
+    """The temporary handler of an event whose handling domain is still in the monolith: a helper in the bridge that
+    the event port's adapter calls after commit, delegating to that domain's existing service."""
+    root, base = repo
+    extract(root)
+    put(root, f"{MOD}/src/main/java/com/acme/broker/domain/BrokerEvents.java",
+        "package com.acme.broker.domain;\npublic interface BrokerEvents { void created(String id); }\n")
+    put(root, f"{BRIDGE}/SpringBrokerEvents.java",
+        "package com.acme.broker.legacybridge;\n"
+        "class SpringBrokerEvents implements com.acme.broker.domain.BrokerEvents {\n"
+        "  BrokerCreatedCustomerHandler handler;\n  public void created(String id) { handler.handle(id); }\n}\n")
+    helper = ("package com.acme.broker.legacybridge;\n/** Temporary: until customer handles BrokerCreated. */\n"
+              "class BrokerCreatedCustomerHandler { void handle(String id) { /* CustomerHistoryService#record */ } }\n")
+    put(root, f"{BRIDGE}/BrokerCreatedCustomerHandler.java", helper)
+    assert run(root, base) == []
+    put(root, f"{BRIDGE}/BrokerCreatedCustomerHandler.java",
+        helper.replace("class BrokerCreatedCustomerHandler", "import com.acme.broker.BrokerDao;\nclass BrokerCreatedCustomerHandler"))
+    assert any("BrokerCreatedCustomerHandler.java uses BrokerDao" in p for p in run(root, base))
+
+
+HANDLER = "BrokerCreatedCustomerHandler"
+DELEGATE = "com.acme.customer.CustomerHistoryService#recordBrokerCreated"
+HANDLER_JAVA = """package com.acme.broker.legacybridge;
+
+import com.acme.customer.CustomerHistoryService;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.TransactionCallbackWithoutResult;
+import org.springframework.transaction.support.TransactionTemplate;
+
+/** Temporary: until customer handles BrokerCreated. */
+class BrokerCreatedCustomerHandler {
+  CustomerHistoryService history;
+  PlatformTransactionManager transactionManager;
+
+  void handle(final String id) {
+    TransactionTemplate tx = new TransactionTemplate(transactionManager);
+    tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    try {
+      tx.execute(new TransactionCallbackWithoutResult() {
+        protected void doInTransactionWithoutResult(TransactionStatus status) {
+          history.recordBrokerCreated(id);
+        }
+      });
+    } catch (RuntimeException e) {
+      // logged: the broker is already created
+    }
+  }
+}
+"""
+EXPECTED = [{"listener": HANDLER, "delegates_to": [DELEGATE], "interaction": "X2"}]
+
+
+def _with_handler(root: Path, java: str = HANDLER_JAVA, adapter: str | None = None) -> None:
+    adapter = ADAPTER_JAVA if adapter is None else adapter
+    extract(root)
+    put(root, f"{MOD}/src/main/java/com/acme/broker/domain/BrokerEvents.java",
+        "package com.acme.broker.domain;\npublic interface BrokerEvents { void created(String id); }\n")
+    put(root, f"{BRIDGE}/SpringBrokerEvents.java", adapter)
+    put(root, f"{BRIDGE}/{HANDLER}.java", java)
+
+
+ADAPTER_JAVA = f"""package com.acme.broker.legacybridge;
+
+import org.springframework.transaction.support.TransactionSynchronizationAdapter;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+class SpringBrokerEvents implements com.acme.broker.domain.BrokerEvents {{
+  {HANDLER} handler;
+
+  public void created(final String id) {{
+    if (!TransactionSynchronizationManager.isSynchronizationActive()) {{
+      handler.handle(id);
+      return;
+    }}
+    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {{
+      public void afterCommit() {{ handler.handle(id); }}
+    }});
+  }}
+}}
+"""
+
+
+def _handled(root: Path, base: str, declared=None, expected=EXPECTED) -> list[str]:
+    declared = [{"listener": HANDLER, "delegates_to": [DELEGATE]}] if declared is None else declared
+    return g.check(root, base, {**DECLARATION, "temporary_handlers": declared}, None, OWNERSHIP, "broker",
+                   expected_handlers=expected)
+
+
+def test_a_declared_temporary_handler_runs_its_delegates_in_a_new_transaction(repo):
+    root, base = repo
+    _with_handler(root)
+    assert _handled(root, base) == []
+
+
+def test_a_temporary_handler_without_a_new_transaction_loses_its_writes(repo):
+    root, base = repo
+    _with_handler(root, HANDLER_JAVA.replace("PROPAGATION_REQUIRES_NEW", "PROPAGATION_REQUIRED"))
+    problems = _handled(root, base)
+    assert any(f"{HANDLER}.java does not run its delegates in a new transaction" in p for p in problems)
+    plain = ("package com.acme.broker.legacybridge;\nimport com.acme.customer.CustomerHistoryService;\n"
+             f"class {HANDLER} {{ CustomerHistoryService history;\n"
+             "  void handle(String id) { history.recordBrokerCreated(id); } }\n")
+    _with_handler(root, plain)
+    assert any("does not run its delegates in a new transaction" in p for p in _handled(root, base))
+    mixed = HANDLER_JAVA.replace("tx.setPropagationBehavior(", "tx.setIsolationLevel(0);\n    "
+                                 "new TransactionTemplate(transactionManager).setPropagationBehavior("
+                                 "TransactionDefinition.PROPAGATION_SUPPORTS);\n    tx.setPropagationBehavior(")
+    _with_handler(root, mixed)
+    assert any("uses PROPAGATION_SUPPORTS" in p for p in _handled(root, base))
+
+
+def test_a_temporary_handler_calls_only_its_delegates(repo):
+    root, base = repo
+    _with_handler(root, HANDLER_JAVA.replace("history.recordBrokerCreated(id);",
+                                             "history.recordBrokerCreated(id);\n          letters.send(id);")
+                  .replace("  PlatformTransactionManager transactionManager;",
+                           "  PlatformTransactionManager transactionManager;\n  "
+                           "com.acme.letters.LetterService letters;"))
+    assert any("uses LetterService: a temporary handler calls only its delegates_to" in p for p in _handled(root, base))
+    _with_handler(root, HANDLER_JAVA.replace("history.recordBrokerCreated(id);", "history.recordSomethingElse(id);"))
+    assert any(f"does not call {DELEGATE}" in p for p in _handled(root, base))
+    _with_handler(root, HANDLER_JAVA.replace("import com.acme.customer.CustomerHistoryService;",
+                                             "import com.acme.other.CustomerHistoryService;"))
+    assert any("imports com.acme.other.CustomerHistoryService" in p for p in _handled(root, base))
+
+
+def test_the_event_adapter_calls_the_temporary_handler_only_after_the_commit(repo):
+    root, base = repo
+    inline = ("package com.acme.broker.legacybridge;\n"
+              "class SpringBrokerEvents implements com.acme.broker.domain.BrokerEvents {\n"
+              f"  {HANDLER} handler;\n  public void created(String id) {{ handler.handle(id); }}\n}}\n")
+    _with_handler(root, adapter=inline)
+    assert any(f"SpringBrokerEvents calls the temporary handler {HANDLER} without deferring it to after the commit" in p
+               for p in _handled(root, base))
+    unused = ("package com.acme.broker.legacybridge;\n"
+              "class SpringBrokerEvents implements com.acme.broker.domain.BrokerEvents {\n"
+              "  public void created(String id) { }\n}\n")
+    _with_handler(root, adapter=unused)
+    assert any(f"Nothing in the bridge package calls the temporary handler {HANDLER}" in p
+               for p in _handled(root, base))
+
+
+def test_the_declared_handlers_are_the_ones_the_decisions_give_this_step(repo):
+    root, base = repo
+    _with_handler(root)
+    assert any(f"declares no temporary handler {HANDLER}" in p for p in _handled(root, base, declared=[]))
+    other = [{"listener": HANDLER, "delegates_to": ["com.acme.customer.CustomerHistoryService#other"]}]
+    assert any(f"temporary handler {HANDLER} delegates to" in p for p in _handled(root, base, declared=other))
+    assert any(f"declares the temporary handler {HANDLER}, which integration-decisions.yaml does not give" in p
+               for p in _handled(root, base, expected=[]))
+    assert _handled(root, base, expected=None) == []  # no decisions to compare with: the code is still checked
+    missing = [{"listener": "NoSuchHandler", "delegates_to": [DELEGATE]}]
+    assert any("Temporary handler NoSuchHandler is not in the bridge package" in p
+               for p in _handled(root, base, declared=missing, expected=None))
