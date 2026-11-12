@@ -164,9 +164,17 @@ function NewRunForm() {
   );
 }
 
+const WORKING = ["pending", "running"];
+
 export function Dashboard() {
   const { data: domains = [] } = useDomains();
-  const { data: runs = [], isLoading } = useQuery({ queryKey: ["runs"], queryFn: api.runs, refetchInterval: 3000 });
+  // Every 3s while an agent works; otherwise runs only change when someone acts, so a slower refresh picks that up
+  // without loading the database for nothing.
+  const { data: runs = [], isLoading } = useQuery({
+    queryKey: ["runs"],
+    queryFn: api.runs,
+    refetchInterval: (q) => (q.state.data?.some((r) => WORKING.includes(r.status)) ? 3000 : 15000),
+  });
 
   const migrations = runs.filter((r) => r.scope === "operation");
   const discovery = runs.filter((r) => r.scope !== "operation").sort((a, b) => b.created_at.localeCompare(a.created_at));

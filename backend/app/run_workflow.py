@@ -56,14 +56,14 @@ def agents_changed(run) -> dict[str, str]:
         return {}
     with projects.use(run.project):
         texts = {t["key"]: t for t in shared_texts.list_all()}
+        agents = {a["key"]: a for a in agent_store.list_all(include_hidden=True)}  # one query, not one per step
         out = {}
         for step in run.stage_defs:
             key, ran = step["key"], last_run.get(step["key"])
             if step["kind"] != "agent" or ran is None:
                 continue
-            try:
-                agent = agent_store.get(key)
-            except KeyError:
+            agent = agents.get(key)
+            if agent is None:
                 continue  # the agent was deleted: nothing newer to use
             used = {*shared_texts.PLACEHOLDER.findall(f"{agent['instructions']}\n{agent['guardrails']}"), *_ALWAYS}
             newer = [texts[k]["title"] for k in sorted(used)

@@ -4,6 +4,7 @@ Users sign in with a username and password and get a session cookie. Each user h
 permissions below. Every API route needs a signed-in user; routes that change things also need a permission.
 """
 
+import asyncio
 import hashlib
 import hmac
 import re
@@ -18,7 +19,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import delete, select
 
 from app import projects
-from app.db.models import Project, Role, User, UserSession, utcnow
+from app.db.models import Project, ProjectMember, Role, User, UserSession, utcnow
 from app.db.session import session_scope
 
 PERMISSIONS: dict[str, tuple[str, str]] = {
@@ -229,6 +230,17 @@ class ProjectAccess:
         return permission in self.permissions
 
 
+def _project_access(user: CurrentUser, key: str) -> frozenset[str] | None:
+    """The user's permissions in the project (None: not a member); 404 when there is no such project."""
+    with session_scope() as s:  # one connection for the three lookups: each checkout is round trips on a remote database
+        if s.get(Project, key) is None:
+            raise HTTPException(404, f"There is no project {key}")
+        member = s.get(ProjectMember, (key, user.id))
+        if member is None:
+            return None
+        return frozenset(permissions_of(s, [member.role]) - GLOBAL_ONLY)
+
+
 async def project_context(request: Request, user: CurrentUser = Depends(current_user)) -> ProjectAccess:
     """The project a request is about (X-Project header or `project` query parameter), checked and made current.
     Async on purpose: it then runs in the request's own context, so the current project it sets reaches the endpoint
@@ -236,10 +248,9 @@ async def project_context(request: Request, user: CurrentUser = Depends(current_
     key = request.headers.get("x-project") or request.query_params.get("project")
     if not key:
         raise HTTPException(400, "Choose a project first")
-    with session_scope() as s:
-        if s.get(Project, key) is None:
-            raise HTTPException(404, f"There is no project {key}")
-    permissions = project_permissions(user, key)
+    # The database calls run in a worker thread: on the event loop they would hold up every other request (and the
+    # run pages' event streams) for their round trips to the database.
+    permissions = await asyncio.to_thread(_project_access, user, key)
     if permissions is None:
         raise HTTPException(403, "You don't have access to this project. Ask its admin to add you.")
     projects.set_current(key)  # for this request (each request runs in its own context)

@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import load_only
 
 from app import projects
 from app.contracts_store import InvalidDocument, _load, _require
@@ -298,8 +299,11 @@ def features_of(domain: str) -> list[dict]:
     """The domain's features in the order they were listed, each with its latest migration run."""
     project = projects.current()
     with session_scope() as s:
+        # only what _run_brief shows: not the runs' documents-sized columns
         runs = {r.operation: r for r in s.scalars(select(Run).where(Run.project == project, Run.domain == domain,
-                                                                    MIGRATION_RUN).order_by(Run.created_at))}
+                                                                    MIGRATION_RUN).order_by(Run.created_at)
+                                                  .options(load_only(Run.id, Run.operation, Run.status,
+                                                                     Run.current_stage, Run.created_at)))}
         return [_feature_dict(f, runs.get(f.key))
                 for f in s.scalars(select(Feature).where(Feature.project == project, Feature.domain == domain)
                                    .order_by(Feature.id))]

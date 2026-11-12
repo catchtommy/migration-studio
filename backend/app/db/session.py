@@ -1,7 +1,8 @@
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import URL, Engine, create_engine, event
+from sqlalchemy import URL, Engine, create_engine, event, exc
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -19,13 +20,41 @@ _engine: Engine | None = None
 SessionLocal = sessionmaker(expire_on_commit=False)
 
 
+# A pooled connection idle for longer than this is pinged before use. Pinging every checkout (pool_pre_ping) costs a
+# round trip each time, and requests check out several connections: on a remote database that adds up to seconds.
+IDLE_PING_SECONDS = 30
+
+
+def _ping_idle_connections(engine: Engine) -> None:
+    """Replace connections the server or a firewall dropped, as pool_pre_ping would, but only check those that sat
+    idle in the pool: a connection used moments ago is still there."""
+
+    @event.listens_for(engine, "checkin")
+    def _checkin(_dbapi_conn, record):
+        record.info["idle_since"] = time.monotonic()
+
+    @event.listens_for(engine, "checkout")
+    def _checkout(dbapi_conn, record, _proxy):
+        idle_since = record.info.pop("idle_since", None)
+        if idle_since is None or time.monotonic() - idle_since < IDLE_PING_SECONDS:
+            return
+        try:
+            alive = engine.dialect.do_ping(dbapi_conn)
+        except Exception:  # noqa: BLE001 - any driver error means the connection is gone
+            alive = False
+        if not alive:
+            raise exc.DisconnectionError()  # the pool discards it and checks out (or opens) another
+
+
 def make_engine(url: URL) -> Engine:
     db_config.prepare_driver(url)
     if url.get_backend_name() != "sqlite":
-        # pre_ping replaces connections the server or a firewall dropped; the pool covers the runner's worker threads
-        # (up to 16) plus the API's requests.
-        return create_engine(url, connect_args=db_config.connect_args(url), pool_pre_ping=True, pool_size=10,
-                             max_overflow=20)
+        # The pool covers the runner's worker threads (up to 16) plus the API's requests; pool_recycle stays under
+        # the idle timeouts firewalls commonly apply.
+        engine = create_engine(url, connect_args=db_config.connect_args(url), pool_size=10, max_overflow=20,
+                               pool_recycle=1800)
+        _ping_idle_connections(engine)
+        return engine
     engine = create_engine(url, connect_args=db_config.connect_args(url))
 
     @event.listens_for(engine, "connect")

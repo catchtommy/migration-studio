@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.orm import defer
 
 from app import repos
 from app.agents.base_agent import DOCS_ROOT
@@ -101,16 +102,31 @@ def effective_documents_by_stage(run_id: str, before_stage: str | None = None,
     in effect then, from the attempts that had finished by that time (what a step that started then was given)."""
     with session_scope() as s:
         run = s.get(Run, run_id)
-        executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run.id)).all()
+        executions = _light_executions(s, run.id)
         if until is not None:
             executions = [e for e in executions if e.finished_at is not None and e.finished_at <= until]
         chain = [(ex.stage, ex.attempt) for ex in _effective(executions, run.stage_defs, before_stage)]
-        artifacts = s.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
-        documents: dict[str, tuple[str, str]] = {}
+        # Which version of each document is in effect first, then only those versions' contents: a run keeps every
+        # attempt's documents, and reading them all is slow on a remote database
+        rows = s.execute(select(Artifact.id, Artifact.stage, Artifact.attempt, Artifact.path)
+                         .where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
+        picked: dict[str, tuple[str, int]] = {}
         for stage, attempt in chain:
-            documents.update({a.path: (stage, a.content or "") for a in artifacts
-                              if a.stage == stage and a.attempt == attempt})
-        return documents
+            picked.update({path: (stage, aid) for aid, a_stage, a_attempt, path in rows
+                           if a_stage == stage and a_attempt == attempt})
+        ids = [aid for _stage, aid in picked.values()]
+        contents: dict[int, str] = {}
+        for i in range(0, len(ids), 500):  # Oracle allows 1000 values in an IN list
+            contents.update(s.execute(select(Artifact.id, Artifact.content)
+                                      .where(Artifact.id.in_(ids[i:i + 500]))).all())
+        return {path: (stage, contents.get(aid) or "") for path, (stage, aid) in picked.items()}
+
+
+def _light_executions(s, run_id: str) -> list[StageExecution]:
+    """The run's attempts without their diffs and prompts, for working out which are in effect."""
+    return list(s.scalars(select(StageExecution).where(StageExecution.run_id == run_id)
+                          .options(defer(StageExecution.diff), defer(StageExecution.prompt),
+                                   defer(StageExecution.repos), defer(StageExecution.inputs))))
 
 
 def document_versions(run_id: str, before_stage: str | None = None) -> dict[str, dict]:
@@ -118,7 +134,7 @@ def document_versions(run_id: str, before_stage: str | None = None) -> dict[str,
     effective_documents_by_stage picks them: the latest version each stage in effect wrote, later stages winning."""
     with session_scope() as s:
         run = s.get(Run, run_id)
-        executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run.id)).all()
+        executions = _light_executions(s, run.id)
         chain = [(ex.stage, ex.attempt) for ex in _effective(executions, run.stage_defs, before_stage)]
         rows = s.execute(select(Artifact.id, Artifact.stage, Artifact.attempt, Artifact.path)
                          .where(Artifact.run_id == run_id).order_by(Artifact.id)).all()

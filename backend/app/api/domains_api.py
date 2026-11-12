@@ -175,9 +175,10 @@ def delete_domain(key: str, with_runs: bool = False, db: Session = Depends(get_d
 def domain_docs(key: str, db: Session = Depends(get_db)):
     """Every operation in the domain with the documents from the latest attempt of each stage."""
     _domain_or_404(db, key)
-    return [{"run": run, "artifacts": document_export.latest_artifacts(db, run.id)}
-            for run in db.scalars(select(Run).where(Run.project == projects.current(), Run.domain == key)
-                                  .order_by(Run.operation, Run.created_at))]
+    runs = db.scalars(select(Run).where(Run.project == projects.current(), Run.domain == key)
+                      .order_by(Run.operation, Run.created_at)).all()
+    artifacts = document_export.latest_artifacts_of(db, [r.id for r in runs], content=False)
+    return [{"run": run, "artifacts": artifacts.get(run.id, [])} for run in runs]
 
 
 @router.get("/{key}/documents.zip")

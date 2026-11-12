@@ -43,7 +43,9 @@ def browse_workflows(of: str, access: ProjectAccess = Depends(project_context)):
 
 @router.get("", response_model=list[WorkflowOut])
 def list_workflows(db: Session = Depends(get_db)):
-    return [_with_runs(db, w) for w in workflow_store.list_all()]
+    counts = dict(db.execute(select(Run.workflow, func.count()).where(Run.project == projects.current())
+                             .group_by(Run.workflow)).all())  # one query, not one per workflow
+    return [{**w, "runs": counts.get(w["key"], 0)} for w in workflow_store.list_all()]
 
 
 @router.post("", response_model=WorkflowOut, status_code=201, dependencies=[Depends(require("workflows.manage"))])

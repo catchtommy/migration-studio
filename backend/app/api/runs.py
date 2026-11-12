@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer, selectinload
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.schemas import (
@@ -40,7 +40,10 @@ def _run_or_404(db: Session, run_id: str) -> Run:
 
 @router.get("/runs", response_model=list[RunOut])
 def list_runs(db: Session = Depends(get_db)):
-    return db.scalars(select(Run).where(Run.project == projects.current()).order_by(Run.domain, Run.operation)).all()
+    # Polled by the dashboard: leave out the large columns RunOut doesn't show
+    return db.scalars(select(Run).where(Run.project == projects.current()).order_by(Run.domain, Run.operation)
+                      .options(defer(Run.inputs), defer(Run.pending_rerun), defer(Run.pending_change),
+                               defer(Run.workspace))).all()
 
 
 SCOPE_LABELS = {"operation": "migration", "domain": "feature listing", "monolith": "bounded-context discovery"}
@@ -198,7 +201,14 @@ def _functional_coverage(run: Run) -> dict | None:
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
 def get_run(run_id: str, db: Session = Depends(get_db), access: ProjectAccess = Depends(project_context)):
-    run = _run_or_404(db, run_id)
+    # The attempts in one query, without their diffs and prompts (megabytes on a long run; the page fetches them
+    # separately, see stage_diff and stage_prompt)
+    run = db.get(Run, run_id, options=[
+        selectinload(Run.stages).defer(StageExecution.diff).defer(StageExecution.prompt)
+        .defer(StageExecution.repos),
+        selectinload(Run.approvals)])
+    if run is None or run.project != projects.current():
+        raise HTTPException(404, "Run not found")
     branches = _branches_to_confirm(run_id) if run.status == "awaiting_branches" else None
     if branches:
         db.refresh(run)  # the workflow's current code settings, picked up while it waits
@@ -782,8 +792,11 @@ def _document_diff(db: Session, ex: StageExecution) -> str:
 @router.get("/runs/{run_id}/events")
 async def events(run_id: str, request: Request, after: int = 0):
     """Server-sent events: the run's audit log, then live updates."""
-    with session_scope() as s:
-        _run_or_404(s, run_id)
+    def check() -> None:
+        with session_scope() as s:
+            _run_or_404(s, run_id)
+
+    await asyncio.to_thread(check)  # off the event loop, like every database call here
 
     def fetch(last_id: int) -> list[EventOut]:
         with session_scope() as s:

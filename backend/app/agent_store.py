@@ -650,8 +650,17 @@ def exists(key: str, project: str | None = None) -> bool:
 
 
 def titles(project: str | None = None) -> dict[str, tuple[str, str]]:
-    """key -> (title, description) for every agent the project uses."""
-    return {a["key"]: (a["title"], a["description"]) for a in list_all(project, include_hidden=True)}
+    """key -> (title, description) for every agent the project uses, in list_all's order. Reads only those columns:
+    every workflow read needs the titles, and the agents' instructions are large."""
+    project = _project(project)
+    with session_scope() as s:
+        rows = s.execute(select(Agent.project, Agent.key, Agent.title, Agent.description, Agent.created_at)
+                         .where(Agent.project.in_([SHARED, project] if project else [SHARED]))).all()
+    effective = {r.key: r for r in rows if r.project == SHARED}
+    effective.update({r.key: r for r in rows if r.project != SHARED})  # the project's copies win
+    order = {k: i for i, k in enumerate(BUILTIN)}
+    ordered = sorted(effective.values(), key=lambda r: (order.get(r.key, len(order)), r.created_at))
+    return {r.key: (r.title, r.description or "") for r in ordered}
 
 
 def _target(scope: str) -> str:

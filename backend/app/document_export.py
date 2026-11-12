@@ -13,7 +13,7 @@ from collections.abc import Iterable
 from posixpath import normpath
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.agents.base_agent import DOCS_ROOT
 from app.db.models import Approval, Artifact, Run, StageExecution
@@ -22,18 +22,33 @@ from app.db.models import Approval, Artifact, Run, StageExecution
 def latest_artifacts(db: Session, run_id: str) -> list[Artifact]:
     """The run's documents from the latest completed attempt of each stage (the latest attempt, when none completed:
     what a stopped step kept), in the order they were written."""
-    artifacts = db.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
-    done = {(stage, attempt) for stage, attempt in db.execute(select(StageExecution.stage, StageExecution.attempt)
-                                                             .where(StageExecution.run_id == run_id,
-                                                                    StageExecution.status == "completed"))}
+    return latest_artifacts_of(db, [run_id]).get(run_id, [])
 
-    def rank(a: Artifact) -> tuple[bool, int]:
-        return (a.stage, a.attempt) in done, a.attempt
 
-    best: dict[str, tuple[bool, int]] = {}
-    for a in artifacts:
-        best[a.stage] = max(best.get(a.stage, (False, 0)), rank(a))
-    return [a for a in artifacts if rank(a) == best[a.stage]]
+def latest_artifacts_of(db: Session, run_ids: list[str], content: bool = True) -> dict[str, list[Artifact]]:
+    """latest_artifacts of several runs at once (run id: its documents), in a few queries. `content`: False leaves the
+    documents' text out (listing them only)."""
+    out: dict[str, list[Artifact]] = {}
+    for i in range(0, len(run_ids), 500):  # Oracle allows 1000 values in an IN list
+        chunk = run_ids[i:i + 500]
+        query = select(Artifact).where(Artifact.run_id.in_(chunk)).order_by(Artifact.id)
+        if not content:
+            query = query.options(defer(Artifact.content))
+        artifacts = db.scalars(query).all()
+        done = {tuple(r) for r in db.execute(select(StageExecution.run_id, StageExecution.stage, StageExecution.attempt)
+                                              .where(StageExecution.run_id.in_(chunk),
+                                                     StageExecution.status == "completed"))}
+
+        def rank(a: Artifact) -> tuple[bool, int]:
+            return (a.run_id, a.stage, a.attempt) in done, a.attempt
+
+        best: dict[tuple[str, str], tuple[bool, int]] = {}
+        for a in artifacts:
+            best[(a.run_id, a.stage)] = max(best.get((a.run_id, a.stage), (False, 0)), rank(a))
+        for a in artifacts:
+            if rank(a) == best[(a.run_id, a.stage)]:
+                out.setdefault(a.run_id, []).append(a)
+    return out
 
 
 def _safe(name: str) -> str:

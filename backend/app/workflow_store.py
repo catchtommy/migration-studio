@@ -485,9 +485,10 @@ def code_agents(project: str | None = None, workflows: list[str] | None = None) 
     return out
 
 
-def resolve(steps: list[dict]) -> Workflow:
-    """Stage definitions for a workflow's steps, with agent titles from the library."""
-    agents = agent_store.titles()
+def resolve(steps: list[dict], agents: dict[str, tuple[str, str]] | None = None) -> Workflow:
+    """Stage definitions for a workflow's steps, with agent titles from the library (`agents`: agent_store.titles(),
+    when the caller has them already)."""
+    agents = agent_store.titles() if agents is None else agents
     stages = []
     for step in steps:
         if step["kind"] == "agent":
@@ -501,11 +502,12 @@ def resolve(steps: list[dict]) -> Workflow:
     return Workflow(stages)
 
 
-def _as_dict(row: WorkflowDef, customised: bool = False) -> dict[str, Any]:
+def _as_dict(row: WorkflowDef, customised: bool = False,
+             agents: dict[str, tuple[str, str]] | None = None) -> dict[str, Any]:
     from app.delivery import git_settings
     out = {"key": row.key, "name": row.name, "description": row.description, "steps": row.steps,
            "scope": row.scope or "operation", "library": "shared" if row.project == SHARED else "project",
-           "customised": customised, "stages": resolve(row.steps).to_dicts(), "created_at": row.created_at,
+           "customised": customised, "stages": resolve(row.steps, agents).to_dicts(), "created_at": row.created_at,
            "updated_at": row.updated_at}
     return {**out, "git": git_settings({"scope": out["scope"], "git": row.git})}
 
@@ -538,6 +540,7 @@ def browse(of: str, visible: list[str]) -> list[dict[str, Any]]:
         else:
             rows = _effective_rows(s, of)
         out = []
+        agents = agent_store.titles()  # once, not per workflow
         for row, customised in rows:
             runs = select(func.count()).select_from(Run).where(Run.workflow == row.key)
             if row.project != SHARED:
@@ -546,14 +549,15 @@ def browse(of: str, visible: list[str]) -> list[dict[str, Any]]:
                 runs = runs.where(Run.project == of)
             else:
                 runs = runs.where(Run.project.in_(visible))
-            out.append({**_as_dict(row, customised), "owner": None if row.project == SHARED else row.project,
+            out.append({**_as_dict(row, customised, agents), "owner": None if row.project == SHARED else row.project,
                         "runs": s.scalar(runs)})
         return out
 
 
 def list_all() -> list[dict[str, Any]]:
     with session_scope() as s:
-        return [_as_dict(r, c) for r, c in _effective_rows(s, projects.current_or_none())]
+        agents = agent_store.titles()  # once, not per workflow
+        return [_as_dict(r, c, agents) for r, c in _effective_rows(s, projects.current_or_none())]
 
 
 def get(key: str) -> dict[str, Any]:
