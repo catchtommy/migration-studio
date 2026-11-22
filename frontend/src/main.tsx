@@ -43,7 +43,7 @@ const navLink = ({ isActive }: { isActive: boolean }) =>
 /** Whether agents can reach GitHub Copilot, shown on every page when Copilot is the AI provider. */
 function CopilotChip() {
   const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: api.settings });
-  const { data: status } = useCopilotStatus();
+  const { data: status } = useCopilotStatus(settings?.ai_provider === "copilot"); // asked only when Copilot is in use
   if (settings?.ai_provider !== "copilot" || !status) return null;
   return (
     <Link to="/settings" className="flex items-center gap-2 rounded-full bg-white/10 px-3 py-1.5 text-xs text-white/90 ring-1 ring-white/20 hover:bg-white/20">

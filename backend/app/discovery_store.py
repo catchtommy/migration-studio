@@ -363,18 +363,23 @@ def overview() -> dict:
     """Where discovery stands: the latest bounded-contexts run, each domain's feature list and its latest feature
     run, and the domains the latest approved bounded contexts didn't include."""
     project = projects.current()
+    # Polled while discovery works: only the columns shown (runs and domains carry long texts)
+    brief = load_only(Run.id, Run.domain, Run.status, Run.current_stage, Run.created_at)
     with session_scope() as s:
         contexts_run = s.scalar(select(Run).where(Run.project == project, Run.domain == MONOLITH)
-                                .order_by(Run.created_at.desc()).limit(1))
+                                .order_by(Run.created_at.desc()).limit(1)
+                                .options(load_only(Run.id, Run.domain, Run.status, Run.current_stage, Run.created_at,
+                                                   Run.inputs)))
         setting = s.get(Setting, (project, CONTEXTS_SETTING))
         found = set(setting.value["keys"]) if setting and setting.value else None
         counts = dict(s.execute(select(Feature.domain, func.count()).where(Feature.project == project)
                                 .group_by(Feature.domain)).all())
         feature_runs = {r.domain: r for r in s.scalars(select(Run).where(Run.project == project,
                                                                          Run.operation == FEATURES_OP)
-                                                        .order_by(Run.created_at))}
+                                                        .order_by(Run.created_at).options(brief))}
         domains = s.scalars(select(Domain).where(Domain.project == project)
-                            .order_by(Domain.created_at, Domain.key)).all()
+                            .order_by(Domain.created_at, Domain.key)
+                            .options(load_only(Domain.key, Domain.name, Domain.created_at))).all()
         return {
             "bounded_contexts": _run_brief(contexts_run),
             "contexts_inputs": contexts_run.inputs if contexts_run else None,

@@ -63,18 +63,20 @@ class Runner:
         with self._lock:
             return bool(self._active)
 
-    def graph_for(self, run_id: str):
-        """The compiled graph for the workflow snapshot this run started with."""
-        with session_scope() as s:
-            stages = s.get(Run, run_id).stage_defs
+    def graph_for(self, run_id: str, stages: list[dict] | None = None):
+        """The compiled graph for the workflow snapshot this run started with (`stages`: Run.stage_defs, when the
+        caller has the run already: no database read)."""
+        if stages is None:
+            with session_scope() as s:
+                stages = s.get(Run, run_id).stage_defs
         key = json.dumps(stages, sort_keys=True)
         with self._lock:
             if key not in self._graphs:
                 self._graphs[key] = build_graph(Workflow.from_dicts(stages), self._saver)
             return self._graphs[key]
 
-    def pending_gate(self, run_id: str) -> dict | None:
-        snapshot = self.graph_for(run_id).get_state(self._config(run_id))
+    def pending_gate(self, run_id: str, stages: list[dict] | None = None) -> dict | None:
+        snapshot = self.graph_for(run_id, stages).get_state(self._config(run_id))
         for task in snapshot.tasks:
             for intr in task.interrupts:
                 return intr.value

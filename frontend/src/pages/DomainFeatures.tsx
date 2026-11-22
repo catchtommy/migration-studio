@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Domain, type Feature, type FeatureInput } from "../lib/api";
@@ -73,6 +73,7 @@ const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boo
 const matches = (f: Feature, query: string) =>
   [f.name, f.key, f.description, ...f.entry_points, ...f.tables].some((s) => s.toLowerCase().includes(query));
 const UNFINISHED = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches", "failed"];
+const WORKING = ["pending", "running"]; // an agent is at work: the listing changes without anyone doing anything
 
 export function FeatureForm({ domain, feature, onDone }: { domain: Domain; feature?: Feature; onDone: () => void }) {
   const queryClient = useQueryClient();
@@ -249,19 +250,26 @@ function FeatureRow({ domain, feature, names, selected, onSelect }: { domain: Do
 
 /** The domain's features: what its migrations pick from. Listed by the feature-listing workflow, or by hand. */
 export function DomainFeatures({ domain }: { domain: Domain }) {
+  const queryClient = useQueryClient();
   const { data: domains = [] } = useDomains();
   const names = new Map(domains.map((d) => [d.key, d.name]));
   const { data: discovery } = useQuery({
     queryKey: ["discovery"],
     queryFn: api.discovery,
-    refetchInterval: (q) => (q.state.data?.domains.some((d) => d.run && UNFINISHED.includes(d.run.status) && d.run.status !== "failed") ? 3000 : false),
+    // Only while a listing's agent works: one waiting for a person (at a gate) can wait for days
+    refetchInterval: (q) => (q.state.data?.domains.some((d) => d.run && WORKING.includes(d.run.status)) ? 3000 : false),
   });
   const listing = discovery?.domains.find((d) => d.key === domain.key)?.run;
   const listingBusy = !!listing && UNFINISHED.includes(listing.status);
-  const { data: features, isLoading } = useQuery({
-    queryKey: ["features", domain.key, listing?.status],
-    queryFn: () => api.features(domain.key),
-  });
+  const { data: features, isLoading } = useQuery({ queryKey: ["features", domain.key], queryFn: () => api.features(domain.key) });
+  // The list changes when this domain's listing moves on (e.g. its gate approved): read it again then, not on load
+  const listingStatus = useRef(listing?.status);
+  useEffect(() => {
+    if (listingStatus.current !== undefined && listingStatus.current !== listing?.status) {
+      queryClient.invalidateQueries({ queryKey: ["features", domain.key] });
+    }
+    listingStatus.current = listing?.status;
+  }, [listing?.status, domain.key, queryClient]);
   const [search, setSearch] = useState("");
   const query = search.trim().toLowerCase();
   const shown = features && query ? features.filter((f) => matches(f, query)) : features;

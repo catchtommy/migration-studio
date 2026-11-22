@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import truststore
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import (
@@ -17,6 +18,7 @@ from app.copilot_service import get_service
 from app.db import config as db_config
 from app.db.session import NotConfigured, is_configured
 from app.orchestrator.runner import get_runner
+from app.request_timing import TimingMiddleware
 from app.startup import open_database
 
 # Trust the operating system's certificate store (which holds corporate root CAs) for all HTTPS from this process.
@@ -44,6 +46,9 @@ def require_database() -> None:
 
 app = FastAPI(title="Migration Studio", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"])
+# JSON responses (agents with their instructions, run pages) compressed; event streams are left as they are
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(TimingMiddleware)  # outermost: Server-Timing header and slow-request log (app/request_timing.py)
 app.include_router(database_api.router)  # used by the setup screen, before anyone can sign in
 app.include_router(auth_api.router, dependencies=[Depends(require_database)])
 # Everything else needs a signed-in user; routes that change things also check a permission (app/auth.py).

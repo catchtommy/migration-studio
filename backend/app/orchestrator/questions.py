@@ -6,6 +6,7 @@ already given to the same question.
 """
 
 import threading
+import time
 
 from sqlalchemy import select
 
@@ -13,9 +14,20 @@ from app.db.models import Question, Run, utcnow
 from app.db.session import emit, session_scope
 
 POLL_SECONDS = 0.5
+RECHECK_SECONDS = 10
 SKIPPED = "The user chose not to answer. Use your best judgement and state the assumption in your output."
 
 shutting_down = threading.Event()
+_changed = threading.Condition()  # signalled when an answer or a cancellation is recorded
+_version = 0
+
+
+def _signal() -> None:
+    """Wake the agents waiting for an answer: one of them has it now (or its question was cancelled)."""
+    global _version
+    with _changed:
+        _version += 1
+        _changed.notify_all()
 
 
 class QuestionAbandoned(RuntimeError):
@@ -40,7 +52,16 @@ def ask(run_id: str, stage: str, attempt: int, question: str, options: list[str]
         s.get(Run, run_id).status = "awaiting_input"
     emit(run_id, "question", f"Question: {question}", stage)
 
-    while not shutting_down.wait(POLL_SECONDS):
+    # The question is read again when an answer or a cancellation is recorded (they happen in this process: _signal),
+    # or every RECHECK_SECONDS in case one came some other way; a wait can last hours, so not every POLL_SECONDS.
+    seen, checked = None, 0.0
+    while not shutting_down.is_set():
+        with _changed:
+            if seen == _version and time.monotonic() - checked < RECHECK_SECONDS:
+                _changed.wait(POLL_SECONDS)  # wakes on a signal; the timeout notices a shutdown
+                continue
+            seen = _version
+        checked = time.monotonic()
         with session_scope() as s:
             q = s.get(Question, question_id)
             if q.status == "answered":
@@ -65,6 +86,7 @@ def answer(question_id: int, text: str, answered_by: str) -> Question:
             run.status = "running"
         s.flush()
         s.expunge(q)
+    _signal()  # after the commit: the waiting agent reads the answer at once
     emit(q.run_id, "answer", f"Answered by {answered_by}: {text.strip() or '(skipped)'}", q.stage)
     return q
 
@@ -83,3 +105,4 @@ def cancel_open(run_id: str | None = None) -> None:
         if run_id:
             query = query.filter(Question.run_id == run_id)
         query.update({Question.status: "cancelled"})
+    _signal()

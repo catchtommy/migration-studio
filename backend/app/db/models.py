@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean, ForeignKey, Identity, Integer, LargeBinary, String, UniqueConstraint,
+    Boolean, ForeignKey, Identity, Index, Integer, LargeBinary, String, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -29,6 +29,8 @@ class Run(Base):
     reserved domain or operation (see app/discovery_store.py)."""
 
     __tablename__ = "runs"
+    __table_args__ = (Index("ix_runs_project_domain_op", "project", "domain", "operation"),
+                      Index("ix_runs_project_operation", "project", "operation"))
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     project: Mapped[str] = mapped_column(String(64), index=True)
@@ -154,6 +156,7 @@ class AuditEvent(Base):
     """Append-only log of everything that happens in a run; streamed to the UI over SSE."""
 
     __tablename__ = "audit_events"
+    __table_args__ = (Index("ix_audit_events_run_id_id", "run_id", "id"),)  # a run's events after the last one sent
 
     id: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
@@ -448,6 +451,7 @@ class ProjectMember(Base):
     """A user's access to a project, with the role (a key of `roles`) they have in it."""
 
     __tablename__ = "project_members"
+    __table_args__ = (Index("ix_project_members_user_id", "user_id"),)
 
     project: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)

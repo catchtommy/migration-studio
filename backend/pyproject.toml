@@ -25,6 +25,7 @@ dev = ["pytest>=8", "httpx>=0.27"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["background_prepare: review pages rebuild a missing workspace in the background, as in the studio"]
 
 [build-system]
 requires = ["setuptools>=68"]

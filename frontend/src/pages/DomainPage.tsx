@@ -554,15 +554,21 @@ function Details({ domain }: { domain: Domain }) {
   );
 }
 
+/** The agents are loaded for this tab only: the other tabs don't wait for every agent's instructions. */
+function AgentInputsTab({ domain }: { domain: Domain }) {
+  const { data: agents } = useAgents();
+  if (!agents) return <p className="text-subtle">Loading…</p>;
+  return <AgentInputsForm domain={domain} agents={agents} />;
+}
+
 export function DomainPage() {
   const { domainKey = "" } = useParams();
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as Tab) || "features";
-  const { data: agents } = useAgents();
   const { data: domain, error } = useQuery({ queryKey: ["domain", domainKey], queryFn: () => api.domain(domainKey) });
 
   if (error) return <p className="text-bad">{(error as Error).message}</p>;
-  if (!domain || !agents) return <p className="text-subtle">Loading…</p>;
+  if (!domain) return <p className="text-subtle">Loading…</p>;
 
   return (
     <div className="space-y-6">
@@ -594,7 +600,7 @@ export function DomainPage() {
       </nav>
       {tab === "features" && <DomainFeatures domain={domain} />}
       {tab === "docs" && <Documentation domain={domain} />}
-      {tab === "inputs" && <AgentInputsForm domain={domain} agents={agents} />}
+      {tab === "inputs" && <AgentInputsTab domain={domain} />}
       {tab === "boundary" && <Boundary key={domain.key} domain={domain} />}
       {tab === "dependencies" && <Dependencies domain={domain} />}
       {tab === "details" && <Details domain={domain} />}

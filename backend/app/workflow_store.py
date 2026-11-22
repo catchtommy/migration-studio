@@ -4,6 +4,7 @@ Like agents, workflows are shared by every project (project SHARED), and a proje
 workflows of its own.
 """
 
+import copy
 import logging
 import re
 from urllib.parse import urlsplit
@@ -11,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from app import agent_store, projects
+from app import agent_store, cache, projects, settings_store
 from app.db.models import GLOBAL, SHARED, Domain, Run, Setting, WorkflowDef
 from app.db.session import session_scope
 from app.orchestrator.stages import (BOUNDED_CONTEXTS, DOMAIN_FEATURES, LEAN, LEAN_ANALYSIS_CHECKLIST,
@@ -533,40 +534,55 @@ def browse(of: str, visible: list[str]) -> list[dict[str, Any]]:
     one) and `runs` (how many runs use it there)."""
     with session_scope() as s:
         if of == "all":
-            rows = [(r, r.project != SHARED and s.get(WorkflowDef, (SHARED, r.key)) is not None)
-                    for r in s.scalars(select(WorkflowDef).where(WorkflowDef.project.in_([SHARED, *visible]))
-                                       .order_by(WorkflowDef.project != SHARED, WorkflowDef.project,
-                                                 WorkflowDef.created_at))]
+            found = list(s.scalars(select(WorkflowDef).where(WorkflowDef.project.in_([SHARED, *visible]))
+                                   .order_by(WorkflowDef.project != SHARED, WorkflowDef.project,
+                                             WorkflowDef.created_at)))
+            shared = {r.key for r in found if r.project == SHARED}
+            rows = [(r, r.project != SHARED and r.key in shared) for r in found]
         else:
             rows = _effective_rows(s, of)
+        # How many runs use each workflow in each project: one query, not one per workflow
+        projects_counted = visible if of == "all" else sorted({of, *(r.project for r, _ in rows if r.project != SHARED)})
+        counts: dict[tuple[str, str], int] = {}
+        if projects_counted:
+            counts = {(p, w): n for p, w, n in s.execute(
+                select(Run.project, Run.workflow, func.count()).where(Run.project.in_(projects_counted))
+                .group_by(Run.project, Run.workflow))}
         out = []
         agents = agent_store.titles()  # once, not per workflow
         for row, customised in rows:
-            runs = select(func.count()).select_from(Run).where(Run.workflow == row.key)
             if row.project != SHARED:
-                runs = runs.where(Run.project == row.project)
+                runs = counts.get((row.project, row.key), 0)
             elif of != "all":
-                runs = runs.where(Run.project == of)
+                runs = counts.get((of, row.key), 0)
             else:
-                runs = runs.where(Run.project.in_(visible))
+                runs = sum(n for (p, w), n in counts.items() if w == row.key and p in visible)
             out.append({**_as_dict(row, customised, agents), "owner": None if row.project == SHARED else row.project,
-                        "runs": s.scalar(runs)})
+                        "runs": runs})
         return out
 
 
+def _effective_dicts(project: str | None) -> list[dict[str, Any]]:
+    """The workflows a project uses, as list_all gives them. Shared and read on most requests (cached until a workflow
+    or an agent changes: their titles are in the stages): callers copy what they hand out."""
+    def load() -> list[dict[str, Any]]:
+        agents = agent_store.titles(project)  # once, not per workflow
+        with session_scope() as s:
+            return [_as_dict(r, c, agents) for r, c in _effective_rows(s, project)]
+
+    return cache.cached("workflows", ("workflows", "agents"), project, load, copy_result=False)
+
+
 def list_all() -> list[dict[str, Any]]:
-    with session_scope() as s:
-        agents = agent_store.titles()  # once, not per workflow
-        return [_as_dict(r, c, agents) for r, c in _effective_rows(s, projects.current_or_none())]
+    return copy.deepcopy(_effective_dicts(projects.current_or_none()))
 
 
 def get(key: str) -> dict[str, Any]:
-    project = projects.current_or_none()
-    with session_scope() as s:
-        row = _effective(s, key, project)
-        if row is None:
-            raise KeyError(key)
-        return _as_dict(row, row.project != SHARED and s.get(WorkflowDef, (SHARED, key)) is not None)
+    """The workflow the current project uses under this key: its own copy, else the shared one."""
+    found = next((w for w in _effective_dicts(projects.current_or_none()) if w["key"] == key), None)
+    if found is None:
+        raise KeyError(key)
+    return copy.deepcopy(found)
 
 
 def _target(library: str) -> str:
@@ -714,10 +730,10 @@ def domain_workflows(domain: Domain) -> list[dict]:
     keys = ([default_for(domain)] if explicit or not ran else []) + ran
     keys = [k for k in keys if k]
     out = []
+    known = {w["key"]: w for w in _effective_dicts(projects.current_or_none())}  # one read for all of them
     for key in dict.fromkeys(keys):
-        try:
-            wf = get(key)
-        except KeyError:
+        wf = known.get(key)
+        if wf is None:
             continue  # deleted since
         agents = [st["key"] for st in wf["steps"] if st.get("kind") == "agent"]
         from app.modulith_scope import SKIPPABLE
@@ -737,22 +753,19 @@ def domain_workflows(domain: Domain) -> list[dict]:
 
 
 def _project_default(project: str) -> str | None:
-    with session_scope() as s:
-        stored = s.get(Setting, (project, PROJECT_DEFAULT))
-        return stored.value if stored is not None and stored.value else None
+    return settings_store.get_project(project).get(PROJECT_DEFAULT) or None  # cached
 
 
 def default_for(domain: Domain | None, scope: str = "operation") -> str | None:
     """The workflow a new run of this scope uses: for migrations the domain's default, else the project's (Project
     settings), else the built-in one; otherwise the first one created."""
     project = projects.current_or_none()
-    with session_scope() as s:
-        keys = [w.key for w, _ in _effective_rows(s, project) if (w.scope or "operation") == scope]
-        if scope == "operation" and domain is not None and domain.default_workflow in keys:
-            return domain.default_workflow
-        if scope == "operation" and project:
-            stored = s.get(Setting, (project, PROJECT_DEFAULT))
-            if stored is not None and stored.value in keys:
-                return stored.value
-        preferred = STANDARD_KEY if scope == "operation" else DISCOVERY[scope][0]
-        return preferred if preferred in keys else (keys[0] if keys else None)
+    keys = [w["key"] for w in _effective_dicts(project) if w["scope"] == scope]  # in creation order, as before
+    if scope == "operation" and domain is not None and domain.default_workflow in keys:
+        return domain.default_workflow
+    if scope == "operation" and project:
+        stored = _project_default(project)
+        if stored in keys:
+            return stored
+    preferred = STANDARD_KEY if scope == "operation" else DISCOVERY[scope][0]
+    return preferred if preferred in keys else (keys[0] if keys else None)

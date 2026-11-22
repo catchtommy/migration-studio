@@ -89,7 +89,8 @@ def get_project(key: str, user: CurrentUser = Depends(current_user)) -> dict:
         p = s.get(Project, key)
         runs = s.scalar(select(func.count()).where(Run.project == key))
         members = s.scalar(select(func.count()).where(ProjectMember.project == key))
-        out = projects.as_dict(p, runs, members, projects.role_of(user.id, key))
+        member = s.get(ProjectMember, (key, user.id))  # in this session, not another one
+        out = projects.as_dict(p, runs, members, member.role if member else None)
     return {**out, "permissions": sorted(permissions), "settings": settings_store.get_project(key),
             "languages": settings_store.LANGUAGES}
 

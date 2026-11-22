@@ -1,25 +1,27 @@
 import asyncio
 import json
 import threading
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
-from sqlalchemy.orm import Session, defer, selectinload
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, defer, load_only, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.schemas import (
     AgentInputsIn, AnswerIn, ApprovalOut, ArtifactOut, ArtifactSummary, ArtifactUpdate, ChangeStep, ChecklistTick,
     Decision, EventOut,
     QuestionOut,
-    RetryIn, RunCreate, RunDetail, RunOut, Rerun, Restart, StartOverIn, WorkflowUpdateIn,
+    RetryIn, RunCreate, RunDetail, RunOut, RunSummary, Rerun, Restart, StartOverIn, WorkflowUpdateIn,
 )
 from app.agents import common
 from app.agents.base_agent import DOCS_ROOT
 from app.config import settings
 from app.db.models import Approval, Artifact, AuditEvent, Domain, Question, Run, StageExecution, utcnow
-from app.db.session import emit, get_db, session_scope
+from app.db.session import emit, emitted, get_db, session_scope
 from app import (agent_store, auth, contracts_store, delivery, discovery_store, document_export, domain_modules,
                  gate_checklist, projects, repos, run_cleanup, run_workflow, settings_store, workflow_store, workspace)
 from app.auth import CurrentUser, ProjectAccess, project_context, require, require_admin
@@ -38,12 +40,13 @@ def _run_or_404(db: Session, run_id: str) -> Run:
     return run
 
 
-@router.get("/runs", response_model=list[RunOut])
+@router.get("/runs", response_model=list[RunSummary])
 def list_runs(db: Session = Depends(get_db)):
-    # Polled by the dashboard: leave out the large columns RunOut doesn't show
+    # Polled by the dashboard: only the columns RunSummary shows (each run has several long texts it doesn't)
     return db.scalars(select(Run).where(Run.project == projects.current()).order_by(Run.domain, Run.operation)
-                      .options(defer(Run.inputs), defer(Run.pending_rerun), defer(Run.pending_change),
-                               defer(Run.workspace))).all()
+                      .options(load_only(Run.id, Run.domain, Run.operation, Run.scope, Run.workflow,
+                                         Run.workflow_stages, Run.status, Run.current_stage, Run.created_at,
+                                         Run.updated_at))).all()
 
 
 SCOPE_LABELS = {"operation": "migration", "domain": "feature listing", "monolith": "bounded-context discovery"}
@@ -174,17 +177,17 @@ def git_plan(domain: str, feature: str, workflow: str | None = None, db: Session
     return delivery.plan(projects.current(), wf, domain, feature)
 
 
-def _functional_coverage(run: Run) -> dict | None:
+def _functional_coverage(run: Run, db: Session | None = None) -> dict | None:
     """The functional specification's coverage, from the run's documents in effect; None for a run whose workflow has
-    no Analysis step writing one."""
+    no Analysis step writing one. `db`: the request's session (it has the run and its attempts loaded)."""
     from app import functional_spec
     from app.agents.base_agent import docs_dir
 
     if not any(d.get("key") == "analysis" for d in run.stage_defs or []):
         return None
     try:
-        report = functional_spec.report(workspace.effective_documents(run.id), docs_dir(run.domain, run.operation),
-                                        run.stage_defs)
+        report = functional_spec.report(workspace.effective_documents(run.id, db=db),
+                                        docs_dir(run.domain, run.operation), run.stage_defs)
     except Exception as e:  # noqa: BLE001 - a report only: never breaks the run page
         return {"available": False, "message": f"The functional coverage could not be read: {e}"}
     if not report["available"] and any(d.get("key") == "dependency_analysis" for d in run.stage_defs):
@@ -201,21 +204,25 @@ def _functional_coverage(run: Run) -> dict | None:
 
 @router.get("/runs/{run_id}", response_model=RunDetail)
 def get_run(run_id: str, db: Session = Depends(get_db), access: ProjectAccess = Depends(project_context)):
+    # The newest audit event this state includes (read first): the page refreshes only for events after it.
+    last_event_id = db.scalar(select(func.max(AuditEvent.id)).where(AuditEvent.run_id == run_id)) or 0
     # The attempts in one query, without their diffs and prompts (megabytes on a long run; the page fetches them
-    # separately, see stage_diff and stage_prompt)
-    run = db.get(Run, run_id, options=[
-        selectinload(Run.stages).defer(StageExecution.diff).defer(StageExecution.prompt)
-        .defer(StageExecution.repos),
-        selectinload(Run.approvals)])
+    # separately, see stage_diff and stage_prompt), and without what each was given unless the user may see it
+    inspect = access.can("runs.inspect")
+    stages = selectinload(Run.stages).defer(StageExecution.diff).defer(StageExecution.prompt).defer(StageExecution.repos)
+    if not inspect:
+        stages = stages.defer(StageExecution.inputs)
+    run = db.get(Run, run_id, options=[stages, selectinload(Run.approvals)])
     if run is None or run.project != projects.current():
         raise HTTPException(404, "Run not found")
     branches = _branches_to_confirm(run_id) if run.status == "awaiting_branches" else None
     if branches:
         db.refresh(run)  # the workflow's current code settings, picked up while it waits
+    if not inspect:  # what each attempt was given: for users allowed to inspect agents (not loaded above)
+        for ex in run.stages:
+            set_committed_value(ex, "inputs", None)  # serialized as None instead of loading it now
     detail = RunDetail.model_validate(run)
-    if not access.can("runs.inspect"):  # what each attempt was given: for users allowed to inspect agents
-        for ex in detail.stages:
-            ex.inputs = None
+    detail.last_event_id = last_event_id
     detail.rerun_blocked = workspace.rerun_blocked(run, list(run.stages))
     detail.changeable = changeable(run, list(run.stages))
     if run.scope == "operation":
@@ -223,16 +230,16 @@ def get_run(run_id: str, db: Session = Depends(get_db), access: ProjectAccess = 
                                   if run.legacy else
                                   repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha))
     if run.scope == "operation" and run.status in ("awaiting_approval", "changes_requested", "completed"):
-        detail.functional_coverage = _functional_coverage(run)
+        detail.functional_coverage = _functional_coverage(run, db)
     if run.status in ("awaiting_approval", "changes_requested"):
-        detail.pending_gate = get_runner().pending_gate(run_id)
+        detail.pending_gate = get_runner().pending_gate(run_id, run.stage_defs)
         if detail.pending_gate and detail.pending_gate.get("gate"):
             detail.pending_gate = {**detail.pending_gate,
                                    "checklist": gate_checklist.state(db, run, detail.pending_gate["gate"])}
     if run.status == "awaiting_branches":
-        detail.pending_branches = branches or get_runner().pending_gate(run_id)
+        detail.pending_branches = branches or get_runner().pending_gate(run_id, run.stage_defs)
     if run.status == "awaiting_commit" and run.current_stage:
-        detail.pending_commit = get_runner().pending_gate(run_id)
+        detail.pending_commit = get_runner().pending_gate(run_id, run.stage_defs)
     update = None if get_runner().is_active(run_id) else run_workflow.plan(run)
     detail.workflow_update = update and {k: v for k, v in update.items() if k not in ("stages", "rerun_stages")}
     detail.stopping = common.stop_requested(run_id)
@@ -470,7 +477,8 @@ def change_step(run_id: str, body: ChangeStep, db: Session = Depends(get_db),
         raise HTTPException(403, "Changing a step needs the permission to run or approve migrations")
     user = access.user
     run = _run_or_404(db, run_id)
-    executions = list(db.scalars(select(StageExecution).where(StageExecution.run_id == run_id)))
+    executions = list(db.scalars(select(StageExecution).where(StageExecution.run_id == run_id)
+                                 .options(defer(StageExecution.diff), defer(StageExecution.prompt), defer(StageExecution.repos), defer(StageExecution.inputs))))
     allowed = changeable(run, executions)
     if body.stage not in allowed:
         raise HTTPException(422, f"{body.stage} can't be changed this way: only a completed step that writes documents "
@@ -587,7 +595,8 @@ def _restart(db: Session, run: Run, stage: str, user: CurrentUser, notes: str | 
     step = next((s for s in run.stage_defs if s["key"] == stage), None)
     if step is None or step["kind"] != "agent":
         raise HTTPException(422, f"{stage} is not an agent step of this run's workflow")
-    executions = list(db.scalars(select(StageExecution).where(StageExecution.run_id == run_id)))
+    executions = list(db.scalars(select(StageExecution).where(StageExecution.run_id == run_id)
+                                 .options(defer(StageExecution.diff), defer(StageExecution.prompt), defer(StageExecution.repos), defer(StageExecution.inputs))))
     blocked = workspace.rerun_blocked(run, executions).get(stage)
     if blocked:  # top down: an earlier step must complete first
         raise HTTPException(409, f"{step['title']} can't be re-run yet: {blocked}")
@@ -695,7 +704,9 @@ def answer_question(question_id: int, body: AnswerIn, db: Session = Depends(get_
 @router.get("/runs/{run_id}/artifacts", response_model=list[ArtifactSummary])
 def list_artifacts(run_id: str, db: Session = Depends(get_db)):
     _run_or_404(db, run_id)
-    return db.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
+    # Without the documents' content (every attempt's documents; the list doesn't show it)
+    return db.scalars(select(Artifact).where(Artifact.run_id == run_id).order_by(Artifact.id)
+                      .options(defer(Artifact.content))).all()
 
 
 @router.get("/runs/{run_id}/documents.zip")
@@ -789,9 +800,15 @@ def _document_diff(db: Session, ex: StageExecution) -> str:
     return "".join(out)
 
 
+EVENTS_BATCH = 500
+EVENTS_FALLBACK_SECONDS = 10
+
+
 @router.get("/runs/{run_id}/events")
 async def events(run_id: str, request: Request, after: int = 0):
-    """Server-sent events: the run's audit log, then live updates."""
+    """Server-sent events: the run's audit log, then live updates. Once the stored log has been sent, a `ready` event
+    tells the page that what follows is new (the page refreshes the run for those, not for the history). A browser
+    reconnecting sends Last-Event-ID: only what it missed is sent again."""
     def check() -> None:
         with session_scope() as s:
             _run_or_404(s, run_id)
@@ -801,16 +818,32 @@ async def events(run_id: str, request: Request, after: int = 0):
     def fetch(last_id: int) -> list[EventOut]:
         with session_scope() as s:
             rows = s.scalars(select(AuditEvent).where(AuditEvent.run_id == run_id, AuditEvent.id > last_id)
-                             .order_by(AuditEvent.id).limit(500)).all()
+                             .order_by(AuditEvent.id).limit(EVENTS_BATCH)).all()
             return [EventOut.model_validate(r) for r in rows]
 
+    try:
+        resumed = int(request.headers.get("last-event-id") or 0)
+    except ValueError:
+        resumed = 0
+
     async def stream():
-        last_id = after
+        last_id, ready = max(after, resumed), False
         while not await request.is_disconnected():
-            for ev in await asyncio.to_thread(fetch, last_id):
+            mark, read_at = emitted(run_id), time.monotonic()
+            batch = await asyncio.to_thread(fetch, last_id)
+            for ev in batch:
                 last_id = ev.id
                 yield {"id": str(ev.id), "event": "audit", "data": json.dumps(ev.model_dump(mode="json"))}
-            await asyncio.sleep(0.5)
+            if len(batch) == EVENTS_BATCH:
+                continue  # more of the stored log: send it straight away
+            if not ready:
+                ready = True
+                yield {"event": "ready", "data": str(last_id)}
+            # The database is read again only once this process recorded an event of the run (checked every 0.5 s),
+            # or after EVENTS_FALLBACK_SECONDS in case one was recorded some other way
+            while (emitted(run_id) == mark and time.monotonic() - read_at < EVENTS_FALLBACK_SECONDS
+                   and not await request.is_disconnected()):
+                await asyncio.sleep(0.5)
 
     return EventSourceResponse(stream())
 
@@ -834,12 +867,24 @@ def _deliverable(db: Session, run_id: str) -> Run:
     return run
 
 
+PREPARING = "Preparing the run's workspace: checking out its repositories and replaying its steps' changes…"
+
+
+def _workspace_ready(run_id: str) -> None:
+    """503 (the page retries) while the run's workspace is being rebuilt in the background: a request never waits for
+    a clone and a replay of every step."""
+    if not workspace.ready_or_preparing(run_id):
+        raise HTTPException(503, PREPARING)
+
+
 @router.get("/runs/{run_id}/repositories")
 def run_repositories(run_id: str, db: Session = Depends(get_db)):
-    """The repositories the run works on: which it changed, and what was committed to each."""
+    """The repositories the run works on: which it changed, and what was committed to each. 503 while its workspace
+    is being rebuilt (the page asks again)."""
     _deliverable(db, run_id)
     db.close()
     try:
+        _workspace_ready(run_id)
         return delivery.repositories(run_id)
     except (delivery.DeliveryError, git_ops.GitError) as e:
         raise HTTPException(409, str(e))
@@ -855,6 +900,7 @@ def run_changes(run_id: str, repo: str = delivery.ROOT, db: Session = Depends(ge
         raise HTTPException(409, "The run is working; review its changes when it stops")
     db.close()
     try:
+        _workspace_ready(run_id)
         return delivery.changes(run_id, repo, user.id)
     except (delivery.DeliveryError, git_ops.GitError) as e:
         raise HTTPException(409, str(e))

@@ -79,6 +79,25 @@ class ApprovalOut(ORM):
     created_at: datetime
 
 
+class RunSummary(ORM):
+    """A run in the dashboard's list (polled every few seconds): what the list shows, none of the long texts."""
+    id: str
+    domain: str
+    operation: str
+    scope: str = "operation"
+    workflow: str | None
+    workflow_stages: list[StageDefOut] = Field(validation_alias="stage_defs")
+    status: str
+    current_stage: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _default_scope(cls, scope: str | None) -> str:
+        return scope or "operation"
+
+
 class RunOut(ORM):
     id: str
     domain: str
@@ -127,6 +146,7 @@ class RunDetail(RunOut):
     # At a gate and once done: the functional specification's coverage (app/functional_spec.py report), report only
     functional_coverage: dict | None = None
     branch_per: str | None = None  # the workflow's branching: "feature" (a branch per feature) or "domain"
+    last_event_id: int = 0  # the newest audit event this state includes: the page refreshes for later ones only
 
 
 class ArtifactSummary(ORM):

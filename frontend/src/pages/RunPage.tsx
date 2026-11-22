@@ -23,9 +23,9 @@ export function RunPage() {
   const canRetry = useCan("runs.start");
   const { runId = "" } = useParams();
   const { data: workflows = [] } = useWorkflows();
-  const { data: run, error } = useQuery({ queryKey: ["run", runId], queryFn: () => api.run(runId) });
+  const { data: run, error } = useQuery({ queryKey: ["run", runId], queryFn: ({ signal }) => api.run(runId, signal) });
   const events = useRunEvents(runId);
-  const { data: questions = [] } = useQuery({ queryKey: ["questions", runId], queryFn: () => api.questions(runId) });
+  const { data: questions = [] } = useQuery({ queryKey: ["questions", runId], queryFn: ({ signal }) => api.questions(runId, signal) });
   const openQuestion = questions.find((q) => q.status === "open");
   // A link to a document version (?step=) opens that step and keeps it, as if the user had picked it.
   const [params] = useSearchParams();

@@ -26,7 +26,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.orm import defer
 
+from app import cache
 from app import contracts_store as cs
 from app import settings_store
 from app.db.models import Artifact, Feature, Run, StageExecution
@@ -56,11 +58,14 @@ def feature_segment(key: str) -> str:
 
 
 def domain_features(project: str, domain: str) -> list[tuple[str, str]]:
-    """(key, name) of the domain's listed features."""
-    with session_scope() as s:
-        return [(f.key, f.name) for f in s.scalars(select(Feature).where(Feature.project == project,
-                                                                         Feature.domain == domain)
-                                                    .order_by(Feature.key))]
+    """(key, name) of the domain's listed features. Asked repeatedly by a step's checks: cached until a feature is
+    written (app/cache.py)."""
+    def load() -> list[tuple[str, str]]:
+        with session_scope() as s:
+            return [tuple(r) for r in s.execute(select(Feature.key, Feature.name).where(
+                Feature.project == project, Feature.domain == domain).order_by(Feature.key))]
+
+    return cache.cached("domain_features", ("features",), (project, domain), load)
 
 
 @dataclass
@@ -588,8 +593,9 @@ def _run_changes(run_id: str | None, key: str) -> list[str] | None:
     if not run_id:
         return None
     with session_scope() as s:
-        rows = s.scalars(select(StageExecution).where(StageExecution.run_id == run_id)
-                         .order_by(StageExecution.id)).all()
+        rows = s.scalars(select(StageExecution).where(StageExecution.run_id == run_id).order_by(StageExecution.id)
+                         .options(defer(StageExecution.diff), defer(StageExecution.prompt),
+                                  defer(StageExecution.inputs))).all()
         latest = {}
         for ex in rows:  # each step's latest attempt that recorded this repository
             if ex.status != "failed" and key in (ex.repos or {}):
@@ -641,7 +647,9 @@ def modern_problems(ctx) -> list[str]:
     with session_scope() as s:
         ex = s.scalars(select(StageExecution).where(StageExecution.run_id == ctx.run_id,
                                                     StageExecution.stage == ctx.stage)
-                       .order_by(StageExecution.id.desc())).first()
+                       .order_by(StageExecution.id.desc())
+                       .options(defer(StageExecution.diff), defer(StageExecution.prompt),
+                                defer(StageExecution.inputs))).first()
         start = ((ex.repos or {}).get(info["key"]) or {}).get("start") if ex else None
     lift_root = ctx.workspace / info["path"]
     if start:

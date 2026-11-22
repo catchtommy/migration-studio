@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app import cache
 from app.agents.defaults import SHARED_TEXTS
 from app.db.models import GLOBAL, SHARED, Agent, Setting, SharedText
 from app.agent_store import _keep_updated_at
@@ -148,6 +149,12 @@ def unknown(instructions: str) -> list[str]:
 
 
 def list_all() -> list[dict[str, Any]]:
+    """Every shared text, with the agents that use it. Read on each run page (run_workflow.agents_changed): cached
+    until a text or an agent changes (app/cache.py)."""
+    return cache.cached("shared_texts", ("shared_texts", "agents"), None, _list_all)
+
+
+def _list_all() -> list[dict[str, Any]]:
     order = {k: i for i, k in enumerate(SHARED_TEXTS)}
     with session_scope() as s:
         rows = list(s.scalars(select(SharedText).where(SharedText.project == SHARED)))

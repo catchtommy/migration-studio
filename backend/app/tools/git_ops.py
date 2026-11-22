@@ -166,13 +166,21 @@ def init_workspace(path: Path, source_repo: str | None, branch: str, base_sha: s
     return head(path)
 
 
+def network_env(env: dict | None) -> dict:
+    """Variables for git commands that reach a remote: a transfer that stalls (under 1 KB/s for a minute: a dropped VPN,
+    a proxy holding the connection) fails instead of holding the request or step forever, and git never waits for a
+    password typed at a terminal nobody sees. A slow transfer that keeps moving is left alone."""
+    return {"GIT_HTTP_LOW_SPEED_LIMIT": "1000", "GIT_HTTP_LOW_SPEED_TIME": "60", "GIT_TERMINAL_PROMPT": "0",
+            **(env or {})}
+
+
 def clone_mirror(url: str, path: Path, env: dict | None = None) -> None:
     """A bare mirror of a repository: every branch and tag, updated with fetch_mirror."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".partial")  # a failed or interrupted clone never looks like a mirror
     remove_tree(tmp)
     proc = subprocess.run(["git", "clone", "--quiet", "--mirror", "--", url, str(tmp)], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          env={**os.environ, **env} if env else None)
+                          env={**os.environ, **network_env(env)})
     if proc.returncode != 0:
         remove_tree(tmp)
         raise GitError(f"git clone {url} failed: {proc.stderr.strip()}")
@@ -184,7 +192,7 @@ def fetch_mirror(path: Path, url: str, env: dict | None = None) -> None:
     """Bring the mirror up to date with the repository (at `url`, which may have changed since it was cloned)."""
     if git(path, "config", "--get", "remote.origin.url") != url:
         git(path, "remote", "set-url", "origin", url)
-    git(path, "fetch", "--quiet", "--prune", "--tags", "origin", env=env)
+    git(path, "fetch", "--quiet", "--prune", "--tags", "origin", env=network_env(env))
 
 
 def commit_info(repo: Path, ref: str) -> dict | None:

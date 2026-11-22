@@ -153,7 +153,8 @@ def _locked_documents(workflow: Workflow, run_id: str, stage: StageDef) -> set[s
     if not approved:
         return set()
     with session_scope() as s:
-        rows = s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage.in_(approved))).all()
+        rows = s.execute(select(Artifact.stage, Artifact.attempt, Artifact.path).where(
+            Artifact.run_id == run_id, Artifact.stage.in_(approved))).all()  # paths only, not the documents' text
         latest = {}
         for a in rows:
             latest[a.stage] = max(latest.get(a.stage, 0), a.attempt)
@@ -192,8 +193,8 @@ def _previous_outputs(run_id: str, stage: str) -> list[str]:
             StageExecution.run_id == run_id, StageExecution.stage == stage, StageExecution.status == "completed"))
         if latest is None:
             return []
-        return [a.path for a in s.scalars(select(Artifact).where(Artifact.run_id == run_id, Artifact.stage == stage,
-                                                                 Artifact.attempt == latest).order_by(Artifact.id))]
+        return list(s.scalars(select(Artifact.path).where(Artifact.run_id == run_id, Artifact.stage == stage,
+                                                          Artifact.attempt == latest).order_by(Artifact.id)))
 
 
 def _stopped_attempt(run_id: str, stage: str) -> dict | None:

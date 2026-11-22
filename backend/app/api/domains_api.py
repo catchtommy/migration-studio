@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app import (agent_store, contracts_store, discovery_store, document_export, domain_store, feature_move,
                  run_cleanup, workflow_store)
@@ -176,7 +176,9 @@ def domain_docs(key: str, db: Session = Depends(get_db)):
     """Every operation in the domain with the documents from the latest attempt of each stage."""
     _domain_or_404(db, key)
     runs = db.scalars(select(Run).where(Run.project == projects.current(), Run.domain == key)
-                      .order_by(Run.operation, Run.created_at)).all()
+                      .order_by(Run.operation, Run.created_at)
+                      .options(defer(Run.inputs), defer(Run.pending_rerun), defer(Run.pending_change),
+                               defer(Run.workspace))).all()  # the long texts RunOut doesn't show
     artifacts = document_export.latest_artifacts_of(db, [r.id for r in runs], content=False)
     return [{"run": run, "artifacts": artifacts.get(run.id, [])} for run in runs]
 
@@ -197,7 +199,10 @@ def domain_dependencies(key: str, db: Session = Depends(get_db)):
     rows = db.scalars(select(Dependency).where(Dependency.project == projects.current(),
                                                (Dependency.source == key) | (Dependency.target == key))
                       .order_by(Dependency.id)).all()
-    operations = {r.id: r.operation for r in db.scalars(select(Run).where(Run.id.in_({d.run_id for d in rows})))}
+    # The runs' operations by a join (not an IN list of their ids: Oracle allows 1000 values in one), id and name only
+    operations = dict(db.execute(select(Run.id, Run.operation).join(Dependency, Dependency.run_id == Run.id)
+                                 .where(Dependency.project == projects.current(),
+                                        (Dependency.source == key) | (Dependency.target == key))).all())
     return [DependencyOut.model_validate(d).model_copy(update={"operation": operations.get(d.run_id)}) for d in rows]
 
 

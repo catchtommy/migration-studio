@@ -1,21 +1,25 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, getCurrentProject, GLOBAL_PERMISSIONS, withProject, type AuditEvent, type Permission, type Project } from "./api";
+import { api, getCurrentProject, GLOBAL_PERMISSIONS, withProject, type AuditEvent, type Permission, type Project, type RunDetail } from "./api";
 
-export function useCopilotStatus() {
-  return useQuery({ queryKey: ["copilotStatus"], queryFn: api.copilotStatus, staleTime: 60_000 });
+/** Agents, workflows, domains and the project change when someone edits them (their pages refresh them then): read
+ * again at most every 30 s otherwise, not on every page they're used on. */
+const LIBRARY_STALE_MS = 30_000;
+
+export function useCopilotStatus(enabled = true) {
+  return useQuery({ queryKey: ["copilotStatus"], queryFn: api.copilotStatus, staleTime: 60_000, enabled });
 }
 
 export function useAgents() {
-  return useQuery({ queryKey: ["agents"], queryFn: api.agents });
+  return useQuery({ queryKey: ["agents"], queryFn: api.agents, staleTime: LIBRARY_STALE_MS });
 }
 
 export function useWorkflows() {
-  return useQuery({ queryKey: ["workflows"], queryFn: api.workflows });
+  return useQuery({ queryKey: ["workflows"], queryFn: api.workflows, staleTime: LIBRARY_STALE_MS });
 }
 
 export function useDomains() {
-  return useQuery({ queryKey: ["domains"], queryFn: api.domains });
+  return useQuery({ queryKey: ["domains"], queryFn: api.domains, staleTime: LIBRARY_STALE_MS });
 }
 
 /** The signed-in user (null while signed out). */
@@ -57,25 +61,54 @@ export function useCanGlobally(permission: Permission): boolean {
   return !!data?.user?.permissions.includes(permission);
 }
 
-/** Streams the run's audit log over SSE and refreshes run data whenever something meaningful happens. */
+/** How often streamed events are shown and checked for a refresh: one render and at most one refetch per tick. */
+export const RUN_EVENTS_FLUSH_MS = 250;
+
+/** Streams the run's audit log over SSE and refreshes run data when something meaningful happened since the run was
+ * loaded. The stored log is replayed first (for the activity log): those events never cause refetches by themselves.
+ * A refresh happens only when a non-log event is newer than the newest event the loaded run includes
+ * (RunDetail.last_event_id), at most once per tick and never while the run is being fetched, so a long history or a
+ * burst of events costs one request instead of one per event. */
 export function useRunEvents(runId: string) {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const queryClient = useQueryClient();
 
   useEffect(() => {
     setEvents([]);
+    const seen = new Set<number>();
+    let pending: AuditEvent[] = [];
+    let newestChange = 0; // id of the newest non-log event received
+
+    const flush = () => {
+      if (pending.length) {
+        const batch = pending;
+        pending = [];
+        setEvents((prev) => [...prev, ...batch]);
+      }
+      const state = queryClient.getQueryState<RunDetail>(["run", runId]);
+      if (!state?.data || state.fetchStatus === "fetching") return;
+      if (newestChange > (state.data.last_event_id ?? 0)) {
+        const opts = { cancelRefetch: false } as const;
+        queryClient.invalidateQueries({ queryKey: ["run", runId] }, opts);
+        queryClient.invalidateQueries({ queryKey: ["artifacts", runId] }, opts);
+        queryClient.invalidateQueries({ queryKey: ["questions", runId] }, opts);
+        queryClient.invalidateQueries({ queryKey: ["runs"] }, opts);
+      }
+    };
+    const timer = window.setInterval(flush, RUN_EVENTS_FLUSH_MS);
+
     const source = new EventSource(withProject(`/api/runs/${runId}/events`));
     source.addEventListener("audit", (e) => {
       const event: AuditEvent = JSON.parse((e as MessageEvent).data);
-      setEvents((prev) => (prev.some((p) => p.id === event.id) ? prev : [...prev, event]));
-      if (event.kind !== "log") {
-        queryClient.invalidateQueries({ queryKey: ["run", runId] });
-        queryClient.invalidateQueries({ queryKey: ["artifacts", runId] });
-        queryClient.invalidateQueries({ queryKey: ["runs"] });
-        queryClient.invalidateQueries({ queryKey: ["questions", runId] });
-      }
+      if (seen.has(event.id)) return;
+      seen.add(event.id);
+      pending.push(event);
+      if (event.kind !== "log") newestChange = Math.max(newestChange, event.id);
     });
-    return () => source.close();
+    return () => {
+      window.clearInterval(timer);
+      source.close();
+    };
   }, [runId, queryClient]);
 
   return events;
@@ -94,7 +127,7 @@ export function useRefreshRun(runId: string) {
  * migration workflow of this project, else the Standard migration. A domain's own default comes before it. */
 export function useProjectDefaultWorkflow(): string | undefined {
   const project = getCurrentProject();
-  const { data } = useQuery({ queryKey: ["project", project], queryFn: () => api.project(project!), enabled: !!project });
+  const { data } = useQuery({ queryKey: ["project", project], queryFn: () => api.project(project!), enabled: !!project, staleTime: LIBRARY_STALE_MS });
   const { data: workflows = [] } = useWorkflows();
   const migration = workflows.filter((w) => w.scope === "operation");
   const chosen = data?.settings.default_workflow as string | undefined;

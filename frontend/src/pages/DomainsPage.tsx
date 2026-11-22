@@ -16,6 +16,7 @@ import { Guarded } from "../components/Guarded";
 
 const ACTIVE = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches"];
 const isActive = (run: RunBrief | null) => !!run && ACTIVE.includes(run.status);
+const isWorking = (run: RunBrief | null) => !!run && ["pending", "running"].includes(run.status);
 const unfinished = (run: RunBrief | null) => !!run && run.status !== "completed";
 
 function Step({ n, title, done, children }: { n: number; title: string; done: boolean; children: React.ReactNode }) {
@@ -40,7 +41,8 @@ function DiscoveryPanel() {
   const { data } = useQuery({
     queryKey: ["discovery"],
     queryFn: api.discovery,
-    refetchInterval: (q) => (q.state.data && (isActive(q.state.data.bounded_contexts) || q.state.data.domains.some((d) => isActive(d.run))) ? 3000 : false),
+    // Only while an agent works: a run waiting for a person (at a gate) can wait for days
+    refetchInterval: (q) => (q.state.data && (isWorking(q.state.data.bounded_contexts) || q.state.data.domains.some((d) => isWorking(d.run))) ? 3000 : false),
   });
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["discovery"] });

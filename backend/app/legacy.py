@@ -180,9 +180,9 @@ def refresh(project: str) -> dict | None:
 
 def _collect(project: str, keep: set[str]) -> None:
     with session_scope() as s:
-        for run in s.scalars(select(Run).where(Run.project == project, Run.status != "completed")):
-            if run.legacy and run.legacy.get("sha"):
-                keep.add(run.legacy["sha"])
+        for legacy in s.scalars(select(Run.legacy).where(Run.project == project, Run.status != "completed")):
+            if legacy and legacy.get("sha"):  # the one column needed, not the runs' other long texts
+                keep.add(legacy["sha"])
     names = {sha[:12] for sha in keep}
     base = root(project)
     if not base.exists():

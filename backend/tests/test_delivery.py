@@ -1629,3 +1629,30 @@ def test_lean_modernisation_works_in_the_repository_the_domain_set_for_modernise
     assert delivery.stage_repository(stage, "loan", own, None)[0] == "https://git.example.com/loan-modern-2.git"
     assert delivery.agent_repository(inputs, "modernise_and_test")[2] == "modernise"  # shown as inherited
     assert delivery.agent_repository(inputs, "service_tests")[0] == "https://git.example.com/loan-modern.git"
+
+
+@pytest.mark.background_prepare
+def test_a_review_of_a_missing_workspace_waits_for_it_in_the_background(client, tmp_path):
+    """Reviewing a run whose workspace is gone doesn't hold the request while it is checked out again and every step
+    replayed: the page is told it is being prepared (503) until it is there."""
+    import time
+
+    from app import workspace
+    from app.tools import git_ops
+
+    _upstream, _key, proj = setup_project(client, tmp_path)
+    run = proj.post("/api/runs", json={"domain": "loan", "operation": "approve"}).json()
+    run = finish_workflow(proj, run["id"])
+    assert run["status"] == "awaiting_commit"
+    ws = Path(run["workspace"])
+    git_ops.remove_tree(ws)
+
+    first = proj.get(f"/api/runs/{run['id']}/repositories")
+    assert first.status_code == 503 and "Preparing" in first.json()["detail"]
+    deadline = time.time() + 60
+    while (r := proj.get(f"/api/runs/{run['id']}/repositories")).status_code == 503 and time.time() < deadline:
+        time.sleep(0.2)
+    assert r.status_code == 200, r.text
+    assert git_ops.has_commits(ws)
+    assert proj.get(f"/api/runs/{run['id']}/changes").status_code == 200
+    assert workspace.ready_or_preparing(run["id"])

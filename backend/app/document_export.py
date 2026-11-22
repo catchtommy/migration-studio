@@ -84,10 +84,10 @@ def approvals(db: Session, run: Run) -> str | None:
         return None
     titles = {d["key"]: d.get("title") or d["key"] for d in run.stage_defs or []}
     ticks: dict[str, list[list[dict]]] = {}
-    for ex in db.scalars(select(StageExecution).where(StageExecution.run_id == run.id,
-                                                      StageExecution.status.in_(("approved", "rejected")))
-                         .order_by(StageExecution.attempt)):
-        ticks.setdefault(ex.stage, []).append(ex.checklist or [])
+    for stage, checklist in db.execute(select(StageExecution.stage, StageExecution.checklist).where(
+            StageExecution.run_id == run.id, StageExecution.status.in_(("approved", "rejected")))
+            .order_by(StageExecution.attempt)):
+        ticks.setdefault(stage, []).append(checklist or [])
     lines = [f"# Approvals: {run.domain} / {run.operation}", "",
              "| Gate | Decision | By | When (UTC) | Comments |", "|---|---|---|---|---|"]
     for a in rows:

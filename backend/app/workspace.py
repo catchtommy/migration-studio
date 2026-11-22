@@ -10,10 +10,12 @@ of the stages in effect are replayed. A repository whose changes were committed 
 feature branch (with anything else pushed there since), and only later changes are replayed on it.
 """
 
+import threading
 import time
 from pathlib import Path
 
 from sqlalchemy import func, or_, select
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import defer
 
 from app import repos
@@ -90,36 +92,44 @@ def _chain(s, run: Run, before_stage: str | None) -> list[StageExecution]:
     return _effective(executions, run.stage_defs, before_stage)
 
 
-def effective_documents(run_id: str, before_stage: str | None = None) -> dict[str, str]:
+def effective_documents(run_id: str, before_stage: str | None = None, db=None) -> dict[str, str]:
     """The run's documents in effect (path: content): the latest version each stage in effect wrote, later stages
-    winning, with reviewers' edits."""
-    return {path: content for path, (_stage, content) in effective_documents_by_stage(run_id, before_stage).items()}
+    winning, with reviewers' edits. `db`: a session to read with (a request's), instead of a new one."""
+    return {path: content for path, (_stage, content)
+            in effective_documents_by_stage(run_id, before_stage, db=db).items()}
 
 
 def effective_documents_by_stage(run_id: str, before_stage: str | None = None,
-                                 until=None) -> dict[str, tuple[str, str]]:
+                                 until=None, db=None) -> dict[str, tuple[str, str]]:
     """The documents in effect (path: (the stage that wrote it, content)), as effective_documents. `until`: as they were
     in effect then, from the attempts that had finished by that time (what a step that started then was given)."""
-    with session_scope() as s:
-        run = s.get(Run, run_id)
-        executions = _light_executions(s, run.id)
-        if until is not None:
-            executions = [e for e in executions if e.finished_at is not None and e.finished_at <= until]
-        chain = [(ex.stage, ex.attempt) for ex in _effective(executions, run.stage_defs, before_stage)]
-        # Which version of each document is in effect first, then only those versions' contents: a run keeps every
-        # attempt's documents, and reading them all is slow on a remote database
-        rows = s.execute(select(Artifact.id, Artifact.stage, Artifact.attempt, Artifact.path)
-                         .where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
-        picked: dict[str, tuple[str, int]] = {}
-        for stage, attempt in chain:
-            picked.update({path: (stage, aid) for aid, a_stage, a_attempt, path in rows
-                           if a_stage == stage and a_attempt == attempt})
-        ids = [aid for _stage, aid in picked.values()]
-        contents: dict[int, str] = {}
-        for i in range(0, len(ids), 500):  # Oracle allows 1000 values in an IN list
-            contents.update(s.execute(select(Artifact.id, Artifact.content)
-                                      .where(Artifact.id.in_(ids[i:i + 500]))).all())
-        return {path: (stage, contents.get(aid) or "") for path, (stage, aid) in picked.items()}
+    if db is None:
+        with session_scope() as s:
+            return _documents_by_stage(s, run_id, before_stage, until)
+    return _documents_by_stage(db, run_id, before_stage, until)
+
+
+def _documents_by_stage(s, run_id: str, before_stage: str | None, until) -> dict[str, tuple[str, str]]:
+    run = s.get(Run, run_id)  # no query when the session has it (a request that showed the run)
+    # The attempts the session has loaded already, else read without their diffs and prompts
+    executions = list(run.stages) if "stages" not in sa_inspect(run).unloaded else _light_executions(s, run.id)
+    if until is not None:
+        executions = [e for e in executions if e.finished_at is not None and e.finished_at <= until]
+    chain = [(ex.stage, ex.attempt) for ex in _effective(executions, run.stage_defs, before_stage)]
+    # Which version of each document is in effect first, then only those versions' contents: a run keeps every
+    # attempt's documents, and reading them all is slow on a remote database
+    rows = s.execute(select(Artifact.id, Artifact.stage, Artifact.attempt, Artifact.path)
+                     .where(Artifact.run_id == run_id).order_by(Artifact.id)).all()
+    picked: dict[str, tuple[str, int]] = {}
+    for stage, attempt in chain:
+        picked.update({path: (stage, aid) for aid, a_stage, a_attempt, path in rows
+                       if a_stage == stage and a_attempt == attempt})
+    ids = [aid for _stage, aid in picked.values()]
+    contents: dict[int, str] = {}
+    for i in range(0, len(ids), 500):  # Oracle allows 1000 values in an IN list
+        contents.update(s.execute(select(Artifact.id, Artifact.content)
+                                  .where(Artifact.id.in_(ids[i:i + 500]))).all())
+    return {path: (stage, contents.get(aid) or "") for path, (stage, aid) in picked.items()}
 
 
 def _light_executions(s, run_id: str) -> list[StageExecution]:
@@ -157,7 +167,9 @@ def rerun_changes(run_id: str, stage: str, sources: list[str]) -> tuple[list[str
     with session_scope() as s:
         last = s.scalars(select(StageExecution).where(
             StageExecution.run_id == run_id, StageExecution.stage == stage, StageExecution.status == "completed")
-            .order_by(StageExecution.started_at.desc())).first()
+            .order_by(StageExecution.started_at.desc())
+            .options(defer(StageExecution.diff), defer(StageExecution.prompt), defer(StageExecution.repos),
+                     defer(StageExecution.inputs))).first()
         since = last.started_at if last is not None else None
     if since is None:
         return None, None
@@ -168,7 +180,8 @@ def rerun_changes(run_id: str, stage: str, sources: list[str]) -> tuple[list[str
     changed = {p for p in {*now, *then} if now.get(p) != then.get(p)}
     with session_scope() as s:  # a reviewer's edit changes the stored document in place: edited since it started
         changed |= {a.path for a in s.scalars(select(Artifact).where(
-            Artifact.run_id == run_id, Artifact.stage.in_(sources), Artifact.updated_at > since))
+            Artifact.run_id == run_id, Artifact.stage.in_(sources), Artifact.updated_at > since)
+            .options(defer(Artifact.content)))
             if a.path in now and a.created_at and a.updated_at - a.created_at > timedelta(seconds=1)}
 
     def domains(documents: dict[str, tuple[str, str]]) -> set[str]:
@@ -515,15 +528,58 @@ def nested_heads(ws: Path, nested: list[dict]) -> dict[str, str]:
     return {r["key"]: git_ops.head(ws / r["path"]) for r in nested if (ws / r["path"] / ".git").exists()}
 
 
-def ensure(run_id: str) -> Path:
-    """The run's workspace, rebuilt from the database first if it (or one of its repositories) is missing."""
+def _missing(run_id: str) -> tuple[Path, bool]:
+    """The run's workspace, and whether it (or one of its repositories) needs rebuilding."""
     with session_scope() as s:
         run = s.get(Run, run_id)
         ws, nested = Path(run.workspace), [r for r in run.repositories or [] if r.get("base_sha")]
     # A checkout without a commit (an interrupted clone, or `git init` run in it) is as good as missing
-    if not git_ops.has_commits(ws) or any(not git_ops.has_commits(ws / r["path"]) for r in nested):
+    return ws, not git_ops.has_commits(ws) or any(not git_ops.has_commits(ws / r["path"]) for r in nested)
+
+
+def ensure(run_id: str) -> Path:
+    """The run's workspace, rebuilt from the database first if it (or one of its repositories) is missing."""
+    ws, missing = _missing(run_id)
+    if missing:
         rebuild(run_id)
     return ws
+
+
+_preparing: dict[str, threading.Thread] = {}  # run id -> the thread rebuilding its workspace for a page
+_preparing_failed: dict[str, str] = {}
+_preparing_lock = threading.Lock()
+
+
+def ready_or_preparing(run_id: str) -> bool:
+    """For pages that need the run's workspace (reviewing its code): True when it is there. Otherwise its rebuild (a
+    clone and every step's changes replayed: minutes on a large monolith) is started in the background, once, and False
+    is returned: the page asks again later instead of a request waiting for it. A rebuild that failed raises its error
+    to the next caller (GitError), and the one after that tries again."""
+    with _preparing_lock:
+        thread = _preparing.get(run_id)
+        if thread is not None and thread.is_alive():
+            return False
+        _preparing.pop(run_id, None)
+        failed = _preparing_failed.pop(run_id, None)
+    if failed is not None:
+        raise git_ops.GitError(failed)
+    if not _missing(run_id)[1]:
+        return True
+
+    def work() -> None:
+        try:
+            ensure(run_id)
+        except Exception as e:  # noqa: BLE001 - reported to the page on its next request
+            with _preparing_lock:
+                _preparing_failed[run_id] = f"Could not prepare the run's workspace: {e}"
+
+    with _preparing_lock:
+        if run_id in _preparing:  # another request started it meanwhile
+            return False
+        thread = threading.Thread(target=work, name=f"prepare-{run_id[:8]}", daemon=True)
+        _preparing[run_id] = thread
+    thread.start()
+    return False
 
 
 def _reset_all(run_id: str, ws: Path, sha: str | None, nested_starts: dict | None) -> bool:
@@ -548,7 +604,8 @@ def _start_of(run_id: str, stage: str) -> StageExecution | None:
     with session_scope() as s:
         ex = s.scalar(select(StageExecution).where(StageExecution.run_id == run_id, StageExecution.stage == stage,
                                                    _not_true(StageExecution.rerun))
-                      .order_by(StageExecution.started_at.desc(), StageExecution.id.desc()).limit(1))
+                      .order_by(StageExecution.started_at.desc(), StageExecution.id.desc()).limit(1)
+                      .options(defer(StageExecution.diff), defer(StageExecution.prompt), defer(StageExecution.inputs)))
         if ex is not None:
             s.expunge(ex)
         return ex
@@ -572,7 +629,8 @@ def start_fresh(run_id: str, stage: str) -> None:
         ws = Path(run.workspace)
         order = [d["key"] for d in run.stage_defs]
         executions = s.scalars(select(StageExecution).where(StageExecution.run_id == run_id)
-                               .order_by(StageExecution.started_at, StageExecution.id)).all()
+                               .order_by(StageExecution.started_at, StageExecution.id)
+                               .options(defer(StageExecution.diff), defer(StageExecution.prompt), defer(StageExecution.inputs))).all()
         start = next((ex for ex in reversed(executions) if ex.stage == stage and not ex.rerun), None)
         later = executions[executions.index(start) + 1:] if start is not None else []
         earlier_since = start is None or any(

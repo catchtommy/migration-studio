@@ -93,7 +93,7 @@ def test_access(body: TestIn, user: CurrentUser = Depends(current_user)) -> dict
         raise HTTPException(422, "This project has no repository")
     env = git_auth.env_for(user.id, url)
     try:
-        git_ops.git(repos.settings.data_dir, "ls-remote", "--heads", "--", url, env=env)
+        git_ops.git(repos.settings.data_dir, "ls-remote", "--heads", "--", url, env=git_ops.network_env(env))
     except git_ops.GitError as e:
         return {"ok": False, "repository": url, "with_token": env is not None, "error": git_auth.scrub(str(e))}
     return {"ok": True, "repository": url, "with_token": env is not None, "error": None}

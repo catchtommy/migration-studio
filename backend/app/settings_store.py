@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app import projects
+from app import cache, projects
 from app.db.models import GLOBAL, Setting
 from app.db.session import session_scope
 from app.tools.git_ops import valid_branch
@@ -67,14 +67,18 @@ def _stored(s, project: str, keys) -> dict[str, Any]:
             if row.key in keys}
 
 
-def get_global() -> dict[str, Any]:
+def _load(project: str, defaults: dict[str, Any]) -> dict[str, Any]:
     with session_scope() as s:
-        return {**GLOBAL_DEFAULTS, **_stored(s, GLOBAL, GLOBAL_DEFAULTS)}
+        return {**defaults, **_stored(s, project, defaults)}
+
+
+# Read on most requests and by every step, changed rarely: cached until a setting is written (app/cache.py)
+def get_global() -> dict[str, Any]:
+    return cache.cached("settings", ("settings",), GLOBAL, lambda: _load(GLOBAL, GLOBAL_DEFAULTS))
 
 
 def get_project(project: str) -> dict[str, Any]:
-    with session_scope() as s:
-        return {**PROJECT_DEFAULTS, **_stored(s, project, PROJECT_DEFAULTS)}
+    return cache.cached("settings", ("settings",), project, lambda: _load(project, PROJECT_DEFAULTS))
 
 
 def get_all(project: str | None = None) -> dict[str, Any]:

@@ -42,4 +42,5 @@ def open_database(url: URL) -> None:
         legacy.repair_moved()
     except (OSError, git_ops.GitError):
         log.exception("Could not repair the shared copies of the monolith")
+    session.warm_pool()  # in the background: the first pages don't each pay for opening a connection
     log.info("Using %s database", url.get_backend_name())

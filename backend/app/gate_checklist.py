@@ -7,8 +7,9 @@ reached again (after a rejection or a re-run) starts with nothing ticked, and a 
 Approving needs every item ticked; rejecting doesn't.
 """
 
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app import projects, workflow_store
 from app.db.models import Run, StageExecution, utcnow
@@ -50,14 +51,20 @@ def items(run: Run, gate: str) -> list[str]:
 
 
 def _attempt(db: Session, run_id: str, gate: str) -> StageExecution | None:
+    # A gate's attempt has no diff or prompt, but the columns are large on other rows' types: not read
     return db.scalar(select(StageExecution).where(StageExecution.run_id == run_id, StageExecution.stage == gate,
-                                                  StageExecution.status == "awaiting_approval"))
+                                                  StageExecution.status == "awaiting_approval")
+                     .options(defer(StageExecution.diff), defer(StageExecution.prompt), defer(StageExecution.repos),
+                              defer(StageExecution.inputs)))
 
 
 def state(db: Session, run: Run, gate: str) -> list[dict]:
     """Each item of the gate's checklist and whether it is ticked at the attempt waiting for approval:
     [{"item", "done", "by", "at"}]."""
-    attempt = _attempt(db, run.id, gate)
+    if "stages" not in sa_inspect(run).unloaded:  # the run page has the attempts loaded already
+        attempt = next((e for e in run.stages if e.stage == gate and e.status == "awaiting_approval"), None)
+    else:
+        attempt = _attempt(db, run.id, gate)
     ticked = {t["item"]: t for t in (attempt.checklist if attempt else None) or []}
     return [{"item": i, "done": i in ticked, "by": ticked.get(i, {}).get("by"), "at": ticked.get(i, {}).get("at")}
             for i in items(run, gate)]

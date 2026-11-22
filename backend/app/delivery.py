@@ -1125,7 +1125,7 @@ def _commit(run_id: str, key: str, user_id: int, message: str, branch: str, file
 
     try:
         git_ops.git(ws, "push", "--quiet", "--", ctx["url"], f"{sha}:refs/heads/{branch}",
-                    env=git_auth.env_for(user_id, ctx["url"]))
+                    env=git_ops.network_env(git_auth.env_for(user_id, ctx["url"])))
     except git_ops.GitError as e:
         text = git_auth.scrub(str(e))
         hint = ("" if git_auth.credential(user_id, ctx["url"]) or not git_auth.uses_https(ctx["url"]) else

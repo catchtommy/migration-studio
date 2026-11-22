@@ -43,6 +43,9 @@ export interface Run {
   updated_at: string;
 }
 
+/** A run as the runs list gives it (polled by the dashboard): without its repositories, delivery and error. */
+export type RunSummary = Pick<Run, "id" | "domain" | "operation" | "scope" | "workflow" | "workflow_stages" | "status" | "current_stage" | "created_at" | "updated_at">;
+
 /** Committing a run's code: whether it will be reviewed and committed, then what was committed to each repository. */
 export interface Delivery {
   commit?: boolean;
@@ -268,6 +271,7 @@ export interface RunDetail extends Run {
   // a change to an approved step asked for while the run works: applied when the working step stops
   pending_change?: { stage: string; notes: string; follow: string[]; by: string; at: string } | null;
   changeable?: Record<string, string>; // the steps "Change this step" applies to (key -> title)
+  last_event_id?: number; // the newest audit event this state includes: refreshed only for later ones
 }
 
 /** The functional specification's coverage (app/functional_spec.py report): a report, never a block. */
@@ -886,8 +890,8 @@ async function download(path: string, fallbackName: string): Promise<void> {
 }
 
 export const api = {
-  runs: () => request<Run[]>("/runs"),
-  run: (id: string) => request<RunDetail>(`/runs/${id}`),
+  runs: () => request<RunSummary[]>("/runs"),
+  run: (id: string, signal?: AbortSignal) => request<RunDetail>(`/runs/${id}`, { signal }),
   createRun: (body: { domain: string; operation: string; workflow?: string; inputs?: AgentInputs; base_branches?: Record<string, string>; feature_branch?: string }) =>
     request<Run>("/runs", json("POST", body)),
   gitPlan: (domain: string, feature: string, workflow?: string) =>
@@ -923,7 +927,7 @@ export const api = {
   /** newBranch (fresh only, per-feature branching): cut this new feature branch from the latest base branch for the re-run. */
   restart: (id: string, stage: string, notes?: string, fresh = false, newBranch?: string) =>
     request<Run>(`/runs/${id}/restart`, json("POST", { stage, notes, fresh, new_branch: newBranch })),
-  artifacts: (runId: string) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`),
+  artifacts: (runId: string, signal?: AbortSignal) => request<ArtifactSummary[]>(`/runs/${runId}/artifacts`, { signal }),
   artifact: (id: number) => request<Artifact>(`/artifacts/${id}`),
   setAllAgentsMode: (mode: "stub" | "llm") => request<{ changed: number; mode: string }>("/agents/mode", json("POST", { mode })),
   resetFeature: (domain: string, feature: string) =>
@@ -936,7 +940,7 @@ export const api = {
   updateArtifact: (id: number, content: string) => request<Artifact>(`/artifacts/${id}`, json("PUT", { content })),
   stagePrompt: (runId: string, executionId: number) => request<StepPrompt>(`/runs/${runId}/stages/${executionId}/prompt`),
   diff: (runId: string, executionId: number) => request<{ diff: string }>(`/runs/${runId}/stages/${executionId}/diff`),
-  questions: (runId: string) => request<Question[]>(`/runs/${runId}/questions`),
+  questions: (runId: string, signal?: AbortSignal) => request<Question[]>(`/runs/${runId}/questions`, { signal }),
   answer: (questionId: number, answer: string) => request<Question>(`/questions/${questionId}/answer`, json("POST", { answer })),
   copilotStatus: () => request<CopilotStatus>("/copilot/status"),
   copilotLogin: (kind: "github" | "entra") => request<{ flow_id: string; step: LoginStep }>("/copilot/login", json("POST", { kind })),

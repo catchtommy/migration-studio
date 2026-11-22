@@ -1,11 +1,13 @@
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { MermaidDiagram } from "./MermaidDiagram";
 
 /** Markdown that stays inside its box: wide tables and code blocks scroll sideways, ```mermaid blocks are drawn as
  * diagrams, and
- * long words (paths, class names, URLs) wrap instead of running past the edge. */
-export function Markdown({ children, className = "" }: { children: string; className?: string }) {
+ * long words (paths, class names, URLs) wrap instead of running past the edge. Memoized: a document is parsed again
+ * only when its text changes, not on every re-render of the page around it (the run page re-renders as events stream). */
+export const Markdown = memo(function Markdown({ children, className = "" }: { children: string; className?: string }) {
   return (
     <article className={`prose prose-sm min-w-0 max-w-none break-words dark:prose-invert [overflow-wrap:anywhere] ${className}`}>
       <ReactMarkdown
@@ -31,4 +33,4 @@ export function Markdown({ children, className = "" }: { children: string; class
       </ReactMarkdown>
     </article>
   );
-}
+});

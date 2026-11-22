@@ -14,7 +14,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app import projects
+from app import cache, projects
 from app.db.models import Artifact, Contract, Dependency, Domain, Run
 from app.db.session import session_scope
 from app.guardrail_problems import blocker
@@ -1059,11 +1059,10 @@ def expected_entry_points(output_dir: Path) -> list[dict] | None:
 def _catalogue_binding(key: str) -> dict | None:
     """The temporary binding the catalogue keeps for a contract (with its entry point), if any."""
     try:
-        with session_scope() as s:
-            row = s.get(Contract, (projects.current(), key))
-            return dict(row.binding) if row is not None and isinstance(row.binding, dict) else None
+        found = _catalogued(key)
     except Exception:  # noqa: BLE001 - without the database there is no catalogue to read
         return None
+    return found["binding"] if found else None
 
 
 def _decision_handlers(output_dir: Path) -> list[dict]:
@@ -1505,8 +1504,20 @@ def parse_decisions(text: str, known: frozenset[str] | set[str] = frozenset()) -
 
 
 def _exists(key: str) -> bool:
-    with session_scope() as s:
-        return s.get(Contract, (projects.current(), key)) is not None
+    return _catalogued(key) is not None
+
+
+def _catalogued(key: str) -> dict | None:
+    """The catalogue's contract `key` of the current project ({"binding"}), or None. A step's checks ask once per
+    contract they mention: cached until a contract is written (app/cache.py)."""
+    project = projects.current()
+
+    def load() -> dict | None:
+        with session_scope() as s:
+            row = s.get(Contract, (project, key))
+            return None if row is None else {"binding": dict(row.binding) if isinstance(row.binding, dict) else None}
+
+    return cache.cached("contract", ("contracts",), (project, key), load)
 
 
 def validate_outputs(output_dir: Path, only: set[str] | None = None) -> list[str]:
@@ -1698,7 +1709,7 @@ def contracts_used_by_runs(s, project: str, excluding: set[str]) -> dict[str, se
         k = (a.run_id, a.name)
         if k not in latest or a.attempt > latest[k].attempt:
             latest[k] = a
-    domains = {r.id: r.domain for r in s.scalars(select(Run).where(Run.project == project))}
+    domains = dict(s.execute(select(Run.id, Run.domain).where(Run.project == project)).all())  # two columns only
     import yaml
 
     for (other, _name), a in latest.items():
@@ -1897,7 +1908,10 @@ def temporary_handlers_calling(s, project: str, domain: str) -> list[dict]:
         k = (a.run_id, a.name)
         if k not in latest or (a.attempt, a.id) > (latest[k].attempt, latest[k].id):
             latest[k] = a
-    runs = {r.id: r for r in s.scalars(select(Run).where(Run.id.in_({k[0] for k in latest})))} if latest else {}
+    # The runs' domain and feature: the project's other domains' runs, two columns (an IN list of their ids could
+    # pass Oracle's 1000 values)
+    runs = {r.id: r for r in s.execute(select(Run.id, Run.domain, Run.operation).where(
+        Run.project == project, Run.domain != domain))} if latest else {}
     out = []
     for (run_id, name), a in sorted(latest.items()):
         if name != DECISIONS_FILE or run_id not in runs:
@@ -1942,11 +1956,14 @@ def dependency_map() -> dict[str, Any]:
     """Domain-to-domain edges (caller/consumer → provider) from approved designs, and a suggested migration order:
     domains that others depend on synchronously the least go first; domains not analysed yet go last."""
     project = projects.current()
-    with session_scope() as s:
-        domains = [d.key for d in s.scalars(select(Domain).where(Domain.project == project)
-                                            .order_by(Domain.created_at, Domain.key))]
-        deps = s.scalars(select(Dependency).where(Dependency.project == project)).all()
-        analysed = {r.domain for r in s.scalars(select(Run).where(Run.id.in_({d.run_id for d in deps})))}
+    with session_scope() as s:  # only the columns used: the rows' long texts stay in the database
+        domains = list(s.scalars(select(Domain.key).where(Domain.project == project)
+                                 .order_by(Domain.created_at, Domain.key)))
+        deps = s.execute(select(Dependency.source, Dependency.target, Dependency.pattern)
+                         .where(Dependency.project == project)).all()
+        # The domains of the runs that recorded them (a join, not an IN list: Oracle allows 1000 values in one)
+        analysed = set(s.scalars(select(Run.domain).distinct().join(Dependency, Dependency.run_id == Run.id)
+                                 .where(Dependency.project == project)))
         edges: dict[tuple[str, str], dict[str, int]] = {}
         for d in deps:
             patterns = edges.setdefault((d.source, d.target), {})

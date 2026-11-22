@@ -12,6 +12,7 @@ from contextvars import ContextVar
 
 from sqlalchemy import func, select
 
+from app import cache
 from app.db.models import GLOBAL, SHARED, Project, ProjectMember, Run, User
 from app.db.session import session_scope
 
@@ -61,8 +62,12 @@ def seed() -> None:
 
 
 def exists(key: str) -> bool:
-    with session_scope() as s:
-        return s.get(Project, key) is not None
+    """Checked on every project page's requests: cached until a project is created or deleted (app/cache.py)."""
+    def load() -> bool:
+        with session_scope() as s:
+            return s.get(Project, key) is not None
+
+    return cache.cached("project_exists", ("projects",), key, load, copy_result=False)
 
 
 def as_dict(p: Project, runs: int = 0, members: int = 0, role: str | None = None) -> dict:

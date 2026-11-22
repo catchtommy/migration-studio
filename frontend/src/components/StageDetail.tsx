@@ -45,7 +45,7 @@ export function StageDetail({ stage, stages, run, events, questions }: {
   const linkedIdx = linked ? attempts.findIndex((a) => a.attempt === linked.attempt) : -1;
   const [attemptIdx, setAttemptIdx] = useState(linkedIdx >= 0 ? linkedIdx : attempts.length - 1);
   const [tab, setTab] = useState<Tab>("output");
-  const { data: artifacts = [], isLoading: loadingArtifacts } = useQuery({ queryKey: ["artifacts", run.id], queryFn: () => api.artifacts(run.id) });
+  const { data: artifacts = [], isLoading: loadingArtifacts } = useQuery({ queryKey: ["artifacts", run.id], queryFn: ({ signal }) => api.artifacts(run.id, signal) });
   const canInspect = useCan("runs.inspect");
 
   useEffect(() => setAttemptIdx(linkedIdx >= 0 ? linkedIdx : attempts.length - 1), [stage.key, attempts.length, linkedIdx, params]);

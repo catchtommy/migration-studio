@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, runSubject, type AgentInputs, type Run } from "../lib/api";
+import { api, runSubject, type AgentInputs, type RunSummary } from "../lib/api";
 import { defaultLabel, useDomains, useProjectDefaultWorkflow, useWorkflows } from "../lib/hooks";
 import { InputsEditor } from "../components/InputsEditor";
 import { ProgressStrip } from "../components/ProgressStrip";
@@ -178,7 +178,7 @@ export function Dashboard() {
 
   const migrations = runs.filter((r) => r.scope === "operation");
   const discovery = runs.filter((r) => r.scope !== "operation").sort((a, b) => b.created_at.localeCompare(a.created_at));
-  const byDomain = new Map<string, Run[]>();
+  const byDomain = new Map<string, RunSummary[]>();
   for (const d of domains) byDomain.set(d.key, []);
   for (const r of migrations) byDomain.set(r.domain, [...(byDomain.get(r.domain) ?? []), r]);
   const domainName = (key: string) => domains.find((d) => d.key === key)?.name ?? key;

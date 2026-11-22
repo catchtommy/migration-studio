@@ -23,6 +23,15 @@ def fast_stubs(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def workspace_prepared_inline(request, monkeypatch):
+    """Review pages get a missing workspace rebuilt in the background (503 until it is there): tests about reviewing
+    rebuild it inline instead, so each request answers. Tests marked `background_prepare` see the real behaviour."""
+    if request.node.get_closest_marker("background_prepare") is None:
+        from app import workspace
+        monkeypatch.setattr(workspace, "ready_or_preparing", lambda run_id: bool(workspace.ensure(run_id)))
+
+
+@pytest.fixture(autouse=True)
 def default_project():
     """Store functions called directly by tests work in the default project, like the API calls do."""
     with projects.use(projects.DEFAULT):

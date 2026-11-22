@@ -111,14 +111,22 @@ class SqlAlchemySaver(BaseCheckpointSaver[str]):
         checkpoint_id = str(config["configurable"]["checkpoint_id"])
         replace = all(channel in WRITES_IDX_MAP for channel, _ in writes)  # special channels overwrite
         with session_scope() as s:
+            # Which of the task's writes are stored already: one query, not one per write (each a round trip)
+            stored = set(s.scalars(select(GraphWrite.idx).where(
+                GraphWrite.thread_id == thread_id, GraphWrite.checkpoint_ns == ns,
+                GraphWrite.checkpoint_id == checkpoint_id, GraphWrite.task_id == task_id)))
             for idx, (channel, value) in enumerate(writes):
-                key = (thread_id, ns, checkpoint_id, task_id, WRITES_IDX_MAP.get(channel, idx))
-                existing = s.get(GraphWrite, key)
-                if existing is not None and not replace:
+                write_idx = WRITES_IDX_MAP.get(channel, idx)
+                if write_idx in stored and not replace:
                     continue
                 type_, blob = self.serde.dumps_typed(value)
-                s.merge(GraphWrite(thread_id=key[0], checkpoint_ns=key[1], checkpoint_id=key[2], task_id=key[3],
-                                   idx=key[4], channel=channel, type=type_, value=blob))
+                row = GraphWrite(thread_id=thread_id, checkpoint_ns=ns, checkpoint_id=checkpoint_id, task_id=task_id,
+                                 idx=write_idx, channel=channel, type=type_, value=blob)
+                if write_idx in stored:
+                    s.merge(row)  # replaces the stored one
+                else:
+                    s.add(row)  # new rows are inserted together at the commit
+                stored.add(write_idx)
 
     def delete_thread(self, thread_id: str) -> None:
         with session_scope() as s:

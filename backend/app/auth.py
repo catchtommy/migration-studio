@@ -18,7 +18,7 @@ from datetime import timedelta
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import delete, select
 
-from app import projects
+from app import cache, projects
 from app.db.models import Project, ProjectMember, Role, User, UserSession, utcnow
 from app.db.session import session_scope
 
@@ -148,11 +148,16 @@ def end_sessions_of(user_id: int) -> None:
         s.execute(delete(UserSession).where(UserSession.user_id == user_id))
 
 
-def user_for_token(token: str | None) -> CurrentUser | None:
-    if not token:
-        return None
+# What a signed-in user's requests depend on: cached (app/cache.py) and read again when one of these tables changes,
+# e.g. a sign-out, a deactivated user or an edited role takes effect on the next request.
+SESSION_TABLES = ("user_sessions", "users", "roles")
+ACCESS_TABLES = ("projects", "project_members", "roles")
+
+
+def _load_session(token_hash: str) -> tuple[object, CurrentUser] | None:
+    """(when the session expires, its user) or None."""
     with session_scope() as s:
-        session = s.get(UserSession, _hash(token))
+        session = s.get(UserSession, token_hash)
         if session is None or session.expires_at < utcnow():
             return None
         user = s.get(User, session.user_id)
@@ -162,8 +167,18 @@ def user_for_token(token: str | None) -> CurrentUser | None:
         if session.expires_at - utcnow() < timedelta(hours=SESSION_HOURS / 2):
             session.expires_at = utcnow() + timedelta(hours=SESSION_HOURS)
         roles = list(user.roles or [])
-        return CurrentUser(id=user.id, username=user.username, display_name=user.display_name, roles=tuple(roles),
-                           permissions=frozenset(permissions_of(s, roles)))
+        return session.expires_at, CurrentUser(id=user.id, username=user.username, display_name=user.display_name,
+                                               roles=tuple(roles), permissions=frozenset(permissions_of(s, roles)))
+
+
+def user_for_token(token: str | None) -> CurrentUser | None:
+    if not token:
+        return None
+    token_hash = _hash(token)
+    found = cache.cached("session", SESSION_TABLES, token_hash, lambda: _load_session(token_hash), copy_result=False)
+    if found is None or found[0] < utcnow():
+        return None
+    return found[1]
 
 
 # --- sign-in throttling --------------------------------------------------------------------------------------------
@@ -208,11 +223,12 @@ def sees_all_projects(user: CurrentUser) -> bool:
 def project_permissions(user: CurrentUser, project: str) -> frozenset[str] | None:
     """What the user may do in a project: exactly what their role there gives. None: they aren't a member, so they
     can't open the project or its runs (their own roles never reach into a project)."""
-    role = projects.role_of(user.id, project)
-    if role is None:
-        return None
-    with session_scope() as s:
-        return frozenset(permissions_of(s, [role]) - GLOBAL_ONLY)
+    def load() -> frozenset[str] | None:
+        with session_scope() as s:
+            member = s.get(ProjectMember, (project, user.id))
+            return None if member is None else frozenset(permissions_of(s, [member.role]) - GLOBAL_ONLY)
+
+    return cache.cached("project_permissions", ACCESS_TABLES, (user.id, project), load, copy_result=False)
 
 
 def administers(user: CurrentUser, project: str) -> bool:
@@ -230,15 +246,24 @@ class ProjectAccess:
         return permission in self.permissions
 
 
+_NO_PROJECT = "no-project"
+
+
 def _project_access(user: CurrentUser, key: str) -> frozenset[str] | None:
     """The user's permissions in the project (None: not a member); 404 when there is no such project."""
-    with session_scope() as s:  # one connection for the three lookups: each checkout is round trips on a remote database
-        if s.get(Project, key) is None:
-            raise HTTPException(404, f"There is no project {key}")
-        member = s.get(ProjectMember, (key, user.id))
-        if member is None:
-            return None
-        return frozenset(permissions_of(s, [member.role]) - GLOBAL_ONLY)
+    def load() -> frozenset[str] | str | None:
+        with session_scope() as s:  # one connection for the lookups: each checkout is round trips on a remote database
+            if s.get(Project, key) is None:
+                return _NO_PROJECT
+            member = s.get(ProjectMember, (key, user.id))
+            if member is None:
+                return None
+            return frozenset(permissions_of(s, [member.role]) - GLOBAL_ONLY)
+
+    found = cache.cached("project_access", ACCESS_TABLES, (user.id, key), load, copy_result=False)
+    if found == _NO_PROJECT:
+        raise HTTPException(404, f"There is no project {key}")
+    return found
 
 
 async def project_context(request: Request, user: CurrentUser = Depends(current_user)) -> ProjectAccess:

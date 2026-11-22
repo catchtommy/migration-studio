@@ -7,12 +7,14 @@ project = the project's key), which that project uses instead of the shared one 
 import hashlib
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import inspect, select, text
+from sqlalchemy.orm import load_only
 
 from app.agents.defaults import AUTO, CLAUDE_MODELS, DOCS, default_config
-from app import projects
+from app import cache, projects
 from app.db.models import GLOBAL, SHARED, Agent, Run, Setting, WorkflowDef
 from app.db.session import get_engine, session_scope
 from app.orchestrator.stages import BUILTIN_STAGES, SUPERSEDED
@@ -620,6 +622,18 @@ def list_all(project: str | None = None, include_hidden: bool = False) -> list[d
     """The agents a project uses: shared ones, replaced by the project's copies, plus its own. Superseded built-ins
     (HIDDEN) are left out unless a workflow still uses them or `include_hidden` is set."""
     project = _project(project)
+    return [_with_status(a) for a in cache.cached("agents", ("agents", "workflows"), (project, include_hidden),
+                                                  lambda: _list_all(project, include_hidden))]
+
+
+def _with_status(agent: dict[str, Any]) -> dict[str, Any]:
+    """The agent's release status, worked out when it is read (from the release's defaults in the code, which a cached
+    copy of the row doesn't follow)."""
+    agent["release_status"] = release_status(SimpleNamespace(**agent))
+    return agent
+
+
+def _list_all(project: str | None, include_hidden: bool) -> list[dict[str, Any]]:
     with session_scope() as s:
         rows = {r.key: r for r in s.scalars(select(Agent).where(Agent.project == SHARED))}
         shared = set(rows)
@@ -637,11 +651,18 @@ def list_all(project: str | None = None, include_hidden: bool = False) -> list[d
 
 def get(key: str, project: str | None = None) -> dict[str, Any]:
     project = _project(project)
-    with session_scope() as s:
-        row = _effective(s, key, project)
-        if row is None:
-            raise KeyError(key)
-        return _as_dict(row, customised=row.project != SHARED and s.get(Agent, (SHARED, key)) is not None)
+
+    def load() -> dict[str, Any] | None:
+        with session_scope() as s:
+            row = _effective(s, key, project)
+            if row is None:
+                return None
+            return _as_dict(row, customised=row.project != SHARED and s.get(Agent, (SHARED, key)) is not None)
+
+    found = cache.cached("agent", ("agents",), (project, key), load)
+    if found is None:
+        raise KeyError(key)
+    return _with_status(found)
 
 
 def exists(key: str, project: str | None = None) -> bool:
@@ -653,6 +674,10 @@ def titles(project: str | None = None) -> dict[str, tuple[str, str]]:
     """key -> (title, description) for every agent the project uses, in list_all's order. Reads only those columns:
     every workflow read needs the titles, and the agents' instructions are large."""
     project = _project(project)
+    return cache.cached("agent_titles", ("agents",), project, lambda: _titles(project))
+
+
+def _titles(project: str | None) -> dict[str, tuple[str, str]]:
     with session_scope() as s:
         rows = s.execute(select(Agent.project, Agent.key, Agent.title, Agent.description, Agent.created_at)
                          .where(Agent.project.in_([SHARED, project] if project else [SHARED]))).all()
@@ -713,7 +738,8 @@ def usage(key: str, scope: str = "shared") -> dict[str, Any]:
                                           if w.key not in mine)]
         using = [{"name": w.name, "library": "shared" if w.project == SHARED else w.project} for w in workflows
                  if any(st.get("kind") == "agent" and st.get("key") == key for st in w.steps)]
-        runs_query = select(Run).where(Run.status != "completed")
+        runs_query = select(Run).where(Run.status != "completed").options(load_only(
+            Run.id, Run.project, Run.domain, Run.operation, Run.status, Run.workflow_stages, Run.created_at))
         if scope != "shared":
             runs_query = runs_query.where(Run.project == project)
         runs = [{"id": r.id, "project": r.project, "domain": r.domain, "operation": r.operation, "status": r.status}

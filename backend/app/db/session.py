@@ -1,3 +1,4 @@
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -5,6 +6,7 @@ from contextlib import contextmanager
 from sqlalchemy import URL, Engine, create_engine, event, exc
 from sqlalchemy.orm import Session, sessionmaker
 
+from app import cache  # registers the session events that keep cached reads up to date
 from app.config import settings
 from app.db import config as db_config
 from app.db.models import AuditEvent
@@ -46,14 +48,70 @@ def _ping_idle_connections(engine: Engine) -> None:
             raise exc.DisconnectionError()  # the pool discards it and checks out (or opens) another
 
 
+def _skip_idle_transaction_calls(engine: Engine) -> None:
+    """On a remote database every COMMIT and ROLLBACK is a network round trip, and most sessions only read. Two are
+    saved per session_scope(): its COMMIT is sent only when a transaction is open, and the pool rolls a connection back
+    on return only when one is still open (a read-only session leaves none). Drivers that can't tell (no
+    `transaction_in_progress`) are always committed and rolled back, as before."""
+
+    def in_progress(dbapi_conn) -> bool:
+        try:
+            return bool(dbapi_conn.transaction_in_progress)
+        except AttributeError:
+            return True
+
+    commit = engine.dialect.do_commit
+
+    def do_commit(dbapi_conn) -> None:
+        if in_progress(dbapi_conn):
+            commit(dbapi_conn)
+
+    engine.dialect.do_commit = do_commit  # this engine's dialect instance only
+
+    @event.listens_for(engine, "reset")
+    def _reset(dbapi_conn, _record, reset_state):  # the engine is made with pool_reset_on_return=None
+        if reset_state.terminate_only:
+            return
+        if in_progress(dbapi_conn):
+            dbapi_conn.rollback()
+
+
+def _time_statements(engine: Engine) -> None:
+    """Count each statement (and its time) into the API request that ran it (app/request_timing.py)."""
+    from app import request_timing
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _before(conn, _cursor, _statement, _parameters, _context, _many):
+        conn.info["statement_started"] = time.perf_counter()
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def _after(conn, _cursor, _statement, _parameters, _context, _many):
+        started = conn.info.pop("statement_started", None)
+        if started is not None:
+            request_timing.record(time.perf_counter() - started)
+
+
 def make_engine(url: URL) -> Engine:
+    engine = _make_engine(url)
+    _time_statements(engine)
+    return engine
+
+
+def _make_engine(url: URL) -> Engine:
     db_config.prepare_driver(url)
     if url.get_backend_name() != "sqlite":
-        # The pool covers the runner's worker threads (up to 16) plus the API's requests; pool_recycle stays under
-        # the idle timeouts firewalls commonly apply.
+        if url.get_backend_name() == "oracle":
+            import oracledb
+            # A query's first rows come back with the execute itself instead of a separate fetch round trip (the
+            # driver's default prefetches 2 rows, so any list cost one more round trip).
+            oracledb.defaults.prefetchrows = 100
+        # The pool covers the runner's worker threads (up to 16) plus the API's requests. Connections that sat idle
+        # are pinged before use (_ping_idle_connections), so recycling is only a backstop: each new connection to a
+        # remote Oracle costs seconds (TLS and authentication).
         engine = create_engine(url, connect_args=db_config.connect_args(url), pool_size=10, max_overflow=20,
-                               pool_recycle=1800)
+                               pool_recycle=3600, pool_reset_on_return=None)
         _ping_idle_connections(engine)
+        _skip_idle_transaction_calls(engine)
         return engine
     engine = create_engine(url, connect_args=db_config.connect_args(url))
 
@@ -68,11 +126,39 @@ def make_engine(url: URL) -> Engine:
     return engine
 
 
+def warm_pool(connections: int = 6) -> None:
+    """Open `connections` pooled connections at once, in the background. A new connection to a remote Oracle costs
+    seconds (TLS and authentication): opened here, the first requests find them ready instead of each opening one."""
+    engine = _engine
+    if engine is None or engine.url.get_backend_name() == "sqlite":
+        return
+    held = threading.Barrier(connections + 1)
+
+    def hold() -> None:
+        try:
+            with engine.connect():
+                held.wait(timeout=60)  # keep it checked out until all are open, so each opens its own
+        except Exception:  # noqa: BLE001 - warming is best effort; requests open connections as before
+            held.abort()
+
+    for i in range(connections):
+        threading.Thread(target=hold, name=f"db-warm-{i}", daemon=True).start()
+
+    def release() -> None:
+        try:
+            held.wait(timeout=60)
+        except threading.BrokenBarrierError:
+            pass
+
+    threading.Thread(target=release, name="db-warm", daemon=True).start()
+
+
 def configure(url: URL) -> None:
     """Use this database from now on."""
     global _engine
     old, _engine = _engine, make_engine(url)
     SessionLocal.configure(bind=_engine)
+    cache.clear()  # what was read from the previous database
     if old is not None:
         old.dispose()
 
@@ -113,6 +199,18 @@ def get_db() -> Iterator[Session]:
         yield session
 
 
+_emitted: dict[str, int] = {}  # run id -> how many events this process has recorded for it (see emitted())
+_emitted_lock = threading.Lock()
+
+
+def emitted(run_id: str) -> int:
+    """A counter that changes whenever this process records an event of the run: the activity stream reads the
+    database only when it moved (runs and the API share one process), instead of polling it continuously."""
+    return _emitted.get(run_id, 0)
+
+
 def emit(run_id: str, kind: str, message: str, stage: str | None = None) -> None:
     with session_scope() as s:
         s.add(AuditEvent(run_id=run_id, stage=stage, kind=kind, message=message))
+    with _emitted_lock:
+        _emitted[run_id] = _emitted.get(run_id, 0) + 1

@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type ChangedFile, type ChangedFileDetail, type RepoDelivery, type Resolution, type RunChanges, type RunDetail, type RunRepository } from "../lib/api";
+import { api, ApiError, type ChangedFile, type ChangedFileDetail, type RepoDelivery, type Resolution, type RunChanges, type RunDetail, type RunRepository } from "../lib/api";
 import { useCan } from "../lib/hooks";
+
+/** The server answers 503 while it rebuilds a run's missing workspace in the background: asked again every 3 s (for
+ * up to 10 minutes) instead of the request waiting for the clone and the replay of every step. */
+const preparing = (e: unknown) => e instanceof ApiError && e.status === 503;
+const PREPARING_RETRY_MS = 3000;
+const PREPARING_TRIES = 200;
 import { fold, hasMarkers, parseConflicts, resolve, sideBySide, type Choice, type Row } from "../lib/lineDiff";
 import { BranchIcon } from "./icons";
 
@@ -292,7 +298,8 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
     queryKey: ["runChanges", run.id, repo.key, run.stages.length],
     queryFn: () => api.runChanges(run.id, repo.key),
     staleTime: Infinity,
-    retry: false,
+    retry: (count, e) => preparing(e) && count < PREPARING_TRIES, // other errors: shown at once, with Try again
+    retryDelay: PREPARING_RETRY_MS,
   });
   const { data: account } = useQuery({ queryKey: ["accountGit"], queryFn: api.accountGit });
   const [selected, setSelected] = useState<Set<string> | null>(null);
@@ -554,7 +561,12 @@ function RepoReview({ run, repo, onCommitted }: { run: RunDetail; repo: RunRepos
 export function CommitReview({ run }: { run: RunDetail }) {
   const queryClient = useQueryClient();
   const canCommit = useCan("runs.approve");
-  const { data: repos, error, refetch } = useQuery({ queryKey: ["runRepositories", run.id, run.stages.length], queryFn: () => api.runRepositories(run.id) });
+  const { data: repos, error, failureReason, refetch } = useQuery({
+    queryKey: ["runRepositories", run.id, run.stages.length],
+    queryFn: () => api.runRepositories(run.id),
+    retry: (count, e) => preparing(e) && count < PREPARING_TRIES, // other errors: shown at once
+    retryDelay: PREPARING_RETRY_MS,
+  });
   // Right after a step: just the repository it changed. At the end: every repository with something to commit,
   // and those already pushed.
   const afterStep = run.pending_commit;
@@ -589,6 +601,7 @@ export function CommitReview({ run }: { run: RunDetail }) {
           )}
         </p>
         {error && <p className="text-sm text-bad">{(error as Error).message}</p>}
+        {!repos && !error && preparing(failureReason) && <p className="text-sm text-subtle">{(failureReason as Error).message}</p>}
       </div>
       {changed.length > 1 && (
         <div className="flex flex-wrap gap-1 border-b border-border px-3 pt-2" role="tablist" aria-label="Repositories">
