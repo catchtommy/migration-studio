@@ -225,11 +225,12 @@ def get_run(run_id: str, db: Session = Depends(get_db), access: ProjectAccess = 
     detail.last_event_id = last_event_id
     detail.rerun_blocked = workspace.rerun_blocked(run, list(run.stages))
     detail.changeable = changeable(run, list(run.stages))
-    if run.scope == "operation":
+    migration = (run.scope or "operation") == "operation"  # older runs have no scope stored
+    if migration:
         detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
                                   if run.legacy else
                                   repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha))
-    if run.scope == "operation" and run.status in ("awaiting_approval", "changes_requested", "completed"):
+    if migration and run.status in ("awaiting_approval", "changes_requested", "completed"):
         detail.functional_coverage = _functional_coverage(run, db)
     if run.status in ("awaiting_approval", "changes_requested"):
         detail.pending_gate = get_runner().pending_gate(run_id, run.stage_defs)

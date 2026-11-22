@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, inspect, text
 from app.db.migrations import _config, upgrade
 from app.db.models import Base
 
-HEAD = "0023"
+HEAD = "0024"
 
 
 def _state(engine):
@@ -43,5 +43,23 @@ def test_a_database_from_before_migrations_missing_later_tables_is_brought_up(tm
     assert revision == HEAD and {"contracts", "dependencies", "features", "graph_checkpoints"} <= tables
     with engine.connect() as c:
         assert c.execute(text("SELECT operation FROM runs WHERE id = 'r1'")).scalar() == "approve"  # data kept
+        assert c.execute(text("SELECT scope FROM runs WHERE id = 'r1'")).scalar() == "operation"  # a migration
     upgrade(engine)  # starting again changes nothing
     assert _state(engine)[0] == HEAD
+
+
+def test_runs_without_a_scope_are_recorded_as_migrations(tmp_path):
+    """Runs from before runs recorded their scope are feature migrations: the upgrade says so, and leaves the scope of
+    discovery runs as it is."""
+    engine = create_engine(f"sqlite:///{tmp_path}/scope.db")
+    with engine.begin() as c:
+        command.upgrade(_config(c), "0023")
+    with engine.begin() as c:
+        for run_id, scope in (("old", None), ("listing", "domain"), ("new", "operation")):
+            c.execute(text("INSERT INTO runs (id, project, domain, operation, status, scope, created_at, updated_at) "
+                           "VALUES (:id, 'default', 'loan', :id, 'completed', :scope, '2025-01-01', '2025-01-01')"),
+                      {"id": run_id, "scope": scope})
+    upgrade(engine)
+    with engine.connect() as c:
+        scopes = dict(c.execute(text("SELECT id, scope FROM runs")).all())
+    assert scopes == {"old": "operation", "listing": "domain", "new": "operation"}

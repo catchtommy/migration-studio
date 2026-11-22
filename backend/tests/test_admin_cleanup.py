@@ -125,6 +125,22 @@ def test_an_admin_resets_a_started_feature_to_not_started(client):
     assert client.post(f"/api/domains/customer/features/{operation}/reset").json() == {"deleted": 0}
 
 
+def test_a_feature_whose_run_is_from_before_runs_had_a_scope_is_reset_too(client):
+    """Runs started before runs recorded their scope have none stored: they are migrations all the same, and resetting
+    the feature deletes them (it used to find nothing and answer that nothing was deleted)."""
+    operation = f"reset{next(_ids)}"
+    run_id = start_run(client, {"domain": "customer", "operation": operation}).json()["id"]
+    wait_for(client, run_id, {"awaiting_approval"})
+    with session_scope() as s:
+        s.get(Run, run_id).scope = None  # as an older run has it
+    assert _migration(client, "customer", operation)["id"] == run_id
+
+    r = client.post(f"/api/domains/customer/features/{operation}/reset")
+    assert r.status_code == 200 and r.json() == {"deleted": 1}
+    assert _migration(client, "customer", operation) is None
+    assert client.get(f"/api/runs/{run_id}").status_code == 404
+
+
 def test_a_running_feature_is_stopped_before_it_is_reset(client, monkeypatch):
     original = stub.StubAgent.run
 

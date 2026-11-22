@@ -12,7 +12,7 @@ are in git, outside the studio: they are not undone.
 import time
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app import contracts_store
 from app.agents import common
@@ -100,7 +100,9 @@ def feature_runs(project: str, domain: str, operation: str) -> list[str]:
     """The ids of a feature's migration runs: what makes it started, in progress or migrated."""
     with session_scope() as s:
         return list(s.scalars(select(Run.id).where(Run.project == project, Run.domain == domain,
-                                                   Run.operation == operation, Run.scope == "operation")))
+                                                   Run.operation == operation,
+                                                   # older runs have no scope stored: migrations too
+                                                   or_(Run.scope.is_(None), Run.scope == "operation"))))
 
 
 def stop_and_delete(project: str, run_ids: list[str]) -> int:
