@@ -10,6 +10,7 @@ Revision ID: 0023
 Revises: 0022
 """
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = '0023'
@@ -26,8 +27,13 @@ INDEXES = [
 
 
 def upgrade() -> None:
+    # Oracle commits each CREATE INDEX at once (DDL isn't transactional there): if an earlier start stopped part way,
+    # the indexes it made are kept, and this run makes only the rest instead of failing on "name already used".
+    bind = op.get_bind()
     for name, table, columns in INDEXES:
-        op.create_index(name, table, columns, unique=False)
+        existing = {(i["name"] or "").lower() for i in sa.inspect(bind).get_indexes(table)}
+        if name.lower() not in existing:
+            op.create_index(name, table, columns, unique=False)
 
 
 def downgrade() -> None:
