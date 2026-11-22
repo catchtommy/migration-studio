@@ -104,10 +104,24 @@ def dialect_of(url: URL) -> str:
     return url.get_backend_name()
 
 
+# Oracle over a long network path (another site, a VPN):
+# - expire_time: a keepalive probe every this many minutes, so firewalls and VPNs don't drop pooled connections that
+#   sit idle (re-opening one costs seconds: TLS and authentication)
+# - sdu: Oracle Net packets of up to 64 KB instead of 8 KB, so documents and lists cross the link in fewer packets
+#   (the server uses the smaller of this and its own setting)
+ORACLE_EXPIRE_MINUTES = 5
+ORACLE_SDU = 65535
+
+
 def connect_args(url: URL) -> dict:
     """Fail fast when the database server can't be reached, instead of waiting for the OS TCP timeout."""
-    return {"postgresql": {"connect_timeout": 10}, "oracle": {"tcp_connect_timeout": 10},
-            "sqlite": {"check_same_thread": False}}[url.get_backend_name()]
+    name = url.get_backend_name()
+    if name == "oracle":
+        import oracledb
+        # Thin mode (the default) takes them as they are; thick mode reads them from its own network configuration
+        network = {"expire_time": ORACLE_EXPIRE_MINUTES, "sdu": ORACLE_SDU} if oracledb.is_thin_mode() else {}
+        return {"tcp_connect_timeout": 10, **network}
+    return {"postgresql": {"connect_timeout": 10}, "sqlite": {"check_same_thread": False}}[name]
 
 
 class ConnectionFailed(RuntimeError):

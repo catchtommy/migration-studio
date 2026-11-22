@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app import cache  # registers the session events that keep cached reads up to date
 from app.config import settings
 from app.db import config as db_config
-from app.db.models import AuditEvent
+from app.db.models import AuditEvent, utcnow
 
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,6 +105,9 @@ def _make_engine(url: URL) -> Engine:
             # A query's first rows come back with the execute itself instead of a separate fetch round trip (the
             # driver's default prefetches 2 rows, so any list cost one more round trip).
             oracledb.defaults.prefetchrows = 100
+            # The studio runs a few hundred distinct statements: cached per connection, Oracle doesn't parse them
+            # again each time (the driver's default keeps 20)
+            oracledb.defaults.stmtcachesize = 100
         # The pool covers the runner's worker threads (up to 16) plus the API's requests. Connections that sat idle
         # are pinged before use (_ping_idle_connections), so recycling is only a backstop: each new connection to a
         # remote Oracle costs seconds (TLS and authentication).
@@ -156,6 +159,11 @@ def warm_pool(connections: int = 6) -> None:
 def configure(url: URL) -> None:
     """Use this database from now on."""
     global _engine
+    if _engine is not None:
+        try:
+            flush_logs()  # queued log lines belong to the database they were logged in
+        except Exception:  # noqa: BLE001 - the old database may be the reason for the switch
+            pass
     old, _engine = _engine, make_engine(url)
     SessionLocal.configure(bind=_engine)
     cache.clear()  # what was read from the previous database
@@ -209,8 +217,76 @@ def emitted(run_id: str) -> int:
     return _emitted.get(run_id, 0)
 
 
+def _signal(run_ids) -> None:
+    with _emitted_lock:
+        for run_id in run_ids:
+            _emitted[run_id] = _emitted.get(run_id, 0) + 1
+
+
+# --- agents' log lines, written in batches ------------------------------------------------------------------------
+# An agent logs hundreds of lines per step. Written one by one, each line is an INSERT and a COMMIT the agent waits
+# for: two round trips, about 0.4 s on a remote database. So log lines are queued and written together, at most every
+# LOG_FLUSH_SECONDS, by a background thread. Every other event (status, question, error, ...) first writes the queued
+# lines, then itself, so the log keeps its order; readers that need everything (deleting a run) call flush_logs().
+# Not on SQLite (a local file, nothing to save): there every line is written at once, as before.
+
+LOG_FLUSH_SECONDS = 1.0
+batch_logs: bool | None = None  # None: batch unless the database is SQLite (tests set it to check either way)
+_log_queue: list[dict] = []
+_log_queue_lock = threading.Lock()
+_flush_lock = threading.Lock()  # one writer at a time, so batches keep their order
+_log_writer: threading.Thread | None = None
+
+
+def _batching() -> bool:
+    if batch_logs is not None:
+        return batch_logs
+    return _engine is not None and _engine.dialect.name != "sqlite"
+
+
+def _write_logs() -> None:
+    while True:
+        time.sleep(LOG_FLUSH_SECONDS)
+        try:
+            flush_logs()
+        except Exception:  # noqa: BLE001 - keep writing later batches; flush_logs logs what it couldn't write
+            pass
+
+
+def flush_logs() -> None:
+    """Write the queued log lines now."""
+    with _flush_lock:
+        with _log_queue_lock:
+            batch = list(_log_queue)
+            _log_queue.clear()
+        if not batch:
+            return
+        table = AuditEvent.__table__
+        try:
+            with session_scope() as s:
+                s.execute(table.insert(), batch)  # one round trip for the whole batch
+        except Exception:  # noqa: BLE001 - e.g. a run deleted meanwhile: write the others one by one
+            import logging
+            for row in batch:
+                try:
+                    with session_scope() as s:
+                        s.execute(table.insert(), [row])
+                except Exception as e:  # noqa: BLE001 - its run is gone: the line has nowhere to go
+                    logging.getLogger(__name__).warning("Dropped a log line of run %s: %s", row["run_id"], e)
+        _signal({row["run_id"] for row in batch})
+
+
 def emit(run_id: str, kind: str, message: str, stage: str | None = None) -> None:
+    global _log_writer
+    if kind == "log" and _batching():
+        with _log_queue_lock:
+            _log_queue.append({"run_id": run_id, "stage": stage, "kind": kind, "message": message,
+                               "created_at": utcnow()})  # when it happened, not when the batch is written
+            if _log_writer is None or not _log_writer.is_alive():
+                _log_writer = threading.Thread(target=_write_logs, name="log-writer", daemon=True)
+                _log_writer.start()
+        return
+    flush_logs()  # the lines logged before this event come before it
     with session_scope() as s:
         s.add(AuditEvent(run_id=run_id, stage=stage, kind=kind, message=message))
-    with _emitted_lock:
-        _emitted[run_id] = _emitted.get(run_id, 0) + 1
+    _signal([run_id])

@@ -16,7 +16,7 @@ from app.auth import current_user, project_context
 from app.config import settings
 from app.copilot_service import get_service
 from app.db import config as db_config
-from app.db.session import NotConfigured, is_configured
+from app.db.session import NotConfigured, flush_logs, is_configured
 from app.orchestrator.runner import get_runner
 from app.request_timing import TimingMiddleware
 from app.startup import open_database
@@ -37,6 +37,8 @@ async def lifespan(_: FastAPI):
     yield
     get_runner().shutdown()
     get_service().shutdown()
+    if is_configured():
+        flush_logs()  # agents' last log lines, still queued (app/db/session.py)
 
 
 def require_database() -> None:

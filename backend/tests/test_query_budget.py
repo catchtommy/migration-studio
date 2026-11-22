@@ -135,3 +135,42 @@ def test_responses_say_how_much_database_work_they_did(client):
     r = client.get("/api/domains")
     timing = r.headers["server-timing"]
     assert re.match(r'db;dur=\d+;desc="\d+ statements", app;dur=\d+', timing), timing
+
+
+def test_agents_log_lines_are_written_in_batches_and_keep_their_order(client, monkeypatch):
+    """On a remote database each log line written on its own costs the agent two round trips: lines are queued and
+    written together, and any other event writes the queued lines before itself."""
+    import time as _time
+
+    from sqlalchemy import func as _func
+
+    from app.db import session as db_session
+    from app.db.models import AuditEvent
+
+    r = start_run(client, {"domain": "customer", "operation": f"budget{next(_ids)}"})
+    run_id = r.json()["id"]
+    wait_for(client, run_id, {"awaiting_approval"})
+    monkeypatch.setattr(db_session, "batch_logs", True)
+
+    def logged() -> list[tuple[int, str, str]]:
+        with session_scope() as s:
+            return [(e.id, e.kind, e.message) for e in s.scalars(
+                select(AuditEvent).where(AuditEvent.run_id == run_id, AuditEvent.message.like("batched %"))
+                .order_by(AuditEvent.id))]
+
+    before = emitted(run_id)
+    with statements() as seen:
+        for i in range(20):
+            emit(run_id, "log", f"batched line {i}")
+    assert seen == [] and logged() == []  # queued: no round trip for the agent
+    emit(run_id, "status", "batched status")  # writes the queued lines first, then itself
+    rows = logged()
+    assert [m for _id, _k, m in rows] == [f"batched line {i}" for i in range(20)] + ["batched status"]
+    assert [i for i, _k, _m in rows] == sorted(i for i, _k, _m in rows)  # in the order they were logged
+    assert emitted(run_id) > before  # the activity stream is told
+
+    emit(run_id, "log", "batched later")  # the background writer takes it within a second or so
+    deadline = _time.time() + 5
+    while not any(m == "batched later" for _i, _k, m in logged()) and _time.time() < deadline:
+        _time.sleep(0.1)
+    assert any(m == "batched later" for _i, _k, m in logged())

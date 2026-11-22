@@ -17,7 +17,7 @@ from sqlalchemy import select
 from app import contracts_store
 from app.agents import common
 from app.db.models import Approval, Artifact, AuditEvent, Contract, Dependency, Question, Run, StageExecution
-from app.db.session import session_scope
+from app.db.session import flush_logs, session_scope
 from app.orchestrator import questions
 from app.tools import git_ops
 
@@ -73,6 +73,7 @@ def delete(project: str, run_ids: list[str]) -> int:
 
     if not run_ids:
         return 0
+    flush_logs()  # log lines still queued for these runs go in first, and are deleted with the rest
     with session_scope() as s:
         runs = s.scalars(select(Run).where(Run.project == project, Run.id.in_(run_ids))).all()
         ids = [r.id for r in runs]
