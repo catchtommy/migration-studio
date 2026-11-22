@@ -783,6 +783,8 @@ def revert(key: str) -> dict[str, Any]:
     """Drop the current project's copy, going back to the shared agent."""
     with session_scope() as s:
         if s.get(Agent, (SHARED, key)) is None:
+            if s.get(Agent, (projects.current(), key)) is None:
+                raise KeyError(key)  # no such agent at all
             raise ValueError("This agent exists only in this project; delete it instead")
         row = s.get(Agent, (projects.current(), key))
         if row is not None:

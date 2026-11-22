@@ -205,3 +205,52 @@ def test_the_declaration_is_checked_against_the_other_documents(tmp_path):
         "operations: [{method: A#b, replaces: C#b}]\n")
     out = "\n".join(contracts_store.validate_outputs(tmp_path))
     assert "domain-only, so it has no orchestrator" in out and "overlaps the domain module" in out
+
+
+# --- for_context: the check as a step runs it, from the step's documents ------------------------------------------
+
+def _ctx(root, base, docs):
+    from types import SimpleNamespace
+    docs.mkdir(exist_ok=True)
+    return SimpleNamespace(base_sha=base, output_dir=docs, rel=lambda p: p.name, workspace=root, code_dir=".",
+                           ownership=OWNERSHIP, domain="broker", run_id="not-a-run")
+
+
+def test_the_step_needs_its_starting_commit_and_its_declaration(extracted, tmp_path):
+    root, base = extracted
+    assert "starting commit is unknown" in og.for_context(_ctx(root, None, tmp_path / "d1"))[0]
+    problems = og.for_context(_ctx(root, base, tmp_path / "d2"))
+    assert len(problems) == 1 and problems[0].startswith("Write orchestrator-extraction.yaml")
+
+
+def test_an_unreadable_declaration_is_reported(extracted, tmp_path):
+    root, base = extracted
+    ctx = _ctx(root, base, tmp_path / "docs")
+    (ctx.output_dir / "orchestrator-extraction.yaml").write_text("feature: f\ndomain: d\norchestrator: none\n")
+    problems = og.for_context(ctx)
+    assert len(problems) == 1 and "reason" in problems[0]
+
+
+def test_an_orchestrator_needs_the_module_extraction_of_the_step_before(extracted, tmp_path):
+    root, base = extracted
+    ctx = _ctx(root, base, tmp_path / "docs")
+    import yaml
+    (ctx.output_dir / "orchestrator-extraction.yaml").write_text(yaml.safe_dump(DECL))
+    problems = og.for_context(ctx)
+    assert len(problems) == 1 and "module-extraction.yaml of the Module in monolith step is missing" in problems[0]
+
+
+def test_a_feature_without_an_orchestrator_passes_from_its_documents(extracted, tmp_path):
+    root, base = extracted
+    ctx = _ctx(root, base, tmp_path / "docs")
+    (ctx.output_dir / "orchestrator-extraction.yaml").write_text(
+        "feature: create-broker\ndomain: broker\norchestrator: none\nreason: domain-only\n")
+    assert og.for_context(ctx) == []
+    orchestrate(root)  # but code written anyway is reported
+    assert any("there is no orchestrator" in p for p in og.for_context(ctx))
+
+
+def test_the_report_says_pass_or_lists_the_problems():
+    assert og.report([]).startswith("Orchestrator guardrails: PASS")
+    failed = og.report(["one", "two"])
+    assert failed.startswith("Orchestrator guardrails: FAIL") and "- one\n- two" in failed

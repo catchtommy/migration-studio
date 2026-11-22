@@ -5,9 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app import auth, git_auth, projects, repos, secret_box
+from app import auth, git_auth, repos, secret_box
 from app.auth import CurrentUser, current_user
-from app.db.models import GitCredential, User
+from app.db.models import Domain, GitCredential, User
 from app.db.session import session_scope
 from app.tools import git_ops
 
@@ -83,9 +83,11 @@ def test_access(body: TestIn, user: CurrentUser = Depends(current_user)) -> dict
         raise HTTPException(403, "You don't have access to this project")
     url = repos.project_repository(body.project)
     if body.repository and body.repository != url:
-        from app import workflow_store
-        with projects.use(body.project):
-            known = {w["git"]["repository"] for w in workflow_store.list_all()}
+        # The project's other repositories: those its domains give their agents (Agent inputs; workflows used to
+        # name them, which read a key their git settings no longer have and failed)
+        with session_scope() as s:
+            known = {(i or {}).get("repository") for d in s.scalars(select(Domain.agent_inputs).where(
+                Domain.project == body.project)) for i in (d or {}).values()} - {None, ""}
         if body.repository not in known:
             raise HTTPException(422, "That isn't one of this project's repositories")
         url = body.repository
