@@ -188,10 +188,45 @@ def clone_mirror(url: str, path: Path, env: dict | None = None) -> None:
     rename_with_retry(tmp, path)
 
 
+def _config_values(repo: Path, key: str) -> list[str]:
+    """A config key's values in `repo` ([] when it isn't set: `git config --get` exits 1 then, with no message)."""
+    proc = subprocess.run(["git", "config", "--get-all", key], cwd=repo, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
+    if proc.returncode == 1:
+        return []
+    if proc.returncode != 0:
+        raise GitError(f"git config --get-all {key} failed: {proc.stderr.strip()}")
+    return [line for line in proc.stdout.splitlines() if line]
+
+
+def is_mirror(path: Path) -> bool:
+    """Whether `path` is itself a bare repository. False for a folder that isn't one (left by an interrupted clone,
+    or emptied), where git would otherwise use whatever repository encloses it (the studio's own, when the data
+    folder is inside it)."""
+    proc = subprocess.run(["git", "rev-parse", "--is-bare-repository", "--absolute-git-dir"], cwd=path,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        if "not a git repository" in proc.stderr.lower():
+            return False
+        raise GitError(f"git rev-parse in {path} failed: {proc.stderr.strip()}")
+    lines = proc.stdout.splitlines()
+    if len(lines) < 2 or lines[0].strip() != "true":
+        return False
+    norm = lambda p: os.path.normcase(str(Path(p).resolve()))  # noqa: E731 - git prints C:/... on Windows
+    return norm(lines[1].strip()) == norm(path)
+
+
+MIRROR_REFSPEC = "+refs/*:refs/*"
+
+
 def fetch_mirror(path: Path, url: str, env: dict | None = None) -> None:
-    """Bring the mirror up to date with the repository (at `url`, which may have changed since it was cloned)."""
-    if git(path, "config", "--get", "remote.origin.url") != url:
-        git(path, "remote", "set-url", "origin", url)
+    """Bring the mirror up to date with the repository (at `url`, which may have changed since it was cloned). A
+    mirror whose origin lost its URL or fetch refspec (edited by hand, or made by an older version) gets them back."""
+    if _config_values(path, "remote.origin.url") != [url]:
+        git(path, "config", "--replace-all", "remote.origin.url", url)
+    if not _config_values(path, "remote.origin.fetch"):
+        git(path, "config", "remote.origin.fetch", MIRROR_REFSPEC)
+        git(path, "config", "remote.origin.mirror", "true")
     git(path, "fetch", "--quiet", "--prune", "--tags", "origin", env=network_env(env))
 
 

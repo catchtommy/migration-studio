@@ -52,6 +52,8 @@ def ensure(project: str, url: str | None = None, user_id: int | None = None) -> 
         return None
     path = mirror_dir(project, url)
     with _lock(path):
+        if path.exists() and not git_ops.is_mirror(path):
+            git_ops.remove_tree(path)  # not a repository (an interrupted clone, emptied): cloned again
         if not path.exists():
             git_ops.clone_mirror(url, path, git_auth.env_for(user_id, url))
     return str(path)
@@ -67,6 +69,8 @@ def fetch(project: str, url: str | None = None, user_id: int | None = None) -> P
     with _lock(path):
         _fetching.add(str(path))
         try:
+            if path.exists() and not git_ops.is_mirror(path):
+                git_ops.remove_tree(path)  # not a repository (an interrupted clone, emptied): cloned again below
             if path.exists():
                 git_ops.fetch_mirror(path, url, env)
             else:
@@ -140,10 +144,13 @@ def status(project: str) -> dict:
     path = mirror_dir(project, url)
     out.update(fetching=str(path) in _fetching, error=_errors.get(str(path)), cloned=path.exists())
     if path.exists():
-        out["fetched_at"] = _fetched_at(path)
-        out["default_branch"] = default_branch(path)
-        out["head"] = git_ops.commit_info(path, branch or "HEAD")
-        if out["head"] is None and branch:
+        try:
+            out["fetched_at"] = _fetched_at(path)
+            out["default_branch"] = default_branch(path)
+            out["head"] = git_ops.commit_info(path, branch or "HEAD")
+        except OSError:  # removed meanwhile: a fetch is cloning it again over a broken copy
+            return {**out, "cloned": False}
+        if out["head"] is None and branch and not out["fetching"]:
             out["error"] = out["error"] or f"The repository has no branch or tag {branch}"
     return out
 

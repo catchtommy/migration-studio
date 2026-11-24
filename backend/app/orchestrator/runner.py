@@ -38,6 +38,49 @@ def _fetch_for_question(run_id: str, url: str) -> None:
     except Exception as e:  # network, credentials: the question shows what the last fetch knew
         log.warning("Could not fetch %s for run %s: %s", url, run_id, e)
 
+
+def reads_latest_on_rerun(run: Run) -> bool:
+    """Discovery runs (bounded contexts, feature listings) only read the monolith and change no code: a step they
+    re-run (a redo, a rejection) reads its latest commit rather than the one the run started from. A migration keeps
+    its commit, as its code branch was cut from it."""
+    return (run.scope or "operation") != "operation" and bool(run.legacy)
+
+
+def read_latest_monolith(run_id: str, user_id: int | None = None) -> None:
+    """Fetch the monolith and point a discovery run at the base branch's latest commit (see reads_latest_on_rerun).
+    When git can't be reached, the run reads the copy last fetched (said in the log)."""
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        if run is None or not reads_latest_on_rerun(run):
+            return
+        project, branch, before = run.project, run.base_branch, dict(run.legacy)
+        user_id = user_id or run.started_by
+    try:
+        repos.fetch(project, None, user_id)
+        legacy.refresh(project)
+    except Exception as e:  # noqa: BLE001 - network, credentials: the last fetched copy
+        emit(run_id, "log", f"Could not fetch the latest of the monolith, so the re-run reads the copy last fetched: "
+                            f"{git_auth.scrub(str(e))}")
+    shared = legacy.snapshot(project, user_id, branch)
+    if not shared:
+        return
+    if shared["sha"] == before.get("sha") and shared["url"] == before.get("url"):
+        emit(run_id, "log", f"The monolith has no newer commit: the re-run reads {shared['sha'][:10]} as before")
+        return
+    with session_scope() as s:
+        s.get(Run, run_id).legacy = shared
+    emit(run_id, "status", f"Re-running on the monolith's latest: {shared['branch'] or 'its default branch'} at "
+                           f"{shared['sha'][:10]}{': ' + shared['subject'] if shared.get('subject') else ''} "
+                           f"(was {str(before.get('sha') or '')[:10]})")
+
+
+def _then(first, second):
+    """Both preparations, in order (either may be None)."""
+    if first is None or second is None:
+        return first or second
+    return lambda: (first(), second())
+
+
 class RunBusyError(RuntimeError):
     pass
 
@@ -85,8 +128,14 @@ class Runner:
     def start(self, run_id: str) -> None:
         self._submit(run_id, None, initial=True)
 
-    def resume(self, run_id: str, decision: dict) -> None:
-        self._submit(run_id, Command(resume=decision))
+    def resume(self, run_id: str, decision: dict, user_id: int | None = None) -> None:
+        """Continue past a gate. A rejection re-runs steps: a discovery run reads the monolith's latest for them."""
+        prepare = None
+        if decision.get("decision") == "reject":
+            with session_scope() as s:
+                latest = reads_latest_on_rerun(s.get(Run, run_id))
+            prepare = (lambda: read_latest_monolith(run_id, user_id)) if latest else None
+        self._submit(run_id, Command(resume=decision), prepare=prepare)
 
     def restart(self, run_id: str, stage: str, notes: str | None = None, fresh: bool = False,
                 new_branch: str | None = None, user_id: int | None = None) -> None:
@@ -124,6 +173,9 @@ class Runner:
             prepare = lambda: recut(run_id, stage, new_branch, user_id)  # noqa: E731
         else:
             prepare = (lambda: start_fresh(run_id, stage)) if fresh else None
+        with session_scope() as s:
+            if reads_latest_on_rerun(s.get(Run, run_id)):  # a discovery run re-runs on the monolith's latest
+                prepare = _then(prepare, lambda: read_latest_monolith(run_id, user_id))
         self._submit(run_id, None, prepare=prepare)
 
     def amend(self, run_id: str, stage: str, notes: str, follow: list[str]) -> None:

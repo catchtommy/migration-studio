@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type RunDetail } from "../lib/api";
-import { useIsAdmin, useWorkflows } from "../lib/hooks";
+import { useCan, useIsAdmin, useWorkflows } from "../lib/hooks";
 
 /** Admin only: start the run's feature over with another workflow. Every run of the feature (one that is working is
  * stopped first) is deleted with its documents, approvals and logs, and a new run starts. */
@@ -68,5 +68,40 @@ export function StartOver({ run }: { run: RunDetail }) {
         </button>
       </div>
     </section>
+  );
+}
+
+/** A discovery run (bounded contexts, a feature listing) not finished yet: leave it without recording its results.
+ * It is stopped if working and deleted; the domains and features stay as they are, and a new run can start. */
+export function DiscardRun({ run }: { run: RunDetail }) {
+  const canManage = useCan("domains.manage");
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const discard = useMutation({
+    mutationFn: () => api.discardRun(run.id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+      queryClient.invalidateQueries({ queryKey: ["discovery"] });
+      queryClient.removeQueries({ queryKey: ["run", run.id] });
+      navigate("/domains");
+    },
+  });
+  if (!canManage || run.scope === "operation" || run.status === "completed") return null;
+  return (
+    <span className="text-xs">
+      <button
+        type="button"
+        disabled={discard.isPending}
+        onClick={() =>
+          window.confirm(
+            "Discard this run? It is stopped and deleted with its documents, approvals and logs. Nothing it found is recorded: the domains and features stay as they are. This can't be undone."
+          ) && discard.mutate()
+        }
+        className="font-medium text-bad hover:underline disabled:opacity-50"
+      >
+        {discard.isPending ? "Discarding…" : "Discard run (record nothing)"}
+      </button>
+      {discard.error && <span className="ml-2 text-bad">{(discard.error as Error).message}</span>}
+    </span>
   );
 }

@@ -916,6 +916,8 @@ export const api = {
   backToReview: (id: string) => request<Run>(`/runs/${id}/back-to-review`, { method: "POST" }),
   updateRunInputs: (id: string, inputs: AgentInputs) => request<RunDetail>(`/runs/${id}/inputs`, json("PUT", inputs)),
   startOver: (id: string, workflow: string) => request<Run>(`/runs/${id}/start-over`, json("POST", { workflow })),
+  /** Leave an unfinished discovery run without recording anything: it is stopped and deleted. */
+  discardRun: (id: string) => request<void>(`/runs/${id}/discard`, { method: "POST" }),
   retry: (id: string, fresh = false, notes?: string) => request<Run>(`/runs/${id}/retry`, json("POST", { fresh, notes })),
   stopRun: (id: string) => request<{ stopping: boolean }>(`/runs/${id}/stop`, { method: "POST" }),
   changeStep: (id: string, stage: string, notes: string, follow: string[]) =>

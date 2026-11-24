@@ -15,7 +15,7 @@ import { BranchConfirmation } from "../components/BranchConfirmation";
 import { StatusBadge } from "../components/StatusBadge";
 import { DomainAvatar } from "../components/DomainAvatar";
 import { WorkflowUpdate } from "../components/WorkflowUpdate";
-import { StartOver } from "../components/StartOver";
+import { DiscardRun, StartOver } from "../components/StartOver";
 import { runTokens } from "../components/TokenUsage";
 import { FailedRun, StopRun } from "../components/RunControls";
 
@@ -104,13 +104,22 @@ export function RunPage() {
         </p>
         {!!run.monolith_behind && run.status !== "awaiting_commit" && !run.delivery?.repos?.monolith && (
           <p className="mt-2 rounded-md bg-warn/10 px-3 py-1.5 text-sm text-warn">
-            The monolith's base branch has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"} since this run started. This
-            run keeps working on the commit it started from; a new run, or <em>Start over</em>, starts from the latest.
+            The monolith's base branch has {run.monolith_behind} newer commit{run.monolith_behind === 1 ? "" : "s"} since this run started.{" "}
+            {run.scope === "operation" ? (
+              <>
+                This run keeps working on the commit it started from; a new run, or <em>Start over</em>, starts from the latest.
+              </>
+            ) : (
+              <>
+                Rejecting, or re-running a step, reads the latest first. To leave this run without recording anything, use <em>Discard run</em>.
+              </>
+            )}
           </p>
         )}
         <WorkflowUpdate run={run} workflowName={workflowName ?? null} canUpdate={canRetry} />
         <div className="mt-2">
           <StartOver run={run} />
+          <DiscardRun run={run} />
         </div>
         {run.inputs && (run.inputs.paths.length > 0 || run.inputs.notes) && (
           <details className="mt-2 text-sm">

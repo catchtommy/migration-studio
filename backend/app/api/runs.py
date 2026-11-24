@@ -166,6 +166,25 @@ def start_over(run_id: str, body: StartOverIn, db: Session = Depends(get_db),
     return new
 
 
+@router.post("/runs/{run_id}/discard", status_code=204)
+def discard(run_id: str, db: Session = Depends(get_db), access: ProjectAccess = Depends(project_context),
+            _user: CurrentUser = Depends(require("domains.manage"))) -> Response:
+    """Leave an unfinished discovery run (bounded contexts, a feature listing) without recording its results: it is
+    stopped if working and deleted with its documents, approvals and logs. The domains and features stay as they are,
+    and a new run can be started (reading the monolith's latest). What a gate of it approved earlier stays recorded."""
+    run = _run_or_404(db, run_id)
+    if (run.scope or "operation") == "operation":
+        raise HTTPException(422, "Only a discovery run can be discarded; a migration is reset from its feature")
+    if run.status == "completed":
+        raise HTTPException(409, "The run has finished: its results are recorded already")
+    db.close()
+    try:
+        run_cleanup.stop_and_delete(access.project, [run_id])
+    except run_cleanup.StillWorking as e:
+        raise HTTPException(409, str(e))
+    return Response(status_code=204)
+
+
 @router.get("/runs-git-plan")
 def git_plan(domain: str, feature: str, workflow: str | None = None, db: Session = Depends(get_db)):
     """Where a new migration would work (repository, base and feature branch), for the New migration form."""
@@ -226,7 +245,7 @@ def get_run(run_id: str, db: Session = Depends(get_db), access: ProjectAccess = 
     detail.rerun_blocked = workspace.rerun_blocked(run, list(run.stages))
     detail.changeable = changeable(run, list(run.stages))
     migration = (run.scope or "operation") == "operation"  # older runs have no scope stored
-    if migration:
+    if migration or run.legacy:  # a discovery run too: re-running its steps reads the latest (runner.resume)
         detail.monolith_behind = (repos.behind(run.project, run.legacy["url"], run.legacy["branch"], run.legacy["sha"])
                                   if run.legacy else
                                   repos.behind(run.project, delivery.run_repository(run), run.base_branch, run.base_sha))
@@ -355,7 +374,7 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
     db.commit()
     delivery.refresh_code_settings(run_id)  # steps still to run use the current code settings
     try:
-        runner.resume(run_id, body.model_dump())
+        runner.resume(run_id, body.model_dump(), user.id)
     except RunBusyError as e:
         raise HTTPException(409, str(e))
     return approval
