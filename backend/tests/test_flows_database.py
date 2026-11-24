@@ -39,8 +39,21 @@ def test_a_saved_password_is_kept_for_the_same_server_and_user(tmp_path, monkeyp
     assert other.password == ""
 
 
+def test_switching_is_refused_while_runs_work(client, tmp_path, monkeypatch):
+    from app.api import database_api
+
+    monkeypatch.setattr(db_config, "from_env", lambda: False)
+    monkeypatch.setattr(database_api, "busy", lambda: "2 run(s) are working; wait for them to stop before switching")
+    r = client.post("/api/database", json={"config": {"dialect": "sqlite", "database": str(tmp_path / "x.db")}})
+    assert r.status_code == 409 and "2 run(s) are working" in r.json()["detail"]
+
+
 def test_switching_databases_copies_the_data_and_can_switch_back(client, tmp_path, monkeypatch):
+    from app.api import database_api
+
     monkeypatch.setattr(db_config, "from_env", lambda: False)  # the tests' database is otherwise set by the environment
+    # Runs other tests left working would (rightly) block the switch: that refusal is tested above
+    monkeypatch.setattr(database_api, "busy", lambda: None)
     original = session.get_engine().url
     with session.session_scope() as s:
         runs = s.scalar(select(func.count()).select_from(Run))

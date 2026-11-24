@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { newMigration } from "./helpers";
+import { approveGate, newMigration } from "./helpers";
 
 test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this mode");
 
@@ -34,7 +34,7 @@ test("a workflow built in the UI drives a run, including its approval gate", asy
   const timeline = page.locator("aside li");
   await expect(timeline).toHaveCount(3);
   await expect(page.getByRole("heading", { name: "👤 Approve docs" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await approveGate(page);
   await expect(page.getByText("Completed").first()).toBeVisible({ timeout: 30_000 });
 
   // The deep dive received the AS-IS document, with its contents.

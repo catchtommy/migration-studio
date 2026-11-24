@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { newMigration } from "./helpers";
+import { newMigration, rejectGate } from "./helpers";
 
 test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this mode");
 
@@ -8,8 +8,7 @@ test("a rejection can be held while the inputs are amended, then re-run", async 
   await page.getByRole("button", { name: "Start migration" }).click();
 
   await expect(page.getByRole("heading", { name: /👤 Approve analysis/ })).toBeVisible({ timeout: 30_000 });
-  await page.getByLabel(/Comments/).fill("Missing the nightly batch");
-  await page.getByRole("button", { name: "Reject, amend first" }).click();
+  await rejectGate(page, "Missing the nightly batch", "amend");
 
   const panel = page.getByRole("region", { name: "Amend before re-running" });
   await expect(panel).toBeVisible();
@@ -20,7 +19,7 @@ test("a rejection can be held while the inputs are amended, then re-run", async 
   await panel.getByRole("button", { name: "Re-run AS-IS documentation" }).click();
 
   await expect(page.getByRole("button", { name: /×2/ }).first()).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Approve…" })).toBeVisible({ timeout: 30_000 });
   await page.getByText("Operation inputs given to the agents").click();
   await expect(page.getByText("BatchJob.java").first()).toBeVisible();
 });

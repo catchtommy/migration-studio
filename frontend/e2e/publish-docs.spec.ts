@@ -6,6 +6,7 @@ import { expect, test } from "@playwright/test";
 
 // Needs the backend on this machine: the test makes a git repository for it to push to.
 test.skip(!!process.env.E2E_REMOTE || !!process.env.E2E_STUB_QUESTIONS, "needs a local backend; stub questions get in the way");
+test.skip(true, "Publishing AS-IS documents from the run page was removed (backend: test_publishing_as_is_documents_was_removed_and_older_runs_go_straight_on)");
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" }).trim();
 

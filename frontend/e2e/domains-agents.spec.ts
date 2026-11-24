@@ -35,7 +35,7 @@ test("domain inputs and operation entry points reach the agents and show up in t
   await expect(entryPoints).toHaveValue("CollateralController.list\nCollateralService.value"); // pre-filled
   await entryPoints.fill("CollateralController.value");
   await page.getByRole("button", { name: "Start migration" }).click();
-  await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Approve…" })).toBeVisible({ timeout: 30_000 });
 
   await page.getByRole("link", { name: "Domains", exact: true }).click();
   await page.getByRole("link", { name: new RegExp(`${name}.*Collateral valuation and pledges`) }).click(); // the domain card, not the migration order

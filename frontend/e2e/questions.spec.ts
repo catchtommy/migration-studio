@@ -16,7 +16,11 @@ test("the run pauses for an agent's question and continues once it is answered",
   await expect(panel.getByRole("heading", { name: "The Deep dive agent has a question" })).toBeVisible({ timeout: 30_000 });
   await panel.getByRole("button", { name: "Skip" }).click();
 
-  await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible({ timeout: 30_000 });
+  // The standard workflow's last step before its first gate asks too
+  await expect(panel.getByRole("heading", { name: "The Cross-domain dependency finder agent has a question" })).toBeVisible({ timeout: 30_000 });
+  await panel.getByRole("button", { name: "Skip" }).click();
+
+  await expect(page.getByRole("button", { name: "Approve…" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /AS-IS documentation/ }).click();
   await expect(page.locator("article").getByText("See the notes on the domain")).toBeVisible();
   await page.getByText("1 question answered during this attempt").click();

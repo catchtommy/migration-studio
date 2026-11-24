@@ -22,7 +22,7 @@ test("long tables, code and paths in a document stay inside its box", async ({ p
   const operation = `wide${Date.now()}`;
   await newMigration(page, "customer", operation);
   await page.getByRole("button", { name: "Start migration" }).click();
-  await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("button", { name: "Approve…" })).toBeVisible({ timeout: 60_000 });
   const runId = page.url().split("/runs/")[1];
   const artifacts = await (await page.request.get(`/api/runs/${runId}/artifacts`, { headers: PROJECT_HEADERS })).json();
   const doc = artifacts.find((a: { stage: string; path: string }) => a.stage === "as_is_doc" && a.path.endsWith(".md"));

@@ -1,12 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
+import { approveGate as approve } from "./helpers";
 
 test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this mode");
 
 async function approveGate(page: Page, gate: string) {
   await expect(page.getByRole("heading", { name: new RegExp(`👤 ${gate}`) })).toBeVisible({ timeout: 30_000 });
-  const approve = page.getByRole("button", { name: "Approve", exact: true });
-  await approve.click();
-  await expect(approve).toBeHidden({ timeout: 30_000 }); // recorded when the decision is accepted
+  await approve(page);
+  await expect(page.getByRole("button", { name: "Approve", exact: true })).toBeHidden({ timeout: 30_000 }); // recorded when the decision is accepted
 }
 
 test("bounded contexts, then a domain's features, then migrating a feature", async ({ page }) => {

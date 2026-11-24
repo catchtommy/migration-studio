@@ -14,7 +14,7 @@ const monolith: RunRepository = {
 };
 
 const changes = (files: RunChanges["files"], extra: Partial<RunChanges> = {}): RunChanges => ({
-  key: "monolith", name: "Monolith", repository: monolith.url, base_branch: "main", feature_branch: run.branch, base_sha: "a".repeat(40),
+  key: "monolith", name: "Monolith", repository: monolith.url, base_branch: "main", feature_branch: "migration/loan/approve", base_sha: "a".repeat(40),
   head_sha: "b".repeat(40), latest_sha: "c".repeat(40), behind: 0, remote_branch: null, previous: null, warning: null, message: "Migrate approve",
   files, conflicts: files.filter((f) => f.conflict).length, ...extra,
 });

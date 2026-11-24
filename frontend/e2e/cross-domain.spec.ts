@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { newMigration } from "./helpers";
+import { approveGate, newMigration } from "./helpers";
 
 test.skip(!!process.env.E2E_STUB_QUESTIONS, "stub agents ask questions in this mode");
 
@@ -9,12 +9,11 @@ test("an approved integration design fills the contracts catalogue and the depen
   await page.getByLabel("Workflow").selectOption({ label: "Standard migration" });
   await page.getByRole("button", { name: "Start migration" }).click();
 
-  const approve = page.getByRole("button", { name: "Approve", exact: true });
   await expect(page.getByRole("heading", { name: /👤 Approve analysis/ })).toBeVisible({ timeout: 30_000 });
-  await approve.click();
+  await approveGate(page);
   await expect(page.getByRole("heading", { name: /👤 Approve design/ })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("Review the output of Cross-domain dependency finder, Modulith design: Linked-domain contracts, Modulith design: Domain, Modulith design: Orchestrator, Cross-domain integration design")).toBeVisible();
-  await approve.click();
+  await approveGate(page);
   await expect(page.getByRole("heading", { name: /👤 Approve tests/ })).toBeVisible({ timeout: 30_000 });
 
   // The event this operation publishes is now a contract other migrations can reuse.
