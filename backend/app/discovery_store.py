@@ -6,8 +6,9 @@ Both are ordinary workflow runs with a reserved name, so they reuse the runner, 
 Neither name can clash with a real domain or operation, whose keys must start with a letter.
 
 Their agents write YAML files that are validated before the agent may finish. Approving the gate records them:
-bounded contexts update the domains (new ones are added, nothing is deleted) and features replace the domain's
-feature list, which migrations then pick from.
+bounded contexts update the domains (new ones are added, none is deleted; an existing domain's tables, packages,
+description and entry points are refreshed, keeping what people changed by hand: see _record_contexts) and features
+replace the domain's feature list, which migrations then pick from.
 """
 
 import re
@@ -27,10 +28,14 @@ CONTEXTS_OP = "bounded-contexts"
 FEATURES_OP = "_features"
 CONTEXTS_FILE = "bounded-contexts.yaml"
 FEATURES_FILE = "features.yaml"
-CONTEXTS_SETTING = "discovery_contexts"  # {"run_id", "keys"} of the latest approved bounded contexts
+# {"run_id", "keys", "recorded": {key: {description, tables, packages, entry_points}}} of the latest approved bounded
+# contexts: what they recorded, to tell it from what people changed by hand when the next ones are approved
+CONTEXTS_SETTING = "discovery_contexts"
 FEATURES_AGENT = "domain_features"  # a new context's entry points become this agent's inputs on the domain
 DOMAIN_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 FEATURE_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,127}$")
+
+FROM_SCRATCH = "from_scratch"  # in a feature listing run's inputs: list without the domain's current list (see below)
 
 # Migration runs (of one feature), as opposed to discovery runs. Runs from before discovery have no scope.
 MIGRATION_RUN = func.coalesce(Run.scope, "operation") == "operation"
@@ -170,7 +175,7 @@ def _merge(current: list | None, new: list[str]) -> list[str]:
     return list(dict.fromkeys([*(current or []), *new]))
 
 
-def record_approved(run_id: str, reviews: list[str]) -> str | None:
+def record_approved(run_id: str, reviews: list[str], replace: bool = False) -> str | None:
     """Record a discovery run's results when the gate reviewing them is approved. Returns a summary, or None when
     the gate has nothing to record. Raises InvalidDocument when the (possibly hand-edited) file is invalid."""
     with session_scope() as s:
@@ -190,15 +195,72 @@ def record_approved(run_id: str, reviews: list[str]) -> str | None:
             return None
         text = artifact.content
     if scope == "monolith":
-        return _record_contexts(run_id, parse_bounded_contexts(text))
+        return _record_contexts(run_id, parse_bounded_contexts(text), replace)
     return _record_features(run_id, domain, parse_features(text))
 
 
-def _record_contexts(run_id: str, contexts: list[dict]) -> str:
-    added, updated, left = [], [], []
+_CONTEXT_FIELDS = ("tables", "packages", "entry_points")
+
+
+def _previous_contexts(s, project: str) -> dict[str, dict] | None:
+    """What the latest approved bounded contexts recorded per domain, or None when unknown (none approved yet, or
+    its run was deleted). Approvals from before this was kept in the setting: read from that run's document."""
+    setting = s.get(Setting, (project, CONTEXTS_SETTING))
+    value = (setting.value if setting else None) or {}
+    if isinstance(value.get("recorded"), dict):
+        return value["recorded"]
+    if not value.get("run_id"):
+        return None
+    artifact = s.scalar(select(Artifact).where(Artifact.run_id == value["run_id"], Artifact.name == CONTEXTS_FILE)
+                        .order_by(Artifact.attempt.desc(), Artifact.id.desc()).limit(1))
+    if artifact is None:
+        return None
+    try:
+        items = (_load(artifact.content, CONTEXTS_FILE) or {}).get("contexts")
+    except InvalidDocument:
+        return None
+    out = {}
+    for item in items if isinstance(items, list) else []:  # leniently: domains may have changed since
+        if isinstance(item, dict) and str(item.get("key") or "").strip():
+            out[str(item["key"]).strip()] = {
+                "description": str(item.get("description") or "").strip(),
+                **{f: [str(v).strip() for v in item.get(f) or [] if str(v).strip()]
+                   if isinstance(item.get(f), list) else [] for f in _CONTEXT_FIELDS}}
+    return out
+
+
+def _record_contexts(run_id: str, contexts: list[dict], replace: bool = False) -> str:
+    """New contexts become domains; an existing domain is refreshed with what this run found. Its tables and
+    packages: those the previous approval recorded and this run no longer lists there are removed (people's own
+    additions stay), and new ones are added unless another domain owns them (a move made by hand is not undone).
+    Its description and the feature listing's entry points are replaced unless someone changed them since the previous
+    approval. A domain this run didn't find is left as it is (flagged on the Domains page).
+
+    `replace` (the reviewer's choice): every domain found gets exactly this run's tables, packages, entry points and
+    description, changes made by hand included; a table or package this run gives a domain is taken from any other
+    domain holding it (one this run didn't find too). Domains are still never deleted."""
+    if replace:
+        return _replace_contexts(run_id, contexts)
+    added, updated, left, removed = [], [], [], []
     project = projects.current()
     with session_scope() as s:
+        previous = _previous_contexts(s, project)
+        found = {c["key"]: c for c in contexts}
+        # First take away what the previous approval put on a domain and this run no longer finds there, so a table
+        # this run gives to another domain is free for it below.
+        for key, before in (previous or {}).items():
+            domain, now = s.get(Domain, (project, key)), found.get(key)
+            if domain is None or now is None:
+                continue
+            for field, src in (("owned_tables", "tables"), ("owned_packages", "packages")):
+                gone = {v.upper() for v in before.get(src) or []} - {v.upper() for v in now[src]}
+                current = list(getattr(domain, field) or [])
+                if any(v.upper() in gone for v in current):
+                    setattr(domain, field, [v for v in current if v.upper() not in gone])
+                    removed += [f"{v} from {key}" for v in current if v.upper() in gone]
+        s.flush()
         for c in contexts:
+            before = (previous or {}).get(c["key"])
             domain = s.get(Domain, (project, c["key"]))
             if domain is None:
                 domain = Domain(project=project, key=c["key"], name=c["name"], description=c["description"], context="",
@@ -206,7 +268,8 @@ def _record_contexts(run_id: str, contexts: list[dict]) -> str:
                 s.add(domain)
                 added.append(c["key"])
             else:
-                if not domain.description:
+                # Filled when empty; replaced when it is still what the previous approval wrote
+                if c["description"] and (not domain.description or (before and domain.description == before["description"])):
                     domain.description = c["description"]
                 # What another domain owns stays there, or a re-run would undo a move of it (app/feature_move.py)
                 others = s.scalars(select(Domain).where(Domain.project == project, Domain.key != c["key"])).all()
@@ -217,14 +280,68 @@ def _record_contexts(run_id: str, contexts: list[dict]) -> str:
                 updated.append(c["key"])
             inputs = dict(domain.agent_inputs or {})
             current = inputs.get(FEATURES_AGENT) or {}
-            if c["entry_points"] and not current.get("paths"):
+            paths = current.get("paths") or []
+            if c["entry_points"] and (not paths or (before and paths == before.get("entry_points"))):
                 inputs[FEATURES_AGENT] = {"paths": c["entry_points"], "notes": current.get("notes", "")}
                 domain.agent_inputs = inputs
-        setting = s.get(Setting, (project, CONTEXTS_SETTING)) or Setting(project=project, key=CONTEXTS_SETTING)
-        setting.value = {"run_id": run_id, "keys": [c["key"] for c in contexts]}
-        s.merge(setting)
+        _save_recorded(s, project, run_id, contexts)
+    note = ""
+    if removed:
+        note += f"; removed as no longer found there: {', '.join(removed)}"
+    if updated and previous is None:
+        note += ("; the earlier bounded contexts aren't known, so existing domains' tables and packages were only added "
+                 "to (the next approval refreshes them)")
     return (f"Bounded contexts recorded: {len(added)} new domain(s){' (' + ', '.join(added) + ')' if added else ''}, "
-            f"{len(updated)} updated" + (f"; left with their current owner: {', '.join(left)}" if left else ""))
+            f"{len(updated)} updated" + (f"; left with their current owner: {', '.join(left)}" if left else "") + note)
+
+
+def _save_recorded(s, project: str, run_id: str, contexts: list[dict]) -> None:
+    setting = s.get(Setting, (project, CONTEXTS_SETTING)) or Setting(project=project, key=CONTEXTS_SETTING)
+    setting.value = {"run_id": run_id, "keys": [c["key"] for c in contexts],
+                     "recorded": {c["key"]: {"description": c["description"], **{f: c[f] for f in _CONTEXT_FIELDS}}
+                                  for c in contexts}}
+    s.merge(setting)
+
+
+def _replace_contexts(run_id: str, contexts: list[dict]) -> str:
+    """_record_contexts with `replace`: the domains found become exactly what this run says."""
+    project = projects.current()
+    added, updated, moved = [], [], []
+    with session_scope() as s:
+        found = {c["key"]: c for c in contexts}
+        given = {field: {v.upper(): c["key"] for c in contexts for v in c[src]}
+                 for field, src in (("owned_tables", "tables"), ("owned_packages", "packages"))}
+        for other in s.scalars(select(Domain).where(Domain.project == project)).all():
+            listed = found.get(other.key)
+            for field, src in (("owned_tables", "tables"), ("owned_packages", "packages")):
+                mine = {v.upper() for v in listed[src]} if listed else set()
+                current = list(getattr(other, field) or [])
+                taken = [v for v in current if v.upper() in given[field] and v.upper() not in mine]
+                if taken and not listed:  # a domain this run didn't find: only what the run gives another domain goes
+                    setattr(other, field, [v for v in current if v not in taken])
+                moved += [f"{v} ({other.key} → {given[field][v.upper()]})" for v in taken]
+        s.flush()
+        for c in contexts:
+            domain = s.get(Domain, (project, c["key"]))
+            if domain is None:
+                domain = Domain(project=project, key=c["key"], name=c["name"], description=c["description"], context="",
+                                agent_inputs={}, owned_tables=[], owned_packages=[])
+                s.add(domain)
+                added.append(c["key"])
+            else:
+                updated.append(c["key"])
+                if c["description"]:
+                    domain.description = c["description"]
+            domain.owned_tables, domain.owned_packages = list(c["tables"]), list(c["packages"])
+            if c["entry_points"]:
+                inputs = dict(domain.agent_inputs or {})
+                notes = (inputs.get(FEATURES_AGENT) or {}).get("notes", "")
+                inputs[FEATURES_AGENT] = {"paths": c["entry_points"], "notes": notes}
+                domain.agent_inputs = inputs
+        _save_recorded(s, project, run_id, contexts)
+    return (f"Bounded contexts recorded, replacing the domains' data: {len(added)} new domain(s)"
+            f"{' (' + ', '.join(added) + ')' if added else ''}, {len(updated)} replaced"
+            + (f"; moved: {', '.join(moved)}" if moved else ""))
 
 
 def _moved_out(s, project: str, domain: str) -> list[Feature]:
@@ -377,9 +494,10 @@ def overview() -> dict:
         feature_runs = {r.domain: r for r in s.scalars(select(Run).where(Run.project == project,
                                                                          Run.operation == FEATURES_OP)
                                                         .order_by(Run.created_at).options(brief))}
-        domains = s.scalars(select(Domain).where(Domain.project == project)
-                            .order_by(Domain.created_at, Domain.key)
-                            .options(load_only(Domain.key, Domain.name, Domain.created_at))).all()
+        from app.domain_store import in_migration_order
+        domains = s.scalars(in_migration_order(select(Domain).where(Domain.project == project))
+                            .options(load_only(Domain.key, Domain.name, Domain.created_at,
+                                               Domain.migration_order))).all()
         return {
             "bounded_contexts": _run_brief(contexts_run),
             "contexts_inputs": contexts_run.inputs if contexts_run else None,
@@ -390,8 +508,11 @@ def overview() -> dict:
         }
 
 
-def domains_brief(domain: str) -> str:
-    """The domains known so far, for discovery agents (instead of the migration catalogue)."""
+def domains_brief(domain: str, from_scratch: bool = False) -> str:
+    """The domains known so far, for discovery agents (instead of the migration catalogue). A feature listing re-run
+    is shown the domain's current list to keep its keys and grouping; `from_scratch`, only the features that stay
+    whatever the new list says (being migrated, or moved here by hand: see _record_features), so it lists the rest
+    afresh from the code without duplicating those under another key."""
     with session_scope() as s:
         domains = s.scalars(select(Domain).where(Domain.project == projects.current()).order_by(Domain.key)).all()
         lines = ["## Known domains"]
@@ -404,9 +525,19 @@ def domains_brief(domain: str) -> str:
                          + f"{', '.join(d.owned_packages or []) or '–'}")
         existing = s.scalars(select(Feature).where(Feature.project == projects.current(), Feature.domain == domain)
                              .order_by(Feature.id)).all()
-        if existing:  # a re-run of the feature listing: keep these keys and their grouping
-            migrating = set(s.scalars(select(Run.operation).where(Run.project == projects.current(),
-                                                                  Run.domain == domain, MIGRATION_RUN)))
+        migrating = set(s.scalars(select(Run.operation).where(Run.project == projects.current(),
+                                                              Run.domain == domain, MIGRATION_RUN))) if existing else set()
+        if from_scratch:
+            existing = [f for f in existing if f.key in migrating or f.moved_from]
+            if existing:
+                lines.append(f"\n## Features of `{domain}` that stay (being migrated, or moved here)\n"
+                             "List the domain's features afresh from the code, without relying on any earlier list. "
+                             "These features stay whatever you list: when you find the same functionality, use the "
+                             "same key (and name) for it rather than listing it again under another key.")
+                for f in existing:
+                    points = ", ".join(f"`{p}`" for p in (f.entry_points or [])[:6])
+                    lines.append(f"- `{f.key}` {f.name}" + (f": {points}" if points else ""))
+        elif existing:  # a re-run of the feature listing: keep these keys and their grouping
             lines.append(f"\n## Features of `{domain}` already listed (keep their keys and grouping)")
             for f in existing:
                 points = ", ".join(f"`{p}`" for p in (f.entry_points or [])[:6])

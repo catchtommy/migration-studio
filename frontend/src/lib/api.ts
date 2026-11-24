@@ -255,7 +255,7 @@ export interface AgentInputs {
 
 export interface RunDetail extends Run {
   workspace: string | null;
-  inputs: AgentInputs | null;
+  inputs: (AgentInputs & { from_scratch?: boolean }) | null; // from_scratch: a feature listing ignoring the current list
   stages: StageExecution[];
   approvals: Approval[];
   pending_gate: { gate: string; reviews: string[]; checklist?: ChecklistItem[] } | null;
@@ -518,6 +518,7 @@ export interface Domain {
   owned_tables: string[] | null;
   owned_packages: string[] | null;
   direct_calls?: string[] | null;
+  migration_order?: number | null; // 1 first; null: not placed in the migration order yet (listed after)
   workflows?: { key: string; name: string; agents: string[]; code_agents: string[]; when_needed?: string[]; monolith_agents?: string[]; repository_from?: Record<string, string>; hints?: Record<string, string> }[]; // the workflows this domain uses; when_needed: code agents skipped for domain-only features; hints: which repository an agent's is
   /** Names earlier features gave the domain's modules or services after themselves: renamed to the domain's on that
    * feature's branch (its step re-run) before it is merged. */
@@ -909,7 +910,7 @@ export const api = {
   setGitCredential: (body: { host: string; username: string; token: string }) => request<AccountGit>("/account/git/credentials", json("PUT", body)),
   removeGitCredential: (id: number) => request<AccountGit>(`/account/git/credentials/${id}`, { method: "DELETE" }),
   testGit: (project: string) => request<{ ok: boolean; repository: string; with_token: boolean; error: string | null }>("/account/git/test", json("POST", { project })),
-  decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; rerun?: "now" | "later"; scope?: RerunScope }) =>
+  decide: (id: string, body: { decision: "approve" | "reject"; comments?: string; target_stage?: string; rerun?: "now" | "later"; scope?: RerunScope; replace?: boolean }) =>
     request<Approval>(`/runs/${id}/decision`, json("POST", body)),
   tickChecklist: (id: string, body: { item: string; done: boolean }) => request<ChecklistItem[]>(`/runs/${id}/checklist`, json("POST", body)),
   rerun: (id: string, body: { comments?: string; target_stage?: string; scope?: RerunScope }) => request<Run>(`/runs/${id}/rerun`, json("POST", body)),
@@ -977,6 +978,8 @@ export const api = {
   workflowUsage: (key: string, library: Library = "project") => request<WorkflowUsage>(`/workflows/${key}/usage?library=${library}`),
   deleteWorkflow: (key: string, library: Library = "project") => request<void>(`/workflows/${key}?library=${library}`, { method: "DELETE" }),
   domains: () => request<DomainSummary[]>("/domains"),
+  /** Set the order domains are migrated in (first first); those left out follow. Returns the domains in that order. */
+  reorderDomains: (keys: string[]) => request<DomainSummary[]>("/domains/reorder", json("POST", { keys })),
   domain: (key: string) => request<Domain>(`/domains/${key}`),
   createDomain: (body: { key: string; name: string; description: string }) => request<Domain>("/domains", json("POST", body)),
   updateDomain: (key: string, body: DomainUpdate) => request<Domain>(`/domains/${key}`, json("PUT", body)),
@@ -996,7 +999,9 @@ export const api = {
     request<{ target: string; new_domain: boolean; moved: string[] }>(`/domains/${domain}/features/move`, json("POST", body)),
   discovery: () => request<DiscoveryOverview>("/discovery"),
   discoverBoundedContexts: (inputs?: AgentInputs) => request<Run>("/discovery/bounded-contexts", json("POST", { inputs })),
-  discoverFeatures: (domain: string) => request<Run>(`/domains/${domain}/discover-features`, { method: "POST" }),
+  /** fromScratch: list without the domain's current list (features being migrated keep their keys). */
+  discoverFeatures: (domain: string, fromScratch = false) =>
+    request<Run>(`/domains/${domain}/discover-features`, fromScratch ? json("POST", { from_scratch: true }) : { method: "POST" }),
   discoverAllFeatures: () => request<Run[]>("/discovery/features", { method: "POST" }),
   contracts: (domain?: string) => request<Contract[]>(`/contracts${domain ? `?domain=${encodeURIComponent(domain)}` : ""}`),
   updateContract: (key: string, status: ContractStatus) => request<Contract>(`/contracts/${encodeURIComponent(key)}`, json("PUT", { status })),

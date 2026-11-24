@@ -17,10 +17,11 @@ const FEATURES_AGENT = "domain_features";
 
 /** Before listing a domain's features: check the agent, and say where to look. The paths and notes are saved as the
  * domain's inputs for the Domain features agent, so re-listing uses them too. */
-function ListingSetup({ domain, onStarted, onCancel }: { domain: Domain; onStarted: () => void; onCancel: () => void }) {
+function ListingSetup({ domain, relisting, onStarted, onCancel }: { domain: Domain; relisting: boolean; onStarted: () => void; onCancel: () => void }) {
   const queryClient = useQueryClient();
   const saved = domain.agent_inputs[FEATURES_AGENT] ?? EMPTY_INPUTS;
   const [inputs, setInputs] = useState(saved);
+  const [fromScratch, setFromScratch] = useState(false);
   const clean = (i: typeof inputs) => ({ paths: i.paths.map((p) => p.trim()).filter(Boolean), notes: i.notes.trim() });
   const start = useMutation({
     mutationFn: async () => {
@@ -28,7 +29,7 @@ function ListingSetup({ domain, onStarted, onCancel }: { domain: Domain; onStart
         const updated = await api.updateDomain(domain.key, { agent_inputs: { ...domain.agent_inputs, [FEATURES_AGENT]: clean(inputs) } });
         queryClient.setQueryData(["domain", domain.key], updated);
       }
-      return api.discoverFeatures(domain.key);
+      return api.discoverFeatures(domain.key, relisting && fromScratch);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["discovery"] });
@@ -53,6 +54,18 @@ function ListingSetup({ domain, onStarted, onCancel }: { domain: Domain; onStart
           pathsHint="One per line, relative to the repository root: the domain's packages, controllers, sqlmaps, documentation (docs/loan/*.md). Saved for later re-lists."
           notesHint="E.g. naming conventions, batch jobs to include, code that is no longer used."
         />
+        {relisting && (
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" className="mt-1" checked={fromScratch} onChange={(e) => setFromScratch(e.target.checked)} />
+            <span>
+              Start from scratch
+              <span className="block text-xs text-subtle">
+                The agent lists the features afresh from the code instead of keeping the current list's keys and grouping. Features being migrated, or moved
+                here, stay and keep their keys; once the new list is approved, the other current features not in it are removed.
+              </span>
+            </span>
+          </label>
+        )}
         <div className="flex items-center gap-2">
           <button onClick={() => start.mutate()} disabled={start.isPending} className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50">
             Start feature listing
@@ -324,7 +337,7 @@ export function DomainFeatures({ domain }: { domain: Domain }) {
         )}
       </div>
 
-      {setup && !listingBusy && <ListingSetup domain={domain} onStarted={closeSetup} onCancel={closeSetup} />}
+      {setup && !listingBusy && <ListingSetup domain={domain} relisting={!!features?.length} onStarted={closeSetup} onCancel={closeSetup} />}
 
       {editing === "" && <FeatureForm domain={domain} onDone={() => setEditing(null)} />}
 

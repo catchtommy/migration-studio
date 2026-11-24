@@ -179,6 +179,10 @@ class Decision(BaseModel):
     # Rejections only: "amend" makes only the requested change, in place (the step's other work and the steps after
     # it up to the gate stay as they are); "redo" re-runs the step from where it started.
     scope: Literal["amend", "redo"] = "amend"
+    # Approving bounded contexts only: every domain they found gets exactly their tables, packages, entry points and
+    # description (changes made by hand are overwritten, and what other domains hold of them moves), see
+    # discovery_store._record_contexts.
+    replace: bool = False
 
 
 class ChecklistTick(BaseModel):
@@ -328,10 +332,16 @@ class DomainOut(ORM):
     owned_tables: list[str] | None
     owned_packages: list[str] | None
     direct_calls: list[str] | None = None
+    migration_order: int | None = None  # 1 first; None: not placed yet (listed after the others)
     # The migration workflows this domain uses (its new runs', then its earlier runs'): which agents to configure
     workflows: list[dict] = []
     created_at: datetime
     updated_at: datetime
+
+
+class DomainOrder(BaseModel):
+    """The project's domains in the order they are migrated, first first."""
+    keys: list[str] = Field(max_length=1000)
 
 
 class DomainSummary(DomainOut):
@@ -556,5 +566,11 @@ class DiscoveryStart(BaseModel):
     inputs: AgentInputsIn | None = None  # where to look (e.g. existing documentation) and notes, for this run
 
 
-class FeaturesStart(DiscoveryStart):
+class FeatureListStart(DiscoveryStart):
+    # List without the domain's current list (features being migrated, or moved here, keep their keys): see
+    # discovery_store.domains_brief
+    from_scratch: bool = False
+
+
+class FeaturesStart(FeatureListStart):
     only_missing: bool = True  # skip domains that already have a feature list

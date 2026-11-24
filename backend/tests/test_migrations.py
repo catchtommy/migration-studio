@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, inspect, text
 from app.db.migrations import _config, upgrade
 from app.db.models import Base
 
-HEAD = "0024"
+HEAD = "0025"
 
 
 def _state(engine):

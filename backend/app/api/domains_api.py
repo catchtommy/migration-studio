@@ -7,8 +7,9 @@ from app import (agent_store, contracts_store, discovery_store, document_export,
 from app.api.discovery_api import start_features
 from app.api.runs import _starting
 from app.api.schemas import (
-    DependencyMap, DependencyOut, DomainCreate, DomainOut, DomainSummary, DomainUpdate, FeatureCreate, FeatureIn,
-    DiscoveryStart, FeatureOut, MoveFeatures, MoveFeaturesIn, OperationDocs, RunOut,
+    DependencyMap, DependencyOut, DomainCreate, DomainOrder, DomainOut, DomainSummary, DomainUpdate, FeatureCreate,
+    FeatureIn,
+    FeatureListStart, FeatureOut, MoveFeatures, MoveFeaturesIn, OperationDocs, RunOut,
 )
 from app import projects
 from app.auth import CurrentUser, require, require_admin
@@ -35,13 +36,25 @@ def list_domains(db: Session = Depends(get_db)):
     features = dict(db.execute(select(Feature.domain, func.count()).where(Feature.project == project)
                                .group_by(Feature.domain)).all())
     out = []
-    for d in db.scalars(select(Domain).where(Domain.project == project).order_by(Domain.created_at, Domain.key)):
+    for d in db.scalars(domain_store.in_migration_order(select(Domain).where(Domain.project == project))):
         summary = DomainSummary.model_validate(d)
         summary.runs = sum(n for (dom, _), n in counts.items() if dom == d.key)
         summary.completed = counts.get((d.key, "completed"), 0)
         summary.features = features.get(d.key, 0)
         out.append(summary)
     return out
+
+
+@router.post("/reorder", response_model=list[DomainSummary], dependencies=[Depends(require("domains.manage"))])
+def set_order(body: DomainOrder, db: Session = Depends(get_db)):
+    """Set the order the project's domains are migrated in (first first); domains left out follow in their current
+    order. The domains are then listed in this order."""
+    try:
+        domain_store.set_migration_order(db, projects.current(), body.keys)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    db.commit()
+    return list_domains(db)
 
 
 @router.get("/dependency-map", response_model=DependencyMap)
@@ -290,6 +303,6 @@ def reset_feature(key: str, feature: str, db: Session = Depends(get_db),
 
 
 @router.post("/{key}/discover-features", response_model=RunOut, status_code=201, dependencies=[Depends(require("domains.manage"))])
-def discover_features(key: str, body: DiscoveryStart | None = None, db: Session = Depends(get_db)):
+def discover_features(key: str, body: FeatureListStart | None = None, db: Session = Depends(get_db)):
     """Start the run that lists this domain's features."""
-    return start_features(db, key, body or DiscoveryStart())
+    return start_features(db, key, body or FeatureListStart())

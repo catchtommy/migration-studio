@@ -1,6 +1,6 @@
 """Domains of the monolith and the per-agent guidance attached to them."""
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 
 from app import projects
 from app.db.models import Contract, Dependency, Domain, Feature, Project, Run
@@ -18,6 +18,28 @@ def seed() -> None:
             for key in INITIAL_DOMAINS:
                 s.add(Domain(project=projects.DEFAULT, key=key, name=key.capitalize(), description="", context="",
                              agent_inputs={}))
+
+
+def in_migration_order(query):
+    """`query` (selecting domains) ordered as they are migrated: by their place in the order set on the Domains page,
+    then those not placed yet, oldest first."""
+    return query.order_by(case((Domain.migration_order.is_(None), 1), else_=0), Domain.migration_order,
+                          Domain.created_at, Domain.key)
+
+
+def set_migration_order(db, project: str, keys: list[str]) -> list[str]:
+    """Number the project's domains 1, 2, ... in the order of `keys`; domains not in it follow in their current order.
+    Raises ValueError for an unknown or repeated key. Returns the keys in their new order."""
+    domains = {d.key: d for d in db.scalars(in_migration_order(select(Domain).where(Domain.project == project)))}
+    if len(set(keys)) != len(keys):
+        raise ValueError("A domain appears more than once in the order")
+    unknown = [k for k in keys if k not in domains]
+    if unknown:
+        raise ValueError(f"Unknown domain(s): {', '.join(unknown)}")
+    order = [*keys, *(k for k in domains if k not in keys)]
+    for i, key in enumerate(order, 1):
+        domains[key].migration_order = i
+    return order
 
 
 def normalize_inputs(raw: dict | None) -> dict:

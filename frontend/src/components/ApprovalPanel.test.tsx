@@ -106,3 +106,22 @@ test("a tick shows at once, before the server answers, without reloading the who
   answer([{ ...items[0], done: true, by: "Ada", at: "2026-11-03T10:00:00Z" }, items[1]]);
   await waitFor(() => expect(screen.getByText("Ada")).toBeInTheDocument()); // the server's record of who ticked it
 });
+
+test("bounded contexts can be approved replacing the domains' data", async () => {
+  const decide = vi.spyOn(api, "decide").mockResolvedValue({} as never);
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ApprovalPanel runId="r1" gate={{ gate: "gate_docs", reviews: ["as_is_doc"], checklist: [] }} stages={stages} replaceOption />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Approve…" }));
+  fireEvent.click(screen.getByLabelText(/Replace with this run's results/));
+  fireEvent.click(screen.getByRole("button", { name: "Approve and replace" }));
+  await waitFor(() => expect(decide).toHaveBeenCalledWith("r1", expect.objectContaining({ decision: "approve", replace: true })));
+});
+
+test("other gates don't offer to replace", () => {
+  show([]);
+  fireEvent.click(screen.getByRole("button", { name: "Approve…" }));
+  expect(screen.queryByLabelText(/Replace with this run's results/)).toBeNull();
+});

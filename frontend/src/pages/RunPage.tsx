@@ -83,6 +83,7 @@ export function RunPage() {
           {run.repository && run.base_branch && <span className="font-mono"> ← {run.base_branch}</span>}
           {!!run.repositories?.length && <> · also in {run.repositories.map((r) => r.name).join(", ")}</>}
           {workflowName && <> · {workflowName} workflow</>}
+          {run.inputs?.from_scratch && <> · listing features from scratch</>}
           {run.base_sha && (
             <>
               {" "}
@@ -141,7 +142,7 @@ export function RunPage() {
       {run.status === "awaiting_input" && openQuestion && <QuestionPanel key={openQuestion.id} runId={run.id} question={openQuestion} stages={stages} />}
 
       {run.status === "awaiting_approval" && run.pending_gate && (
-        <ApprovalPanel key={run.pending_gate.gate + run.stages.length} runId={run.id} gate={run.pending_gate} stages={stages} coverage={run.functional_coverage} />
+        <ApprovalPanel key={run.pending_gate.gate + run.stages.length} runId={run.id} gate={run.pending_gate} stages={stages} coverage={run.functional_coverage} replaceOption={run.scope === "monolith"} />
       )}
 
       {run.status === "awaiting_branches" && run.pending_branches && <BranchConfirmation key={`${run.pending_branches.stage}:${run.pending_branches.repository.key}`} runId={run.id} pending={run.pending_branches} />}

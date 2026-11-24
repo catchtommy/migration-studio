@@ -194,6 +194,9 @@ class Domain(Base):
     # Other domains this domain may call directly through their API, without an orchestrator (a subdomain, a utility
     # API domain). Every other domain is reached through the orchestrator. Set by a person, never by an agent.
     direct_calls: Mapped[list | None] = mapped_column(JSONText)
+    # Where the domain comes in the project's migration order (1 first), set on the Domains page; None: not placed
+    # yet, after the others (domain_store.in_migration_order)
+    migration_order: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 

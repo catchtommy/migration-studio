@@ -13,6 +13,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { EMPTY_INPUTS, InputsEditor } from "../components/InputsEditor";
 import { AgentModeNote } from "../components/AgentModeNote";
 import { Guarded } from "../components/Guarded";
+import { DomainOrder } from "../components/DomainOrder";
 
 const ACTIVE = ["pending", "running", "awaiting_input", "awaiting_approval", "changes_requested", "awaiting_commit", "awaiting_branches"];
 const isActive = (run: RunBrief | null) => !!run && ACTIVE.includes(run.status);
@@ -84,8 +85,8 @@ function DiscoveryPanel() {
         <div className="grid gap-5 md:grid-cols-2">
           <Step n={1} title="Find the bounded contexts" done={data.contexts_approved}>
             <p className="text-sm text-subtle">
-              Groups the monolith's code and tables by business capability. Approving adds new contexts as domains and fills in their packages, tables and entry points; no
-              domain is deleted.
+              Groups the monolith's code and tables by business capability. Approving adds new contexts as domains and refreshes the existing ones' packages, tables,
+              description and entry points, keeping changes made by hand unless you choose to replace them. No domain is deleted.
             </p>
             <div className="flex flex-wrap items-center gap-2">
               {run && unfinished(run) ? (
@@ -321,6 +322,8 @@ export function DomainsPage() {
   const { data: domains, isLoading } = useDomains();
   const { data: discovery } = useQuery({ queryKey: ["discovery"], queryFn: api.discovery });
   const [adding, setAdding] = useState(false);
+  const [ordering, setOrdering] = useState(false);
+  const { data: map } = useQuery({ queryKey: ["dependencyMap"], queryFn: api.dependencyMap });
 
   return (
     <div className="space-y-6">
@@ -334,20 +337,43 @@ export function DomainsPage() {
       {adding && <NewDomainForm />}
       <DiscoveryPanel />
       {domains && <MigrationOverview names={new Map(domains.map((d) => [d.key, d.name]))} />}
+      {domains && domains.length > 1 && !ordering && (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-subtle">
+            {domains.some((d) => d.migration_order) ? "Listed in migration order." : "No migration order set yet: listed oldest first."}
+          </p>
+          {canCreate && (
+            <button onClick={() => setOrdering(true)} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-muted">
+              Set migration order…
+            </button>
+          )}
+        </div>
+      )}
+      {ordering && domains && <DomainOrder domains={domains} suggested={map?.order.map((s) => s.domain) ?? []} onDone={() => setOrdering(false)} />}
       {isLoading || !domains ? (
         <p className="text-subtle">Loading…</p>
-      ) : (
+      ) : ordering ? null : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {domains.map((d) => {
+          {domains.map((d, position) => {
             const configured = Object.values(d.agent_inputs).filter((i) => i.paths.length || i.notes).length;
             const listing = discovery?.domains.find((x) => x.key === d.key)?.run;
             return (
               <Link key={d.key} to={`/domains/${d.key}`} className="card block space-y-3 p-4 transition hover:-translate-y-0.5 hover:border-accent/50 hover:shadow-md">
                 <div className="flex items-center gap-3">
+                  {d.migration_order != null && (
+                    <span className="w-5 shrink-0 text-right text-sm font-semibold tabular-nums text-subtle" title="Migration order">
+                      {position + 1}
+                    </span>
+                  )}
                   <DomainAvatar name={d.name} domainKey={d.key} />
                   <h2 className="flex-1 font-semibold">{d.name}</h2>
                   <code className="text-xs text-subtle">{d.key}</code>
                 </div>
+                {d.migration_order == null && domains.some((x) => x.migration_order != null) && (
+                  <span className="inline-block rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-subtle" title="Added since the migration order was saved">
+                    Not in the migration order yet
+                  </span>
+                )}
                 {discovery?.not_found.includes(d.key) && (
                   <span
                     className="inline-block rounded-full bg-warn/15 px-2 py-0.5 text-xs font-medium text-warn"

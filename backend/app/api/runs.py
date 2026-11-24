@@ -321,6 +321,8 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
         missing = gate_checklist.missing(db, run, gate["gate"])
         if missing:
             raise HTTPException(422, f"Tick every checklist item before approving; still open: {'; '.join(missing)}")
+    if body.replace and (body.decision != "approve" or run.scope != "monolith"):
+        raise HTTPException(422, "Replacing the domains' data is only for approving bounded contexts")
     if body.decision == "reject":
         if not body.comments:
             raise HTTPException(422, "Comments are required when rejecting")
@@ -350,7 +352,7 @@ def decide(run_id: str, body: Decision, db: Session = Depends(get_db),
             emit(run_id, "artifact", f"Recorded {recorded} cross-domain decision(s) in the contracts catalogue",
                  gate["gate"])
         try:
-            summary = discovery_store.record_approved(run_id, list(gate["reviews"]))
+            summary = discovery_store.record_approved(run_id, list(gate["reviews"]), replace=body.replace)
         except contracts_store.InvalidDocument as e:
             raise HTTPException(422, f"The discovery results can't be recorded: {e}. Edit the file or reject it.")
         if summary:
@@ -465,7 +467,9 @@ def update_inputs(run_id: str, body: AgentInputsIn, db: Session = Depends(get_db
     if run.status not in ("awaiting_approval", "changes_requested", "failed"):
         raise HTTPException(409, "Inputs can be changed while the run waits for approval or amendments, or failed")
     inputs = normalize_inputs(body.model_dump())
-    run.inputs = inputs if inputs["paths"] or inputs["notes"] else None
+    if (run.inputs or {}).get(discovery_store.FROM_SCRATCH):  # how the run lists features is not an input to edit
+        inputs[discovery_store.FROM_SCRATCH] = True
+    run.inputs = inputs if inputs["paths"] or inputs["notes"] or inputs.get(discovery_store.FROM_SCRATCH) else None
     db.commit()
     emit(run_id, "status", "Run inputs updated")
     return get_run(run_id, db, access)

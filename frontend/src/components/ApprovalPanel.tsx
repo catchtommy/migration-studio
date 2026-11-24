@@ -10,11 +10,14 @@ export function ApprovalPanel({
   gate,
   stages,
   coverage,
+  replaceOption = false,
 }: {
   runId: string;
   gate: { gate: string; reviews: string[]; checklist?: ChecklistItem[] };
   stages: StageDef[];
   coverage?: Coverage | null;
+  /** Bounded contexts: offer to replace the domains' data with the run's results, hand edits included. */
+  replaceOption?: boolean;
 }) {
   const refreshRun = useRefreshRun(runId);
   const { data: auth } = useMe();
@@ -22,6 +25,7 @@ export function ApprovalPanel({
   const [comments, setComments] = useState("");
   const [target, setTarget] = useState(gate.reviews[0]);
   const [scope, setScope] = useState<RerunScope>("amend");
+  const [replace, setReplace] = useState(false);
   // Approving shows the checklist; rejecting shows the re-run choices. Neither is shown until the reviewer picks one.
   const [mode, setMode] = useState<"choose" | "approve" | "reject">("choose");
   const title = (key: string) => stages.find((s) => s.key === key)?.title ?? key;
@@ -62,6 +66,7 @@ export function ApprovalPanel({
         target_stage: decision === "reject" ? target : undefined,
         rerun,
         scope: decision === "reject" ? scope : undefined,
+        replace: decision === "approve" && replaceOption && replace ? true : undefined,
       }),
     onSuccess: () => {
       setComments("");
@@ -206,14 +211,29 @@ export function ApprovalPanel({
                     </button>
                   </>
                 ) : (
-                  <button
-                    className="rounded-md bg-ok px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-                    disabled={decide.isPending || open > 0}
-                    title={open > 0 ? `Tick the ${open} open checklist item${open === 1 ? "" : "s"} first` : undefined}
-                    onClick={() => decide.mutate({ decision: "approve" })}
-                  >
-                    {decide.isPending ? "Approving…" : "Approve"}
-                  </button>
+                  <>
+                    {replaceOption && (
+                      <label className="mr-auto flex max-w-xl items-start gap-2 text-sm">
+                        <input type="checkbox" className="mt-1" checked={replace} onChange={(e) => setReplace(e.target.checked)} />
+                        <span>
+                          Replace with this run's results
+                          <span className="block text-xs text-subtle">
+                            Every domain found gets exactly these tables, packages, entry points and description, overwriting changes made by hand. A table
+                            or package given to a domain here is taken from any other domain holding it, including domains this run didn't find. No domain
+                            is deleted.
+                          </span>
+                        </span>
+                      </label>
+                    )}
+                    <button
+                      className="rounded-md bg-ok px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                      disabled={decide.isPending || open > 0}
+                      title={open > 0 ? `Tick the ${open} open checklist item${open === 1 ? "" : "s"} first` : undefined}
+                      onClick={() => decide.mutate({ decision: "approve" })}
+                    >
+                      {decide.isPending ? "Approving…" : replaceOption && replace ? "Approve and replace" : "Approve"}
+                    </button>
+                  </>
                 )}
               </div>
             </>

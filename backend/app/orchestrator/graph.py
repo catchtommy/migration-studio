@@ -458,6 +458,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             from app import delivery as _delivery
             monolith = _delivery.run_repository(run_row) or (run_row.legacy or {}).get("url")
             legacy_info, started_by = run_row.legacy, run_row.started_by
+            from_scratch = bool((run_row.inputs or {}).get(discovery_store.FROM_SCRATCH))
             start_sha = git_ops.head(ws)
             nested_starts = workspace.nested_heads(ws, nested)  # the run's other repositories, for rollbacks
             code_kept = stopped is not None and _code_kept(stopped, ws, start_sha, nested, nested_starts)
@@ -536,7 +537,7 @@ def make_agent_node(workflow: Workflow, stage: StageDef):
             # Re-running in place: which of the documents it builds on changed since its last attempt
             changed_inputs=changes[0], dependency_changes=changes[1],
             answered=questions.answered_for(run_id, stage.key),
-            catalogue=(discovery_store.domains_brief(domain) if discovery else
+            catalogue=(discovery_store.domains_brief(domain, from_scratch) if discovery else
                        contracts_store.catalogue_brief(domain, settings)),
             ownership=_ownership(),
             domain_modules=(domain_modules.brief(_project_of(run_id), state["domain"], run_id,
